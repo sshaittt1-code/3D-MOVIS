@@ -52,27 +52,6 @@ const usePlayerControls = (
           break;
       }
 
-      if (isTvMode && isLocked) {
-        if (e.key === 'ArrowUp') {
-          setCorridorZ((z) => Math.min(z + 1, Math.floor(displayMovies.length / 2) - 1));
-          setLookDirection('forward');
-        } else if (e.key === 'ArrowDown') {
-          setCorridorZ((z) => Math.max(z - 1, 0));
-          setLookDirection('forward');
-        } else if (e.key === 'ArrowLeft') {
-          setLookDirection('left');
-        } else if (e.key === 'ArrowRight') {
-          setLookDirection('right');
-        } else if (e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23) {
-          if (lookDirection === 'left' || lookDirection === 'right') {
-            const index = corridorZ * 2 + (lookDirection === 'left' ? 0 : 1);
-            const movie = displayMovies[index];
-            if (movie) {
-              setSelectedMovie(movie);
-            }
-          }
-        }
-      }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -133,6 +112,11 @@ const Player = ({
   const direction = new THREE.Vector3();
   const frontVector = new THREE.Vector3();
   const sideVector = new THREE.Vector3();
+
+  useEffect(() => {
+    camera.position.set(0, 1.6, 2);
+    camera.rotation.set(0, 0, 0);
+  }, [camera, movies]);
 
   useFrame((_, delta) => {
     if (!isTvMode) {
@@ -225,18 +209,57 @@ const Poster = ({ movie, position, rotation, onClick, isFocused }: any) => {
 
 const Corridor = ({ movies, onPosterClick, isTvMode, isLocked, corridorZ, lookDirection }: any) => {
   const length = (movies.length / 2) * 5 + 10;
+  const numArches = Math.max(1, Math.floor(length / 10));
+  const arches = Array.from({ length: numArches }).map((_, index) => (
+    <group key={`arch-${index}`} position={[0, 0, -index * 10]}>
+      <mesh position={[-5.1, 2.5, 0]}>
+        <boxGeometry args={[0.2, 5, 0.5]} />
+        <meshStandardMaterial color="#8fffe7" emissive="#8fffe7" emissiveIntensity={0.45} />
+      </mesh>
+      <mesh position={[5.1, 2.5, 0]}>
+        <boxGeometry args={[0.2, 5, 0.5]} />
+        <meshStandardMaterial color="#8fffe7" emissive="#8fffe7" emissiveIntensity={0.45} />
+      </mesh>
+      <mesh position={[0, 5.1, 0]}>
+        <boxGeometry args={[10.4, 0.2, 0.5]} />
+        <meshStandardMaterial color="#8fffe7" emissive="#8fffe7" emissiveIntensity={0.45} />
+      </mesh>
+    </group>
+  ));
 
   return (
     <group>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, -length / 2 + 5]}>
         <planeGeometry args={[12, length]} />
-        <meshStandardMaterial color="#04070b" />
+        <meshStandardMaterial color="#05070a" roughness={0.78} metalness={0.18} />
       </mesh>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, -length / 2 + 5]}>
         <planeGeometry args={[4, length]} />
-        <meshStandardMaterial color="#10212f" emissive="#0a1a25" emissiveIntensity={0.8} />
+        <meshStandardMaterial color="#0e2130" emissive="#0a1a25" emissiveIntensity={0.82} roughness={0.38} metalness={0.7} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[-2, 0.02, -length / 2 + 5]}>
+        <planeGeometry args={[0.06, length]} />
+        <meshBasicMaterial color="#8fffe7" />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[2, 0.02, -length / 2 + 5]}>
+        <planeGeometry args={[0.06, length]} />
+        <meshBasicMaterial color="#8fffe7" />
+      </mesh>
+      <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 5, -length / 2 + 5]}>
+        <planeGeometry args={[12, length]} />
+        <meshStandardMaterial color="#020202" roughness={0.92} metalness={0.08} />
+      </mesh>
+      <mesh position={[-6, 2.5, -length / 2 + 5]} rotation={[0, Math.PI / 2, 0]}>
+        <planeGeometry args={[length, 5]} />
+        <meshStandardMaterial color="#0b1218" roughness={0.55} metalness={0.42} />
+      </mesh>
+      <mesh position={[6, 2.5, -length / 2 + 5]} rotation={[0, -Math.PI / 2, 0]}>
+        <planeGeometry args={[length, 5]} />
+        <meshStandardMaterial color="#0b1218" roughness={0.55} metalness={0.42} />
       </mesh>
       <gridHelper args={[12, length, '#8fffe7', '#123245']} position={[0, 0.01, -length / 2 + 5]} />
+      <gridHelper args={[12, length, '#8fffe7', '#123245']} position={[0, 4.99, -length / 2 + 5]} />
+      {arches}
 
       {movies.map((movie: any, index: number) => {
         const isLeft = index % 2 === 0;
@@ -301,16 +324,67 @@ export default function App() {
     else if (sortBy === 'popularity') sorted.sort((a, b) => b.popularity - a.popularity);
     else sorted.sort((a, b) => String(a.title).localeCompare(String(b.title), 'he'));
 
-    return Array(5)
+    if (sorted.length === 0) {
+      return [];
+    }
+
+    return Array(10)
       .fill(sorted)
       .flat()
       .map((m, i) => ({ ...m, uniqueId: `${m.id}-${i}` }));
   }, [baseMovies, favorites, genre, sortBy]);
+  const corridorSteps = Math.max(1, Math.floor(displayMovies.length / 2));
 
   useEffect(() => {
     const handleGlobalKey = (e: KeyboardEvent) => {
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape', 'Backspace'].includes(e.key)) {
         setIsTvMode(true);
+      }
+
+      if ((e.key === 'Enter' || e.keyCode === 23) && !isLocked && !selectedMovie && !showCinemaScreen) {
+        setIsLocked(true);
+        e.preventDefault();
+        return;
+      }
+
+      if (isLocked && !selectedMovie && !showCinemaScreen) {
+        if (e.key === 'ArrowUp') {
+          setCorridorZ((current) => Math.min(current + 1, corridorSteps - 1));
+          setLookDirection('forward');
+          e.preventDefault();
+          return;
+        }
+
+        if (e.key === 'ArrowDown') {
+          setCorridorZ((current) => Math.max(current - 1, 0));
+          setLookDirection('forward');
+          e.preventDefault();
+          return;
+        }
+
+        if (e.key === 'ArrowLeft') {
+          setLookDirection('left');
+          e.preventDefault();
+          return;
+        }
+
+        if (e.key === 'ArrowRight') {
+          setLookDirection('right');
+          e.preventDefault();
+          return;
+        }
+
+        if (e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23) {
+          if (lookDirection === 'left' || lookDirection === 'right') {
+            const index = corridorZ * 2 + (lookDirection === 'left' ? 0 : 1);
+            const movie = displayMovies[index];
+            if (movie) {
+              setSelectedMovie(movie);
+            }
+          }
+          e.preventDefault();
+          return;
+        }
       }
 
       if (e.key === 'Escape' || e.key === 'Backspace' || e.keyCode === 4) {
@@ -327,7 +401,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleGlobalKey);
     return () => window.removeEventListener('keydown', handleGlobalKey);
-  }, [isLocked, selectedMovie, showCinemaScreen, tgVideoUrl]);
+  }, [corridorSteps, displayMovies, isLocked, lookDirection, corridorZ, selectedMovie, showCinemaScreen, tgVideoUrl]);
 
   useEffect(() => {
     setCorridorZ(0);
