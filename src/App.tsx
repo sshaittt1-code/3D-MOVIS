@@ -72,14 +72,14 @@ const Player = ({ corridorLength, movies }: { corridorLength: number, movies: an
     frontVector.set(0, 0, Number(backward) - Number(forward));
     sideVector.set(Number(left) - Number(right), 0, 0);
     direction.subVectors(frontVector, sideVector).normalize().multiplyScalar(speed * delta);
-    
+
     // Apply movement relative to camera rotation
     camera.translateX(direction.x);
     camera.translateZ(direction.z);
-    
+
     // Keep camera at a fixed height
     camera.position.y = 1.6;
-    
+
     // Constrain to corridor
     if (camera.position.x > 3.5) camera.position.x = 3.5;
     if (camera.position.x < -3.5) camera.position.x = -3.5;
@@ -112,20 +112,20 @@ const Poster = ({ movie, position, rotation, onClick, setHoveredPoster, isFavori
 
   useFrame(() => {
     if (groupRef.current) {
-      const targetScale = isFocused ? 1.1 : 1;
+      const targetScale = (isFocused || hovered) ? 1.1 : 1;
       groupRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, 1), 0.1);
     }
   });
 
   return (
     <group position={position} rotation={rotation} ref={groupRef}>
-      
+
       {/* Favorite Heart Button */}
-      <group 
-        position={[0, 2.3, 0]} 
-        onClick={(e) => { 
-          e.stopPropagation(); 
-          onToggleFavorite(movie.id); 
+      <group
+        position={[0, 2.3, 0]}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleFavorite(movie.id);
         }}
         onPointerOver={(e) => { e.stopPropagation(); setHeartHovered(true); }}
         onPointerOut={(e) => { e.stopPropagation(); setHeartHovered(false); }}
@@ -148,20 +148,20 @@ const Poster = ({ movie, position, rotation, onClick, setHoveredPoster, isFavori
       </group>
 
       {/* Poster Mesh */}
-      <mesh 
-        onPointerOver={(e) => { 
-          e.stopPropagation(); 
-          setHovered(true); 
+      <mesh
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          setHovered(true);
           setHoveredPoster(movie);
         }}
-        onPointerOut={(e) => { 
-          e.stopPropagation(); 
-          setHovered(false); 
+        onPointerOut={(e) => {
+          e.stopPropagation();
+          setHovered(false);
           setHoveredPoster(null);
         }}
-        onClick={(e) => { 
-          e.stopPropagation(); 
-          onClick(movie); 
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick(movie);
         }}
       >
         <planeGeometry args={[2.5, 3.75]} />
@@ -171,7 +171,7 @@ const Poster = ({ movie, position, rotation, onClick, setHoveredPoster, isFavori
           <meshStandardMaterial color={hovered ? '#444444' : '#222222'} roughness={0.2} metalness={0.1} />
         )}
       </mesh>
-      
+
       {/* Holographic frame */}
       <mesh position={[0, 0, -0.02]}>
         <planeGeometry args={[2.6, 3.85]} />
@@ -188,7 +188,7 @@ const Poster = ({ movie, position, rotation, onClick, setHoveredPoster, isFavori
       >
         {movie.title}
       </Text>
-      
+
       {/* Subtitle (Genre & Rating) */}
       <Text
         position={[0, -2.4, 0]}
@@ -220,9 +220,9 @@ const CameraController = ({ isLocked, isTvMode, corridorZ, lookDirection }: any)
     if (isTvMode && isLocked) {
       const targetZ = -corridorZ * 5 + 3;
       const targetX = 0;
-      
-      state.camera.position.z = THREE.MathUtils.lerp(state.camera.position.z, targetZ, 0.1);
-      state.camera.position.x = THREE.MathUtils.lerp(state.camera.position.x, targetX, 0.1);
+
+      state.camera.position.z = THREE.MathUtils.lerp(state.camera.position.z, targetZ, 0.05);
+      state.camera.position.x = THREE.MathUtils.lerp(state.camera.position.x, targetX, 0.05);
       state.camera.position.y = 1.6;
 
       let targetRotY = 0;
@@ -230,7 +230,7 @@ const CameraController = ({ isLocked, isTvMode, corridorZ, lookDirection }: any)
       if (lookDirection === 'right') targetRotY = -Math.PI / 2;
 
       const targetQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, targetRotY, 0));
-      state.camera.quaternion.slerp(targetQuat, 0.1);
+      state.camera.quaternion.slerp(targetQuat, 0.04);
     }
   });
   return null;
@@ -238,7 +238,7 @@ const CameraController = ({ isLocked, isTvMode, corridorZ, lookDirection }: any)
 
 const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggleFavorite, isTvMode, isLocked, corridorZ, lookDirection }: any) => {
   const length = (movies.length / 2) * 5 + 10;
-  
+
   // Generate holographic arches
   const numArches = Math.floor(length / 10);
   const arches = Array.from({ length: numArches }).map((_, i) => (
@@ -280,7 +280,7 @@ const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggle
         <planeGeometry args={[0.05, length]} />
         <meshBasicMaterial color="#00ffcc" />
       </mesh>
-      
+
       {/* Ceiling */}
       <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 5, -length / 2 + 5]}>
         <planeGeometry args={[10, length]} />
@@ -298,7 +298,7 @@ const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggle
         <planeGeometry args={[length, 5]} />
         <meshStandardMaterial color="#0a0a0a" roughness={0.5} metalness={0.5} />
       </mesh>
-      
+
       {/* Grid Helpers for holographic feel */}
       <gridHelper args={[10, length, '#00ffcc', '#003322']} position={[0, 0.01, -length / 2 + 5]} rotation={[0, 0, 0]} />
       <gridHelper args={[10, length, '#00ffcc', '#003322']} position={[0, 4.99, -length / 2 + 5]} rotation={[0, 0, 0]} />
@@ -345,7 +345,7 @@ export default function App() {
   // Filtering & Sorting State
   const [sortBy, setSortBy] = useState<'popularity' | 'rating' | 'name'>('popularity');
   const [genre, setGenre] = useState<string>('הכל');
-  
+
   // Favorites State
   const [favorites, setFavorites] = useState<number[]>([]);
 
@@ -356,7 +356,7 @@ export default function App() {
   const [isSearchingTg, setIsSearchingTg] = useState(false);
   const [tgVideoUrl, setTgVideoUrl] = useState<string | null>(null);
   const [tgSubtitleUrl, setTgSubtitleUrl] = useState<string | null>(null);
-  
+
   const [tgPhone, setTgPhone] = useState('');
   const [tgCode, setTgCode] = useState('');
   const [tgPassword, setTgPassword] = useState('');
@@ -378,7 +378,7 @@ export default function App() {
   // Generate "Infinite" Movie List based on filters
   const displayMovies = useMemo(() => {
     let filtered = baseMovies;
-    
+
     // Apply Genre / Category Filter
     if (genre === 'מועדפים') {
       filtered = baseMovies.filter(m => favorites.includes(m.id));
@@ -387,7 +387,7 @@ export default function App() {
     }
 
     let sorted = [...filtered];
-    
+
     // Apply Sorting
     if (genre === 'בלאגן') {
       // Chaos mode: random shuffle, ignore sorting
@@ -401,7 +401,7 @@ export default function App() {
     // Repeat the array 10 times to create an "infinite" corridor feel
     // If filtered is empty, return empty array
     if (sorted.length === 0) return [];
-    
+
     return Array(10).fill(sorted).flat().map((m, i) => ({
       ...m,
       uniqueId: `${m.id}-${i}`
@@ -420,6 +420,11 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Prevent default browsing actions for remote back/escape
+      if (e.key === 'Escape' || e.key === 'Backspace') {
+        e.preventDefault();
+      }
+
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Select'].includes(e.key) || e.keyCode === 23) {
         setIsTvMode(true);
       }
@@ -442,7 +447,11 @@ export default function App() {
         } else if (e.key === 'ArrowRight') {
           setLookDirection('right');
         } else if (e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23) {
-          if (lookDirection === 'left' || lookDirection === 'right') {
+          if (hoveredPoster) {
+            setSelectedMovie(hoveredPoster);
+            setIsLocked(false);
+            document.exitPointerLock?.();
+          } else if (lookDirection === 'left' || lookDirection === 'right') {
             const isLookingLeft = lookDirection === 'left';
             const index = corridorZ * 2 + (isLookingLeft ? 0 : 1);
             const movie = displayMovies[index];
@@ -497,7 +506,7 @@ export default function App() {
       setIsSearchingTg(true);
       const res = await fetch('/api/tg/status');
       const data = await res.json();
-      
+
       if (!data.loggedIn) {
         setShowTgLogin(true);
         setIsSearchingTg(false);
@@ -508,10 +517,10 @@ export default function App() {
       setShowCinemaScreen(true);
       setTgSearchResults([]);
       setTgVideoUrl(null);
-      
+
       const searchRes = await fetch(`/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`);
       const searchData = await searchRes.json();
-      
+
       if (searchData.error) throw new Error(searchData.error);
       setTgSearchResults(searchData.results || []);
     } catch (e: any) {
@@ -552,7 +561,7 @@ export default function App() {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      
+
       // Wait a moment to see if it requires password or succeeds
       setTimeout(async () => {
         const statusRes = await fetch('/api/tg/status');
@@ -582,7 +591,7 @@ export default function App() {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      
+
       setTimeout(async () => {
         const statusRes = await fetch('/api/tg/status');
         const statusData = await statusRes.json();
@@ -623,14 +632,14 @@ export default function App() {
       <Canvas camera={{ position: [0, 1.6, 2], fov: 75 }}>
         <color attach="background" args={['#000000']} />
         <fog attach="fog" args={['#000000', 5, 30]} />
-        
+
         <ambientLight intensity={0.5} />
         <directionalLight position={[0, 10, 5]} intensity={1} color="#00ffcc" />
-        
+
         <Suspense fallback={null}>
-          <Corridor 
-            movies={displayMovies} 
-            onPosterClick={handlePosterClick} 
+          <Corridor
+            movies={displayMovies}
+            onPosterClick={handlePosterClick}
             setHoveredPoster={setHoveredPoster}
             favorites={favorites}
             onToggleFavorite={toggleFavorite}
@@ -642,14 +651,14 @@ export default function App() {
         </Suspense>
 
         {!isTvMode && <Player corridorLength={corridorLength} movies={displayMovies} />}
-        
+
         <CameraController isLocked={isLocked} isTvMode={isTvMode} corridorZ={corridorZ} lookDirection={lookDirection} />
 
         {!isTvMode && (
-          <PointerLockControls 
+          <PointerLockControls
             ref={controlsRef}
-            onLock={() => setIsLocked(true)} 
-            onUnlock={() => setIsLocked(false)} 
+            onLock={() => setIsLocked(true)}
+            onUnlock={() => setIsLocked(false)}
           />
         )}
       </Canvas>
@@ -662,7 +671,7 @@ export default function App() {
       {/* Hover Info (Locked Mode) */}
       <AnimatePresence>
         {hoveredPoster && isLocked && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
@@ -684,7 +693,7 @@ export default function App() {
       {/* HUD & Filter Menu (Unlocked Mode) */}
       <AnimatePresence>
         {!isLocked && !selectedMovie && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -764,7 +773,7 @@ export default function App() {
                 <p className="text-sm font-bold text-white">{displayMovies.length} הולוגרמות נטענו</p>
               </div>
 
-              <button 
+              <button
                 onClick={() => {
                   setIsLocked(true);
                   if (!isTvMode) controlsRef.current?.lock();
@@ -776,7 +785,7 @@ export default function App() {
             </div>
 
             {/* Click to enter overlay */}
-            <div 
+            <div
               className="flex-1 bg-black/20 backdrop-blur-sm flex items-center justify-center cursor-pointer group"
               onClick={() => {
                 setIsLocked(true);
@@ -794,16 +803,16 @@ export default function App() {
       {/* Movie Modal */}
       <AnimatePresence>
         {selectedMovie && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             className="absolute inset-0 z-30 flex items-center justify-center p-4 md:p-12"
           >
             <div className="absolute inset-0 bg-black/90 backdrop-blur-xl" onClick={handleCloseModal} />
-            
+
             <div ref={modalRef} className="relative w-full max-w-5xl bg-[#0a0a0a] border border-[#00ffcc]/30 rounded-3xl overflow-hidden shadow-[0_0_100px_rgba(0,255,204,0.15)] flex flex-col md:flex-row">
-              <button 
+              <button
                 onClick={handleCloseModal}
                 className="absolute top-4 right-4 z-10 p-2 bg-black/50 hover:bg-[#00ffcc] hover:text-black rounded-full transition-colors text-white focus:ring-4 focus:ring-[#00ffcc] focus:outline-none"
               >
@@ -812,9 +821,9 @@ export default function App() {
 
               {/* Poster Side */}
               <div className="w-full md:w-1/3 relative hidden md:block">
-                <img 
-                  src={selectedMovie.poster} 
-                  alt={selectedMovie.title} 
+                <img
+                  src={selectedMovie.poster}
+                  alt={selectedMovie.title}
                   className="w-full h-full object-cover"
                   referrerPolicy="no-referrer"
                 />
@@ -838,7 +847,7 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                
+
                 <h2 className="text-3xl md:text-5xl font-bold mb-4">{selectedMovie.title}</h2>
                 <p className="text-gray-400 mb-8 leading-relaxed text-lg">
                   {selectedMovie.desc}
@@ -847,7 +856,7 @@ export default function App() {
                 {/* Trailer Video */}
                 <div className="mt-auto relative w-full aspect-video rounded-xl overflow-hidden border border-white/10 bg-black group">
                   {selectedMovie.trailer ? (
-                    <iframe 
+                    <iframe
                       src={`${selectedMovie.trailer}?autoplay=0&controls=1&rel=0`}
                       title={`${selectedMovie.title} Trailer`}
                       className="w-full h-full"
@@ -860,23 +869,23 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                
+
                 <div className="mt-6 flex gap-4">
-                  <button 
+                  <button
                     onClick={() => toggleFavorite(selectedMovie.id)}
                     className={`flex-1 py-3 font-bold rounded-xl transition-all flex items-center justify-center gap-2 border focus:ring-4 focus:ring-[#ff0055] focus:outline-none ${favorites.includes(selectedMovie.id) ? 'bg-[#ff0055]/20 text-[#ff0055] border-[#ff0055]/50 hover:bg-[#ff0055]/30' : 'bg-white/5 text-white border-white/10 hover:bg-white/10'}`}
                   >
                     <Heart size={20} fill={favorites.includes(selectedMovie.id) ? "currentColor" : "none"} />
                     {favorites.includes(selectedMovie.id) ? 'הסר ממועדפים' : 'הוסף למועדפים'}
                   </button>
-                  <button 
+                  <button
                     onClick={handleTelegramSearch}
                     disabled={isSearchingTg}
                     className="flex-1 py-3 bg-[#2AABEE] hover:bg-[#229ED9] text-white font-bold rounded-xl transition-all hover:shadow-[0_0_20px_#2AABEE] flex items-center justify-center gap-2 disabled:opacity-50 focus:ring-4 focus:ring-white focus:outline-none"
                   >
                     {isSearchingTg ? <Loader2 className="animate-spin" size={20} /> : (
                       <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.19-.08-.05-.19-.02-.27 0-.12.03-1.96 1.25-5.54 3.67-.52.36-1 .53-1.42.52-.47-.01-1.37-.26-2.03-.48-.82-.27-1.47-.42-1.42-.88.03-.24.29-.48.79-.74 3.08-1.34 5.15-2.23 6.19-2.66 2.95-1.23 3.56-1.44 3.96-1.45.09 0 .28.02.41.11.11.08.14.19.15.27-.01.04.01.12 0 .2z"/>
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.19-.08-.05-.19-.02-.27 0-.12.03-1.96 1.25-5.54 3.67-.52.36-1 .53-1.42.52-.47-.01-1.37-.26-2.03-.48-.82-.27-1.47-.42-1.42-.88.03-.24.29-.48.79-.74 3.08-1.34 5.15-2.23 6.19-2.66 2.95-1.23 3.56-1.44 3.96-1.45.09 0 .28.02.41.11.11.08.14.19.15.27-.01.04.01.12 0 .2z" />
                       </svg>
                     )}
                     חפש וצפה בטלגרם
@@ -890,14 +899,14 @@ export default function App() {
       {/* Telegram Login Modal */}
       <AnimatePresence>
         {showTgLogin && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-md"
           >
             <div className="bg-[#111] border border-[#2AABEE]/30 p-8 rounded-2xl max-w-md w-full shadow-[0_0_50px_rgba(42,171,238,0.2)]">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-2xl font-bold text-[#2AABEE] flex items-center gap-2">
-                  <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.19-.08-.05-.19-.02-.27 0-.12.03-1.96 1.25-5.54 3.67-.52.36-1 .53-1.42.52-.47-.01-1.37-.26-2.03-.48-.82-.27-1.47-.42-1.42-.88.03-.24.29-.48.79-.74 3.08-1.34 5.15-2.23 6.19-2.66 2.95-1.23 3.56-1.44 3.96-1.45.09 0 .28.02.41.11.11.08.14.19.15.27-.01.04.01.12 0 .2z"/></svg>
+                  <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.19-.08-.05-.19-.02-.27 0-.12.03-1.96 1.25-5.54 3.67-.52.36-1 .53-1.42.52-.47-.01-1.37-.26-2.03-.48-.82-.27-1.47-.42-1.42-.88.03-.24.29-.48.79-.74 3.08-1.34 5.15-2.23 6.19-2.66 2.95-1.23 3.56-1.44 3.96-1.45.09 0 .28.02.41.11.11.08.14.19.15.27-.01.04.01.12 0 .2z" /></svg>
                   התחברות לטלגרם
                 </h2>
                 <button onClick={() => setShowTgLogin(false)} className="text-gray-400 hover:text-white focus:ring-2 focus:ring-[#2AABEE] focus:outline-none rounded-full p-1"><X /></button>
@@ -910,7 +919,7 @@ export default function App() {
                   <label className="block text-sm text-gray-400 mb-2">מספר טלפון (כולל קידומת)</label>
                   <div className="relative">
                     <Phone className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500" size={18} />
-                    <input 
+                    <input
                       type="text" placeholder="+972501234567" value={tgPhone} onChange={e => setTgPhone(e.target.value)}
                       className="w-full bg-black border border-gray-700 rounded-xl py-3 pr-10 pl-4 text-white focus:border-[#2AABEE] focus:ring-2 focus:ring-[#2AABEE] outline-none text-left" dir="ltr"
                     />
@@ -926,7 +935,7 @@ export default function App() {
                   <label className="block text-sm text-gray-400 mb-2">קוד אימות (נשלח לטלגרם)</label>
                   <div className="relative">
                     <Key className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500" size={18} />
-                    <input 
+                    <input
                       type="text" placeholder="12345" value={tgCode} onChange={e => setTgCode(e.target.value)}
                       className="w-full bg-black border border-gray-700 rounded-xl py-3 pr-10 pl-4 text-white focus:border-[#2AABEE] focus:ring-2 focus:ring-[#2AABEE] outline-none text-left" dir="ltr"
                     />
@@ -942,7 +951,7 @@ export default function App() {
                   <label className="block text-sm text-gray-400 mb-2">סיסמת אימות דו-שלבי</label>
                   <div className="relative">
                     <Lock className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500" size={18} />
-                    <input 
+                    <input
                       type="password" placeholder="סיסמה" value={tgPassword} onChange={e => setTgPassword(e.target.value)}
                       className="w-full bg-black border border-gray-700 rounded-xl py-3 pr-10 pl-4 text-white focus:border-[#2AABEE] focus:ring-2 focus:ring-[#2AABEE] outline-none text-left" dir="ltr"
                     />
@@ -960,12 +969,12 @@ export default function App() {
       {/* Cinema Screen Modal for Telegram Results */}
       <AnimatePresence>
         {showCinemaScreen && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}
             className="absolute inset-0 z-40 flex items-center justify-center p-4 md:p-8 bg-black/95"
           >
             <div className="w-full h-full max-w-7xl flex flex-col relative">
-              <button 
+              <button
                 onClick={() => { setShowCinemaScreen(false); setTgVideoUrl(null); }}
                 className="absolute top-0 right-0 z-50 p-3 bg-white/10 hover:bg-red-500 rounded-full transition-colors"
               >
@@ -979,28 +988,28 @@ export default function App() {
 
               {/* Main Screen Area */}
               <div className="flex-1 bg-[#050505] border-2 border-[#2AABEE]/30 rounded-3xl overflow-hidden shadow-[0_0_100px_rgba(42,171,238,0.15)] flex flex-col relative">
-                
+
                 {/* Video Player or Results List */}
                 {tgVideoUrl ? (
                   <div className="w-full h-full relative">
-                    <video 
-                      src={tgVideoUrl} 
-                      controls 
-                      autoPlay 
+                    <video
+                      src={tgVideoUrl}
+                      controls
+                      autoPlay
                       crossOrigin="anonymous"
                       className="w-full h-full object-contain"
                     >
                       {tgSubtitleUrl && (
-                        <track 
-                          kind="subtitles" 
-                          src={tgSubtitleUrl} 
-                          srcLang="he" 
-                          label="עברית" 
-                          default 
+                        <track
+                          kind="subtitles"
+                          src={tgSubtitleUrl}
+                          srcLang="he"
+                          label="עברית"
+                          default
                         />
                       )}
                     </video>
-                    <button 
+                    <button
                       onClick={() => setTgVideoUrl(null)}
                       className="absolute top-4 right-4 px-4 py-2 bg-black/50 hover:bg-white/20 rounded-lg backdrop-blur-md transition-colors focus:ring-4 focus:ring-white focus:outline-none"
                     >
@@ -1022,8 +1031,8 @@ export default function App() {
                     ) : (
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {tgSearchResults.map((res, idx) => (
-                          <button 
-                            key={idx} 
+                          <button
+                            key={idx}
                             onClick={() => playTgVideo(res.peerId, res.id)}
                             className="bg-white/5 border border-white/10 hover:border-[#2AABEE] p-4 rounded-xl cursor-pointer transition-all hover:bg-white/10 group focus:ring-4 focus:ring-[#2AABEE] focus:outline-none text-right w-full"
                           >
