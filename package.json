@@ -9,11 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "start": "node server.ts",
-    "android:add": "npx cap add android",
-    "android:sync": "npm run build && npx cap sync android",
-    "android:open": "npx cap open android",
-    "android:apk": "npm run android:sync && cd android && .\\gradlew.bat assembleDebug"
+    "start": "node server.ts"
   },
   "dependencies": {
     "@capacitor/app": "^8.0.1",
