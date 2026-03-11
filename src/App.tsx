@@ -6,7 +6,18 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, Play, Info, Star, TrendingUp, Type, Film, Heart, Shuffle, Search, Phone, Key, Lock, Loader2 } from 'lucide-react';
 
 // Extended Mock Data with Israeli content (Fallback if API fails)
-const BASE_MOVIES: any[] = [];
+const BASE_MOVIES: any[] = [
+  { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: 'https://www.youtube.com/embed/YoHD9XEInc0', desc: 'גנב שגונב סודות תאגידיים באמצעות טכנולוגיית שיתוף חלומות מקבל משימה הפוכה של שתילת רעיון במוחו של מנכ"ל.' },
+  { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', trailer: 'https://www.youtube.com/embed/zSWdZVtXT7E', desc: 'צוות חוקרים נוסע דרך חור תולעת בחלל בניסיון להבטיח את הישרדותה של האנושות.' },
+  { id: 3, title: 'מטריקס (The Matrix)', genre: 'מדע בדיוני', rating: 8.7, popularity: 92, poster: 'https://image.tmdb.org/t/p/w500/f89U3ADr1oiB1s9GkdPOEpXUk5H.jpg', trailer: 'https://www.youtube.com/embed/vKQi3bBA1y8', desc: 'כאשר זרה יפהפייה מובילה את האקר המחשבים ניאו לעולם תחתון אסור, הוא מגלה את האמת המזעזעת - החיים שהוא מכיר הם הונאה מורכבת של אינטליגנציה קיברנטית מרושעת.' },
+  { id: 4, title: 'אווטאר (Avatar)', genre: 'פעולה', rating: 7.8, popularity: 85, poster: 'https://image.tmdb.org/t/p/w500/kyeqWdyKINLSywicWSXb390iEQO.jpg', trailer: 'https://www.youtube.com/embed/5PSNL1qE6VY', desc: 'נחת משותק שנשלח לירח פנדורה במשימה ייחודית נקרע בין מילוי פקודותיו לבין הגנה על העולם שהוא מרגיש שהוא ביתו.' },
+  { id: 5, title: 'חולית (Dune)', genre: 'מדע בדיוני', rating: 8.0, popularity: 88, poster: 'https://image.tmdb.org/t/p/w500/d5NXSklXo0qyIYkgV94XAgMIckC.jpg', trailer: 'https://www.youtube.com/embed/n9xhKvBWcl4', desc: 'משפחת אצולה מסתבכת במלחמה על השליטה בנכס היקר ביותר בגלקסיה.' },
+  { id: 6, title: 'בלייד ראנר 2049', genre: 'מדע בדיוני', rating: 8.0, popularity: 82, poster: 'https://image.tmdb.org/t/p/w500/gajva2L0rPYkEWjzgFlBXCAVBE5.jpg', trailer: 'https://www.youtube.com/embed/gCcx85zbxz4', desc: 'גילויו של סוד קבור זמן רב מוביל בלייד ראנר צעיר לאתר את ריק דקארד, שנעדר כבר שלושים שנה.' },
+  { id: 7, title: 'מקס הזועם: כביש הזעם', genre: 'פעולה', rating: 8.1, popularity: 89, poster: 'https://image.tmdb.org/t/p/w500/8tZYtuWezp8JbcsvHYO0O46tFbo.jpg', trailer: 'https://www.youtube.com/embed/hEJnMQG9lN8', desc: 'בשממה פוסט-אפוקליפטית, אישה מורדת בשליט עריץ בחיפוש אחר מולדתה.' },
+  { id: 8, title: 'ספיידרמן: ממד העכביש', genre: 'אנימציה', rating: 8.4, popularity: 91, poster: 'https://image.tmdb.org/t/p/w500/iiZZdoQBEYBv6id8su7ImL0oCbD.jpg', trailer: 'https://www.youtube.com/embed/tg52up16eq0', desc: 'מיילס מוראלס הופך לספיידרמן של היקום שלו, וחייב לחבור לאנשי עכביש מממדים אחרים כדי לעצור איום על כל המציאויות.' },
+  { id: 9, title: 'האביר האפל (The Dark Knight)', genre: 'פעולה', rating: 9.0, popularity: 98, poster: 'https://image.tmdb.org/t/p/w500/qJ2tW6WMUDux911r6m7haRef0WH.jpg', trailer: 'https://www.youtube.com/embed/EXeTwQWrcwY', desc: 'כאשר האיום המכונה הג\'וקר זורע הרס וכאוס על תושבי גותהאם, באטמן חייב לקבל על עצמו את אחד המבחנים הפסיכולוגיים והפיזיים הגדולים ביותר.' },
+  { id: 10, title: 'הנוקמים: סוף המשחק', genre: 'פעולה', rating: 8.4, popularity: 96, poster: 'https://image.tmdb.org/t/p/w500/or06FN3Dka5tukK1e9sl16pB3iy.jpg', trailer: 'https://www.youtube.com/embed/TcMBFSGVi1c', desc: 'לאחר האירועים ההרסניים של מלחמת האינסוף, היקום נמצא בהריסות. בעזרת בני ברית שנותרו, הנוקמים מתאספים פעם נוספת כדי להפוך את פעולותיו של תאנוס.' }
+];
 
 // Player Movement Hook
 const usePlayerControls = () => {
@@ -94,7 +105,7 @@ const Poster = ({ movie, position, rotation, onClick, setHoveredPoster, isFavori
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const [hovered, setHovered] = useState(false);
   const [heartHovered, setHeartHovered] = useState(false);
-  const groupRef = useRef<any>(null);
+  const groupRef = useRef<any>();
 
   useEffect(() => {
     const loader = new THREE.TextureLoader();
@@ -337,9 +348,46 @@ export default function App() {
 
   useEffect(() => {
     fetch('/api/movies')
-      .then(res => res.json())
-      .then(data => setBaseMovies(data.movies || []))
-      .catch(err => console.error('Failed to fetch movies', err));
+      .then(res => {
+        if (!res.ok) throw new Error('Network response was not ok');
+        return res.json();
+      })
+      .then(data => setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES))
+      .catch(err => {
+        console.error('Failed to fetch movies, using fallback', err);
+        setBaseMovies(BASE_MOVIES);
+      });
+
+    // Smart Update System: Check GitHub for new commits
+    const checkUpdates = async () => {
+      try {
+        const res = await fetch('https://api.github.com/repos/sshaittt1-code/3D-MOVIS/commits?per_page=1');
+        if (res.ok) {
+          const commits = await res.json();
+          if (commits && commits.length > 0) {
+            const latestCommitSha = commits[0].sha;
+            const storedCommitSha = localStorage.getItem('last_commit_sha');
+            
+            if (!storedCommitSha) {
+              // First time running, store the current commit
+              localStorage.setItem('last_commit_sha', latestCommitSha);
+            } else if (storedCommitSha !== latestCommitSha) {
+              // New commit found!
+              setUpdateAvailable(true);
+              setLatestCommitUrl(commits[0].html_url);
+              // Store the new commit so we don't keep notifying, or wait until they click update
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Failed to check for updates', e);
+      }
+    };
+    
+    checkUpdates();
+    // Check every 5 minutes
+    const interval = setInterval(checkUpdates, 5 * 60 * 1000);
+    return () => clearInterval(interval);
   }, []);
 
   // Filtering & Sorting State
@@ -363,6 +411,10 @@ export default function App() {
   const [tgLoginStep, setTgLoginStep] = useState<'phone' | 'code' | 'password'>('phone');
   const [tgLoginError, setTgLoginError] = useState('');
   const [isTgLoading, setIsTgLoading] = useState(false);
+
+  // Smart Update System State
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [latestCommitUrl, setLatestCommitUrl] = useState('');
 
   // TV Mode State
   const [isTvMode, setIsTvMode] = useState(false);
@@ -420,19 +472,13 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Select'].includes(e.key) || e.keyCode === 23) {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
         setIsTvMode(true);
-      }
-
-      if (!isLocked && !selectedMovie && !showTgLogin && !showCinemaScreen && (e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23)) {
-        setIsLocked(true);
-        e.preventDefault();
-        return;
       }
 
       if (isLocked && !selectedMovie && !showTgLogin) {
         if (e.key === 'ArrowUp') {
-          setCorridorZ(z => Math.min(z + 1, Math.max(Math.floor(displayMovies.length / 2) - 1, 0)));
+          setCorridorZ(z => Math.min(z + 1, Math.floor(displayMovies.length / 2)));
           setLookDirection('forward');
         } else if (e.key === 'ArrowDown') {
           setCorridorZ(z => Math.max(z - 1, 0));
@@ -441,7 +487,7 @@ export default function App() {
           setLookDirection('left');
         } else if (e.key === 'ArrowRight') {
           setLookDirection('right');
-        } else if (e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23) {
+        } else if (e.key === 'Enter') {
           if (lookDirection === 'left' || lookDirection === 'right') {
             const isLookingLeft = lookDirection === 'left';
             const index = corridorZ * 2 + (isLookingLeft ? 0 : 1);
@@ -510,6 +556,9 @@ export default function App() {
       setTgVideoUrl(null);
       
       const searchRes = await fetch(`/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`);
+      if (!searchRes.ok) {
+        throw new Error('Backend API not available. If you are hosting on GitHub Pages, the Telegram features will not work because it requires a Node.js backend.');
+      }
       const searchData = await searchRes.json();
       
       if (searchData.error) throw new Error(searchData.error);
@@ -763,6 +812,29 @@ export default function App() {
                 <p className="text-xs text-gray-400 font-mono mb-1">סטטוס מסדרון</p>
                 <p className="text-sm font-bold text-white">{displayMovies.length} הולוגרמות נטענו</p>
               </div>
+
+              {/* Smart Update System Button */}
+              {updateAvailable && (
+                <div className="mb-6">
+                  <button 
+                    onClick={() => {
+                      // Mark as updated and reload
+                      fetch('https://api.github.com/repos/sshaittt1-code/3D-MOVIS/commits?per_page=1')
+                        .then(res => res.json())
+                        .then(commits => {
+                          if (commits && commits.length > 0) {
+                            localStorage.setItem('last_commit_sha', commits[0].sha);
+                            window.location.reload();
+                          }
+                        });
+                    }}
+                    className="w-full py-3 bg-green-500 hover:bg-green-400 text-black font-bold rounded-xl transition-all shadow-[0_0_15px_rgba(34,197,94,0.5)] flex items-center justify-center gap-2 focus:ring-4 focus:ring-white focus:outline-none animate-pulse"
+                  >
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v6h6"></path></svg>
+                    עדכון זמין! לחץ לרענון
+                  </button>
+                </div>
+              )}
 
               <button 
                 onClick={() => {
