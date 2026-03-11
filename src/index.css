@@ -1,1 +1,64 @@
+@import url("https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap");
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --bg-base: #03070b;
+  --bg-panel: rgba(9, 15, 22, 0.72);
+  --border-soft: rgba(255, 255, 255, 0.1);
+  --accent: #8fffe7;
+  --accent-strong: #2aabee;
+  --text-main: #f5fbff;
+  --text-muted: #9db0bc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top, rgba(42, 171, 238, 0.16), transparent 28%),
+    radial-gradient(circle at 80% 20%, rgba(143, 255, 231, 0.12), transparent 24%),
+    linear-gradient(180deg, #041019 0%, var(--bg-base) 40%, #010204 100%);
+  color: var(--text-main);
+  font-family: "Heebo", sans-serif;
+}
+
+body {
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app-shell {
+  background:
+    radial-gradient(circle at top, rgba(42, 171, 238, 0.1), transparent 22%),
+    linear-gradient(180deg, rgba(3, 7, 11, 0.12) 0%, rgba(3, 7, 11, 0.84) 100%);
+}
+
+.glass-panel {
+  background: linear-gradient(180deg, rgba(15, 23, 32, 0.8), rgba(7, 12, 18, 0.74));
+  border: 1px solid var(--border-soft);
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(20px);
+}
+
+video {
+  background: #000;
+}
