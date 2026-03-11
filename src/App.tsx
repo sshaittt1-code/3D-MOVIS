@@ -6,6 +6,10 @@ import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Play, Info, Star, TrendingUp, Type, Film, Heart, Shuffle, Search, Phone, Key, Lock, Loader2 } from 'lucide-react';
 
+// Base URL for backend API (for Telegram + movies)
+// Configure in Vite as: VITE_API_BASE="http://<server-ip>:3000" for native TV builds.
+const API_BASE = import.meta.env.VITE_API_BASE || '';
+
 // Extended Mock Data with Israeli content (Fallback if API fails)
 const BASE_MOVIES: any[] = [
   { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: 'https://www.youtube.com/embed/YoHD9XEInc0', desc: 'גנב שגונב סודות תאגידיים באמצעות טכנולוגיית שיתוף חלומות מקבל משימה הפוכה של שתילת רעיון במוחו של מנכ"ל.' },
@@ -106,7 +110,7 @@ const Poster = ({ movie, position, rotation, onClick, setHoveredPoster, isFavori
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const [hovered, setHovered] = useState(false);
   const [heartHovered, setHeartHovered] = useState(false);
-  const groupRef = useRef<any>();
+  const groupRef = useRef<THREE.Group | null>(null);
 
   useEffect(() => {
     const loader = new THREE.TextureLoader();
@@ -350,8 +354,16 @@ export default function App() {
   const [hoveredPoster, setHoveredPoster] = useState<any>(null);
   const controlsRef = useRef<any>(null);
 
+  // API base URL - must be declared before useEffect that uses it
+  const [apiBase, setApiBase] = useState(() => {
+    if (typeof window === 'undefined') return API_BASE;
+    return localStorage.getItem('api_base') || API_BASE;
+  });
+  const getApiBase = () => (apiBase || '').replace(/\/$/, '');
+
   useEffect(() => {
-    fetch('/api/movies')
+    const base = getApiBase();
+    fetch(`${base}/api/movies`)
       .then(res => {
         if (!res.ok) throw new Error('Network response was not ok');
         return res.json();
@@ -392,7 +404,7 @@ export default function App() {
     // Check every 5 minutes
     const interval = setInterval(checkUpdates, 5 * 60 * 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [apiBase]);
 
   // Filtering & Sorting State
   const [sortBy, setSortBy] = useState<'popularity' | 'rating' | 'name'>('popularity');
@@ -589,7 +601,8 @@ export default function App() {
   const handleTelegramSearch = async () => {
     try {
       setIsSearchingTg(true);
-      const res = await fetch('/api/tg/status');
+      const base = getApiBase();
+      const res = await fetch(`${base}/api/tg/status`);
       const data = await res.json();
 
       if (!data.loggedIn) {
@@ -603,7 +616,7 @@ export default function App() {
       setTgSearchResults([]);
       setTgVideoUrl(null);
 
-      const searchRes = await fetch(`/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`);
+      const searchRes = await fetch(`${base}/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`);
       if (!searchRes.ok) {
         throw new Error('Backend API not available. If you are hosting on GitHub Pages, the Telegram features will not work because it requires a Node.js backend.');
       }
@@ -611,9 +624,10 @@ export default function App() {
 
       if (searchData.error) throw new Error(searchData.error);
       setTgSearchResults(searchData.results || []);
-    } catch (e: any) {
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
       console.error(e);
-      alert('Error connecting to Telegram: ' + e.message);
+      alert('שגיאה בחיבור לטלגרם: ' + msg + (getApiBase() ? '' : ' – הגדר כתובת שרת API בתפריט.'));
     } finally {
       setIsSearchingTg(false);
     }
@@ -623,7 +637,8 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const res = await fetch('/api/tg/startLogin', {
+      const base = getApiBase();
+      const res = await fetch(`${base}/api/tg/startLogin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: tgPhone })
@@ -631,8 +646,8 @@ export default function App() {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setTgLoginStep('code');
-    } catch (e: any) {
-      setTgLoginError(e.message);
+    } catch (e: unknown) {
+      setTgLoginError(e instanceof Error ? e.message : String(e));
     } finally {
       setIsTgLoading(false);
     }
@@ -642,7 +657,8 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const res = await fetch('/api/tg/submitCode', {
+      const base = getApiBase();
+      const res = await fetch(`${base}/api/tg/submitCode`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: tgCode })
@@ -652,7 +668,7 @@ export default function App() {
 
       // Wait a moment to see if it requires password or succeeds
       setTimeout(async () => {
-        const statusRes = await fetch('/api/tg/status');
+        const statusRes = await fetch(`${base}/api/tg/status`);
         const statusData = await statusRes.json();
         if (statusData.loggedIn) {
           setShowTgLogin(false);
@@ -662,8 +678,8 @@ export default function App() {
         }
         setIsTgLoading(false);
       }, 2000);
-    } catch (e: any) {
-      setTgLoginError(e.message);
+    } catch (e: unknown) {
+      setTgLoginError(e instanceof Error ? e.message : String(e));
       setIsTgLoading(false);
     }
   };
@@ -672,7 +688,8 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const res = await fetch('/api/tg/submitPassword', {
+      const base = getApiBase();
+      const res = await fetch(`${base}/api/tg/submitPassword`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: tgPassword })
@@ -681,7 +698,7 @@ export default function App() {
       if (data.error) throw new Error(data.error);
 
       setTimeout(async () => {
-        const statusRes = await fetch('/api/tg/status');
+        const statusRes = await fetch(`${base}/api/tg/status`);
         const statusData = await statusRes.json();
         if (statusData.loggedIn) {
           setShowTgLogin(false);
@@ -691,23 +708,24 @@ export default function App() {
         }
         setIsTgLoading(false);
       }, 2000);
-    } catch (e: any) {
-      setTgLoginError(e.message);
+    } catch (e: unknown) {
+      setTgLoginError(e instanceof Error ? e.message : String(e));
       setIsTgLoading(false);
     }
   };
 
   const playTgVideo = async (peerId: string, messageId: number) => {
-    setTgVideoUrl(`/api/tg/stream/${peerId}/${messageId}`);
+    const base = getApiBase();
+    setTgVideoUrl(`${base}/api/tg/stream/${peerId}/${messageId}`);
     setTgSubtitleUrl(null); // Reset subtitle
 
     // Try to find subtitles automatically
     try {
-      const subRes = await fetch(`/api/tg/search-subtitles?query=${encodeURIComponent(selectedMovie.title)}`);
+      const subRes = await fetch(`${base}/api/tg/search-subtitles?query=${encodeURIComponent(selectedMovie.title)}`);
       const subData = await subRes.json();
       if (subData.results && subData.results.length > 0) {
         const bestSub = subData.results[0];
-        setTgSubtitleUrl(`/api/tg/subtitle/${bestSub.peerId}/${bestSub.id}`);
+        setTgSubtitleUrl(`${base}/api/tg/subtitle/${bestSub.peerId}/${bestSub.id}`);
       }
     } catch (e) {
       console.error('Failed to fetch subtitles', e);
@@ -856,9 +874,31 @@ export default function App() {
               </div>
 
               {/* Stats */}
-              <div className="mt-auto mb-6 p-4 bg-white/5 rounded-xl border border-white/10">
+              <div className="mt-auto mb-3 p-4 bg-white/5 rounded-xl border border-white/10">
                 <p className="text-xs text-gray-400 font-mono mb-1">סטטוס מסדרון</p>
                 <p className="text-sm font-bold text-white">{displayMovies.length} הולוגרמות נטענו</p>
+              </div>
+
+              {/* API Base Settings */}
+              <div className="mb-6 p-4 bg-white/5 rounded-xl border border-white/10">
+                <p className="text-xs text-gray-400 font-mono mb-2">שרת API (טלגרם + סרטים)</p>
+                <input
+                  type="text"
+                  dir="ltr"
+                  placeholder="http://192.168.1.10:3000"
+                  value={apiBase}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setApiBase(value);
+                    if (typeof window !== 'undefined') {
+                      localStorage.setItem('api_base', value);
+                    }
+                  }}
+                  className="w-full bg-black/40 border border-white/20 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-[#00ffcc]"
+                />
+                <p className="text-[10px] text-gray-500 mt-1">
+                  אם ריק, האפליקציה תשתמש בדומיין הנוכחי (מתאים ל־dev בדפדפן).
+                </p>
               </div>
 
               {/* Smart Update System Button */}
