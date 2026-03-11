@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
+import { App as CapacitorApp } from '@capacitor/app';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { PointerLockControls, Text, Environment, SpotLight } from '@react-three/drei';
 import * as THREE from 'three';
@@ -220,9 +221,12 @@ const CameraController = ({ isLocked, isTvMode, corridorZ, lookDirection }: any)
     if (isTvMode && isLocked) {
       const targetZ = -corridorZ * 5 + 3;
       const targetX = 0;
+      // Slower, smoother camera movement (reduced from 0.05/0.04)
+      const posLerp = 0.018;
+      const rotSlerp = 0.012;
 
-      state.camera.position.z = THREE.MathUtils.lerp(state.camera.position.z, targetZ, 0.05);
-      state.camera.position.x = THREE.MathUtils.lerp(state.camera.position.x, targetX, 0.05);
+      state.camera.position.z = THREE.MathUtils.lerp(state.camera.position.z, targetZ, posLerp);
+      state.camera.position.x = THREE.MathUtils.lerp(state.camera.position.x, targetX, posLerp);
       state.camera.position.y = 1.6;
 
       let targetRotY = 0;
@@ -230,7 +234,7 @@ const CameraController = ({ isLocked, isTvMode, corridorZ, lookDirection }: any)
       if (lookDirection === 'right') targetRotY = -Math.PI / 2;
 
       const targetQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, targetRotY, 0));
-      state.camera.quaternion.slerp(targetQuat, 0.04);
+      state.camera.quaternion.slerp(targetQuat, rotSlerp);
     }
   });
   return null;
@@ -410,6 +414,17 @@ export default function App() {
 
   const corridorLength = (displayMovies.length / 2) * 5 + 10;
 
+  // In TV mode: sync hoveredPoster with focused poster (so selection/OK works correctly)
+  useEffect(() => {
+    if (isTvMode && isLocked && (lookDirection === 'left' || lookDirection === 'right')) {
+      const idx = corridorZ * 2 + (lookDirection === 'left' ? 0 : 1);
+      const movie = displayMovies[idx];
+      setHoveredPoster(movie ?? null);
+    } else if (isTvMode && isLocked && lookDirection === 'forward') {
+      setHoveredPoster(null);
+    }
+  }, [isTvMode, isLocked, corridorZ, lookDirection, displayMovies]);
+
   const handlePosterClick = (movie: any) => {
     setSelectedMovie(movie);
     if (controlsRef.current) {
@@ -481,7 +496,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isLocked, selectedMovie, showTgLogin, showCinemaScreen, tgVideoUrl, corridorZ, lookDirection, displayMovies]);
+  }, [isLocked, selectedMovie, showTgLogin, showCinemaScreen, tgVideoUrl, corridorZ, lookDirection, displayMovies, hoveredPoster]);
 
   useEffect(() => {
     if (!isLocked && !selectedMovie && sidebarRef.current) {
@@ -496,6 +511,25 @@ export default function App() {
       firstBtn?.focus();
     }
   }, [selectedMovie]);
+
+  // Handle Android/TV back button - stay in app, navigate back to main menu
+  const backStateRef = useRef({ tgVideoUrl, showCinemaScreen, selectedMovie, isLocked, showTgLogin });
+  backStateRef.current = { tgVideoUrl, showCinemaScreen, selectedMovie, isLocked, showTgLogin };
+  useEffect(() => {
+    const handler = CapacitorApp.addListener('backButton', () => {
+      const s = backStateRef.current;
+      if (s.tgVideoUrl) setTgVideoUrl(null);
+      else if (s.showCinemaScreen) setShowCinemaScreen(false);
+      else if (s.showTgLogin) setShowTgLogin(false);
+      else if (s.selectedMovie) setSelectedMovie(null);
+      else if (s.isLocked) {
+        setIsLocked(false);
+        document.exitPointerLock?.();
+      }
+      // Never exit app - always navigate in-app
+    });
+    return () => { handler.then(h => h.remove()); };
+  }, []);
 
   const handleCloseModal = () => {
     setSelectedMovie(null);
