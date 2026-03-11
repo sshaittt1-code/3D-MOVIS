@@ -1,0 +1,5 @@
+{
+  "name": "HoloCinema 3D",
+  "description": "A 3D holographic corridor interface to explore and watch movie trailers.",
+  "requestFramePermissions": []
+}
