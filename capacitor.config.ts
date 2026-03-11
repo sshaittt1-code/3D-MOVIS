@@ -6,7 +6,7 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   server: {
     // Correct URL for your GitHub Pages
-    url: 'https://shaittt1-code.github.io/3D-MOVIS-main/',
+    url: 'https://sshaittt1-code.github.io/3D-MOVIS/',
     cleartext: true
   },
   android: {
