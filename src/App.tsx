@@ -10,9 +10,18 @@ const API_BASE = import.meta.env.VITE_API_BASE || '';
 const isTvSelectKey = (e: KeyboardEvent) =>
   e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
 
+const isTvNavigationKey = (e: KeyboardEvent) =>
+  ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || isTvSelectKey(e);
+
 const blurActiveElement = () => {
   const activeElement = document.activeElement as HTMLElement | null;
   activeElement?.blur?.();
+};
+
+const stopTvEvent = (e: KeyboardEvent) => {
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation?.();
 };
 
 // --- Helper for Android Intents (MX Player) ---
@@ -40,7 +49,7 @@ const fetchApiJson = async (path: string, init?: RequestInit) => {
 };
 
 // --- 3D Components ---
-const TVController = ({ movies, isLocked, setIsLocked, setSelectedMovie, setFocusedId }: any) => {
+const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId }: any) => {
   const { camera } = useThree();
   const [targetPos, setTargetPos] = useState(new THREE.Vector3(0, 1.6, 2));
   const [targetRot, setTargetRot] = useState(new THREE.Euler(0, 0, 0));
@@ -50,11 +59,7 @@ const TVController = ({ movies, isLocked, setIsLocked, setSelectedMovie, setFocu
   useEffect(() => {
     const handleInput = (e: KeyboardEvent) => {
       if (!isLocked) return;
-      const isDirectionalKey = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key);
-      if (isDirectionalKey || isTvSelectKey(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
+      if (isTvNavigationKey(e)) stopTvEvent(e);
       if (e.key === 'ArrowUp') {
         setTargetPos(p => new THREE.Vector3(p.x, p.y, p.z - STEP_SIZE));
         setTargetRot(new THREE.Euler(0, 0, 0));
@@ -66,13 +71,19 @@ const TVController = ({ movies, isLocked, setIsLocked, setSelectedMovie, setFocu
       else if (isTvSelectKey(e)) {
         if (focusedMovieRef.current) {
           setSelectedMovie(focusedMovieRef.current);
-          setIsLocked(false);
         }
       }
     };
-    window.addEventListener('keydown', handleInput);
-    return () => window.removeEventListener('keydown', handleInput);
-  }, [isLocked, setSelectedMovie, setIsLocked]);
+    const suppressKeyUp = (e: KeyboardEvent) => {
+      if (isLocked && isTvNavigationKey(e)) stopTvEvent(e);
+    };
+    window.addEventListener('keydown', handleInput, true);
+    window.addEventListener('keyup', suppressKeyUp, true);
+    return () => {
+      window.removeEventListener('keydown', handleInput, true);
+      window.removeEventListener('keyup', suppressKeyUp, true);
+    };
+  }, [isLocked, setSelectedMovie]);
 
   useFrame(() => {
     if (isLocked) {
@@ -82,11 +93,16 @@ const TVController = ({ movies, isLocked, setIsLocked, setSelectedMovie, setFocu
 
       const isLookingSide = Math.abs(targetRot.y) > 0.5;
       if (isLookingSide) {
-        const side = targetRot.y > 0 ? 0 : 1;
-        const zIndex = Math.round((camera.position.z + 2) / -5);
-        const index = Math.max(0, zIndex * 2 + side);
-        focusedMovieRef.current = movies[index] || null;
-        setFocusedId(movies[index]?.uniqueId || null);
+        const targetX = targetRot.y > 0 ? -1 : 1;
+        const sameSidePosters = posterLayout.filter((item: any) => Math.sign(item.position[0]) === targetX);
+        const closestPoster = sameSidePosters.reduce((closest: any, item: any) => {
+          if (!closest) return item;
+          const currentDistance = Math.abs(camera.position.z - item.position[2]);
+          const closestDistance = Math.abs(camera.position.z - closest.position[2]);
+          return currentDistance < closestDistance ? item : closest;
+        }, null);
+        focusedMovieRef.current = closestPoster?.movie || null;
+        setFocusedId(closestPoster?.movie?.uniqueId || null);
       } else {
         focusedMovieRef.current = null;
         setFocusedId(null);
@@ -134,14 +150,22 @@ export default function App() {
       if (isLocked || selectedMovie || showCinemaScreen) return;
       if (!isTvSelectKey(e)) return;
 
-      e.preventDefault();
-      e.stopPropagation();
+      stopTvEvent(e);
       blurActiveElement();
       setIsLocked(true);
     };
+    const suppressMenuKeyUp = (e: KeyboardEvent) => {
+      if (!isLocked && !selectedMovie && !showCinemaScreen && isTvSelectKey(e)) {
+        stopTvEvent(e);
+      }
+    };
 
-    window.addEventListener('keydown', handleMenuInput);
-    return () => window.removeEventListener('keydown', handleMenuInput);
+    window.addEventListener('keydown', handleMenuInput, true);
+    window.addEventListener('keyup', suppressMenuKeyUp, true);
+    return () => {
+      window.removeEventListener('keydown', handleMenuInput, true);
+      window.removeEventListener('keyup', suppressMenuKeyUp, true);
+    };
   }, [isLocked, selectedMovie, showCinemaScreen]);
 
   useEffect(() => {
@@ -160,6 +184,18 @@ export default function App() {
     if (genre !== 'הכל') filtered = filtered.filter((m: any) => m.genre === genre);
     return Array(5).fill(filtered.length ? filtered : []).flat().map((m, i) => ({ ...m, uniqueId: `${m.id}-${i}` }));
   }, [baseMovies, genre]);
+
+  const posterLayout = useMemo(() => {
+    return displayMovies.map((movie: any, index: number) => {
+      const zIndex = Math.floor(index / 2);
+      const isLeft = index % 2 === 0;
+      return {
+        movie,
+        position: [isLeft ? -4.9 : 4.9, 2.2, -zIndex * 5 - 2] as [number, number, number],
+        rotation: [0, isLeft ? Math.PI / 2.2 : -Math.PI / 2.2, 0] as [number, number, number],
+      };
+    });
+  }, [displayMovies]);
 
   const handlePlayVideo = async (peerId: string, messageId: number, title: string) => {
     setIsBuffering(true);
@@ -193,13 +229,11 @@ export default function App() {
           <group>
              <mesh rotation={[-Math.PI/2, 0, 0]} position={[0,0,-100]}><planeGeometry args={[20, 300]} /><meshStandardMaterial color="#050505" /></mesh>
              <gridHelper args={[100, 50, '#00ffcc', '#001111']} position={[0, 0.01, -50]} />
-             {displayMovies.map((movie: any, index: number) => {
-                const zIndex = Math.floor(index / 2);
-                const isLeft = index % 2 === 0;
-                return <Poster key={movie.uniqueId} movie={movie} isFocused={focusedId === movie.uniqueId} position={[isLeft ? -4.9 : 4.9, 2.2, -zIndex * 5 - 2]} rotation={[0, isLeft ? Math.PI/2.2 : -Math.PI/2.2, 0]} />;
-             })}
+             {posterLayout.map(({ movie, position, rotation }: any) => (
+                <Poster key={movie.uniqueId} movie={movie} isFocused={focusedId === movie.uniqueId} position={position} rotation={rotation} />
+             ))}
           </group>
-          <TVController movies={displayMovies} isLocked={isLocked} setIsLocked={setIsLocked} setSelectedMovie={setSelectedMovie} setFocusedId={setFocusedId} />
+          <TVController posterLayout={posterLayout} isLocked={isLocked} setSelectedMovie={setSelectedMovie} setFocusedId={setFocusedId} />
         </Suspense>
       </Canvas>
 
