@@ -1,8 +1,8 @@
-node_modules
-dist
-.idea
+node_modules/
+build/
+dist/
+coverage/
 .DS_Store
-android/app/build
-android/.gradle
-local.properties
-.env
+*.log
+.env*
+!.env.example

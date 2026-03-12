@@ -1,66 +1,9 @@
 import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { PointerLockControls, Text, Environment, SpotLight, useGLTF, useTexture } from '@react-three/drei';
+import { PointerLockControls, Text, Environment, SpotLight } from '@react-three/drei';
 import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Play, Info, Star, TrendingUp, Type, Film, Heart, Shuffle, Search, Phone, Key, Lock, Loader2 } from 'lucide-react';
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://ais-pre-zgturhw4row6gtvlf3jbq3-185322315707.europe-west2.run.app';
-const apiUrl = (path: string) => `${API_BASE_URL}${path}`;
-const isHtmlResponse = (contentType: string | null) => contentType?.toLowerCase().includes('text/html');
-const extractApiError = async (response: Response) => {
-  const contentType = response.headers.get('content-type');
-
-  if (isHtmlResponse(contentType)) {
-    throw new Error('שרת ה-API מחזיר עמוד Cookie Check במקום JSON. צריך להגדיר VITE_API_BASE_URL לשרת backend ישיר.');
-  }
-
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    console.error('[API Error]', response.status, payload);
-    throw new Error(payload?.error || `API request failed with status ${response.status}`);
-  }
-
-  return payload;
-};
-const fetchApiJson = async (path: string, init?: RequestInit) => {
-  const url = apiUrl(path);
-  console.log(`[API] Fetching: ${url}`);
-  try {
-    const response = await fetch(url, init);
-    console.log(`[API] Response status: ${response.status}`);
-    return extractApiError(response);
-  } catch (err) {
-    console.error(`[API] Fetch error for ${url}:`, err);
-    throw err;
-  }
-};
-const withApiOrigin = (url?: string) => {
-  if (!url) return url;
-  return url.startsWith('/api/') ? apiUrl(url) : url;
-};
-const withPosterProxy = (url?: string) => {
-  if (!url) return url;
-  if (url.startsWith('/api/')) return apiUrl(url);
-
-  if (url.includes('image.tmdb.org/t/p/')) {
-    const match = url.match(/image\.tmdb\.org\/t\/p\/([^/]+)(\/.+)$/);
-    if (match) {
-      const [, size, path] = match;
-      return apiUrl(`/api/poster?path=${encodeURIComponent(path)}&size=${encodeURIComponent(size)}`);
-    }
-  }
-
-  return url;
-};
-
-const CINEMA_TEXTURES = {
-  wall: '/textures/velour_velvet_diff_1k.jpg',
-  carpet: '/textures/quatrefoil_jacquard_fabric_diff_1k.jpg',
-  panel: '/textures/fabric_leather_01_diff_1k.jpg',
-};
-
-const SERIES_GENRE = 'סדרות';
 
 // Extended Mock Data with Israeli content (Fallback if API fails)
 const BASE_MOVIES: any[] = [
@@ -162,7 +105,7 @@ const Poster = ({ movie, position, rotation, onClick, setHoveredPoster, isFavori
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const [hovered, setHovered] = useState(false);
   const [heartHovered, setHeartHovered] = useState(false);
-  const groupRef = useRef<any>(null);
+  const groupRef = useRef<any>();
 
   useEffect(() => {
     const loader = new THREE.TextureLoader();
@@ -304,28 +247,8 @@ const CameraController = ({ isLocked, isTvMode, corridorZ, lookDirection }: any)
   return null;
 };
 
-const CinemaSeat = ({ position, rotation }: any) => {
-  const { scene } = useGLTF('/models/SheenChair.glb');
-  const seat = scene.clone();
-
-  return <primitive object={seat} position={position} rotation={rotation} scale={[1.4, 1.4, 1.4]} />;
-};
-
 const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggleFavorite, isTvMode, isLocked, corridorZ, lookDirection }: any) => {
   const length = (movies.length / 2) * 5 + 10;
-  const wallTexture = useTexture(CINEMA_TEXTURES.wall);
-  const carpetTexture = useTexture(CINEMA_TEXTURES.carpet);
-  const panelTexture = useTexture(CINEMA_TEXTURES.panel);
-
-  [wallTexture, carpetTexture, panelTexture].forEach((texture) => {
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.colorSpace = THREE.SRGBColorSpace;
-  });
-
-  wallTexture.repeat.set(length / 12, 2);
-  carpetTexture.repeat.set(3, length / 8);
-  panelTexture.repeat.set(length / 10, 2);
   
   // Generate holographic arches
   const numArches = Math.floor(length / 10);
@@ -351,13 +274,13 @@ const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggle
       {/* Floor */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, -length / 2 + 5]}>
         <planeGeometry args={[10, length]} />
-        <meshStandardMaterial map={carpetTexture} color="#1f1614" roughness={0.88} metalness={0.05} />
+        <meshStandardMaterial color="#050505" roughness={0.8} metalness={0.2} />
       </mesh>
 
       {/* Holographic Path / Red Carpet */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, -length / 2 + 5]}>
         <planeGeometry args={[3, length]} />
-        <meshStandardMaterial map={panelTexture} color="#4a0d15" roughness={0.72} metalness={0.12} />
+        <meshStandardMaterial color="#001122" roughness={0.4} metalness={0.8} />
       </mesh>
       {/* Path glowing edges */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[-1.5, 0.02, -length / 2 + 5]}>
@@ -372,19 +295,19 @@ const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggle
       {/* Ceiling */}
       <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 5, -length / 2 + 5]}>
         <planeGeometry args={[10, length]} />
-        <meshStandardMaterial map={wallTexture} color="#1d0b10" roughness={0.95} metalness={0.02} />
+        <meshStandardMaterial color="#020202" roughness={0.9} metalness={0.1} />
       </mesh>
 
       {/* Left Wall */}
       <mesh position={[-5, 2.5, -length / 2 + 5]} rotation={[0, Math.PI / 2, 0]}>
         <planeGeometry args={[length, 5]} />
-        <meshStandardMaterial map={wallTexture} color="#2a1118" roughness={0.82} metalness={0.08} />
+        <meshStandardMaterial color="#0a0a0a" roughness={0.5} metalness={0.5} />
       </mesh>
 
       {/* Right Wall */}
       <mesh position={[5, 2.5, -length / 2 + 5]} rotation={[0, -Math.PI / 2, 0]}>
         <planeGeometry args={[length, 5]} />
-        <meshStandardMaterial map={wallTexture} color="#2a1118" roughness={0.82} metalness={0.08} />
+        <meshStandardMaterial color="#0a0a0a" roughness={0.5} metalness={0.5} />
       </mesh>
       
       {/* Grid Helpers for holographic feel */}
@@ -392,16 +315,6 @@ const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggle
       <gridHelper args={[10, length, '#00ffcc', '#003322']} position={[0, 4.99, -length / 2 + 5]} rotation={[0, 0, 0]} />
 
       {arches}
-
-      {Array.from({ length: Math.max(2, Math.floor(length / 14)) }).map((_, i) => {
-        const z = -i * 14 - 4;
-        return (
-          <React.Fragment key={`seat-row-${i}`}>
-            <CinemaSeat position={[-3.2, 0.05, z]} rotation={[0, Math.PI / 2, 0]} />
-            <CinemaSeat position={[3.2, 0.05, z]} rotation={[0, -Math.PI / 2, 0]} />
-          </React.Fragment>
-        );
-      })}
 
       {/* Posters */}
       {movies.map((movie: any, index: number) => {
@@ -428,45 +341,21 @@ const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggle
 
 export default function App() {
   const [baseMovies, setBaseMovies] = useState<any[]>([]);
-  const [seriesCatalog, setSeriesCatalog] = useState<any[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<any>(null);
-  const [selectedTitleInfo, setSelectedTitleInfo] = useState<any>(null);
   const [isLocked, setIsLocked] = useState(false);
   const [hoveredPoster, setHoveredPoster] = useState<any>(null);
   const controlsRef = useRef<any>(null);
-  const [corridorStack, setCorridorStack] = useState<any[]>([]);
-  const [isCorridorLoading, setIsCorridorLoading] = useState(false);
-  const [corridorTransitionLabel, setCorridorTransitionLabel] = useState('');
 
   useEffect(() => {
-    fetchApiJson('/api/movies')
-      .then(data => {
-        const movies = data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES;
-        setBaseMovies(movies.map((movie: any) => ({
-          ...movie,
-          poster: withPosterProxy(movie.poster),
-          backdrop: withPosterProxy(movie.backdrop),
-        })));
+    fetch('/api/movies')
+      .then(res => {
+        if (!res.ok) throw new Error('Network response was not ok');
+        return res.json();
       })
+      .then(data => setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES))
       .catch(err => {
         console.error('Failed to fetch movies, using fallback', err);
-        setBaseMovies(BASE_MOVIES.map((movie) => ({
-          ...movie,
-          poster: withPosterProxy(movie.poster),
-          backdrop: withPosterProxy(movie.backdrop),
-        })));
-      });
-
-    fetchApiJson('/api/series')
-      .then((data) => {
-        setSeriesCatalog((data.series || []).map((item: any) => ({
-          ...item,
-          mediaType: item.mediaType || 'series',
-          poster: withPosterProxy(item.poster),
-        })));
-      })
-      .catch((err) => {
-        console.error('Failed to fetch series', err);
+        setBaseMovies(BASE_MOVIES);
       });
 
     // Smart Update System: Check GitHub for new commits
@@ -515,8 +404,6 @@ export default function App() {
   const [isSearchingTg, setIsSearchingTg] = useState(false);
   const [tgVideoUrl, setTgVideoUrl] = useState<string | null>(null);
   const [tgSubtitleUrl, setTgSubtitleUrl] = useState<string | null>(null);
-  const [isTmdLoading, setIsTmdLoading] = useState(false);
-  const [tmdStatusLabel, setTmdStatusLabel] = useState('');
   
   const [tgPhone, setTgPhone] = useState('');
   const [tgCode, setTgCode] = useState('');
@@ -540,81 +427,8 @@ export default function App() {
     setFavorites(prev => prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id]);
   };
 
-  const currentCorridorLayer = corridorStack[corridorStack.length - 1] || null;
-
-  const openCorridorLayer = (label: string, items: any[], meta: Record<string, any> = {}) => {
-    setCorridorTransitionLabel(label);
-    setCorridorStack((prev) => [...prev, { label, items, ...meta }]);
-    setCorridorZ(0);
-    setLookDirection('forward');
-    window.setTimeout(() => setCorridorTransitionLabel(''), 650);
-  };
-
-  const goBackCorridorLayer = () => {
-    setCorridorStack((prev) => prev.slice(0, -1));
-    setCorridorZ(0);
-    setLookDirection('forward');
-    setSelectedMovie(null);
-  };
-
-  const openSeriesSeasons = async (series: any) => {
-    setIsCorridorLoading(true);
-    try {
-      const data = await fetchApiJson(`/api/series/${series.id}/seasons`);
-      const seasons = (data.seasons || []).map((item: any) => ({
-        ...item,
-        mediaType: 'season',
-        poster: withPosterProxy(item.poster || series.poster),
-        seriesTitle: series.title,
-      }));
-      openCorridorLayer(`פתיחת ${series.title}`, seasons, { type: 'seasons', parent: series });
-    } finally {
-      setIsCorridorLoading(false);
-    }
-  };
-
-  const openSeasonEpisodes = async (series: any, season: any) => {
-    setIsCorridorLoading(true);
-    try {
-      const data = await fetchApiJson(`/api/series/${series.id}/seasons/${season.seasonNumber}/episodes`);
-      const episodes = (data.episodes || []).map((item: any) => ({
-        ...item,
-        mediaType: 'episode',
-        poster: withPosterProxy(item.poster || season.poster || series.poster),
-        seriesTitle: series.title,
-        seasonTitle: season.title,
-      }));
-      openCorridorLayer(`${series.title} • ${season.title}`, episodes, { type: 'episodes', parent: season, series });
-    } finally {
-      setIsCorridorLoading(false);
-    }
-  };
-
   // Generate "Infinite" Movie List based on filters
   const displayMovies = useMemo(() => {
-    if (currentCorridorLayer) {
-      const items = currentCorridorLayer.items || [];
-      if (items.length === 0) return [];
-
-      const minCorridorEntries = currentCorridorLayer.type === 'episodes' ? 30 : 24;
-      const repeatCount = Math.max(1, Math.ceil(minCorridorEntries / items.length));
-      return Array(repeatCount).fill(items).flat().map((m, i) => ({
-        ...m,
-        uniqueId: `${m.id}-${i}`,
-      }));
-    }
-
-    if (genre === SERIES_GENRE) {
-      const items = seriesCatalog;
-      if (items.length === 0) return [];
-
-      const repeatCount = Math.max(1, Math.ceil(36 / items.length));
-      return Array(repeatCount).fill(items).flat().map((m, i) => ({
-        ...m,
-        uniqueId: `${m.id}-${i}`,
-      }));
-    }
-
     let filtered = baseMovies;
     
     // Apply Genre / Category Filter
@@ -636,32 +450,19 @@ export default function App() {
       else if (sortBy === 'name') sorted.sort((a, b) => a.title.localeCompare(b.title));
     }
 
+    // Repeat the array 10 times to create an "infinite" corridor feel
+    // If filtered is empty, return empty array
     if (sorted.length === 0) return [];
-
-    const minCorridorEntries = 80;
-    const repeatCount = Math.max(1, Math.ceil(minCorridorEntries / sorted.length));
-
-    return Array(repeatCount).fill(sorted).flat().map((m, i) => ({
+    
+    return Array(10).fill(sorted).flat().map((m, i) => ({
       ...m,
       uniqueId: `${m.id}-${i}`
     }));
-  }, [baseMovies, sortBy, genre, favorites, currentCorridorLayer, seriesCatalog]);
+  }, [baseMovies, sortBy, genre, favorites]);
 
   const corridorLength = (displayMovies.length / 2) * 5 + 10;
 
-  const handlePosterClick = async (movie: any) => {
-    if (genre === SERIES_GENRE || currentCorridorLayer) {
-      if ((genre === SERIES_GENRE || currentCorridorLayer?.type === 'seasons') && movie.mediaType === 'series') {
-        await openSeriesSeasons(movie);
-        return;
-      }
-
-      if (currentCorridorLayer?.type === 'seasons' && movie.mediaType === 'season') {
-        await openSeasonEpisodes(currentCorridorLayer.parent, movie);
-        return;
-      }
-    }
-
+  const handlePosterClick = (movie: any) => {
     setSelectedMovie(movie);
     if (controlsRef.current) {
       controlsRef.current.unlock();
@@ -692,14 +493,12 @@ export default function App() {
             const index = corridorZ * 2 + (isLookingLeft ? 0 : 1);
             const movie = displayMovies[index];
             if (movie) {
-              void handlePosterClick(movie);
+              setSelectedMovie(movie);
+              setIsLocked(false);
+              document.exitPointerLock?.();
             }
           }
         } else if (e.key === 'Escape' || e.key === 'Backspace') {
-          if (currentCorridorLayer) {
-            goBackCorridorLayer();
-            return;
-          }
           setIsLocked(false);
           document.exitPointerLock?.();
         }
@@ -715,13 +514,11 @@ export default function App() {
             setShowCinemaScreen(false);
           }
         }
-      } else if ((e.key === 'Escape' || e.key === 'Backspace') && currentCorridorLayer) {
-        goBackCorridorLayer();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isLocked, selectedMovie, showTgLogin, showCinemaScreen, tgVideoUrl, corridorZ, lookDirection, displayMovies, currentCorridorLayer, genre]);
+  }, [isLocked, selectedMovie, showTgLogin, showCinemaScreen, tgVideoUrl, corridorZ, lookDirection, displayMovies]);
 
   useEffect(() => {
     if (!isLocked && !selectedMovie && sidebarRef.current) {
@@ -739,19 +536,13 @@ export default function App() {
 
   const handleCloseModal = () => {
     setSelectedMovie(null);
-    setSelectedTitleInfo(null);
   };
-
-  useEffect(() => {
-    if (genre !== SERIES_GENRE && corridorStack.length > 0) {
-      setCorridorStack([]);
-    }
-  }, [genre, corridorStack.length]);
 
   const handleTelegramSearch = async () => {
     try {
       setIsSearchingTg(true);
-      const data = await fetchApiJson('/api/tg/status');
+      const res = await fetch('/api/tg/status');
+      const data = await res.json();
       
       if (!data.loggedIn) {
         setShowTgLogin(true);
@@ -763,15 +554,18 @@ export default function App() {
       setShowCinemaScreen(true);
       setTgSearchResults([]);
       setTgVideoUrl(null);
-      setTmdStatusLabel('');
       
-      const searchData = await fetchApiJson(`/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`);
+      const searchRes = await fetch(`/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`);
+      if (!searchRes.ok) {
+        throw new Error('Backend API not available.');
+      }
+      const searchData = await searchRes.json();
       
       if (searchData.error) throw new Error(searchData.error);
       setTgSearchResults(searchData.results || []);
     } catch (e: any) {
       console.error(e);
-      alert('שגיאת Telegram: ' + e.message);
+      alert('Error connecting to Telegram: ' + e.message);
     } finally {
       setIsSearchingTg(false);
     }
@@ -781,11 +575,12 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const data = await fetchApiJson('/api/tg/startLogin', {
+      const res = await fetch('/api/tg/startLogin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: tgPhone })
       });
+      const data = await res.json();
       if (data.error) throw new Error(data.error);
       setTgLoginStep('code');
     } catch (e: any) {
@@ -799,16 +594,18 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const data = await fetchApiJson('/api/tg/submitCode', {
+      const res = await fetch('/api/tg/submitCode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: tgCode })
       });
+      const data = await res.json();
       if (data.error) throw new Error(data.error);
       
       // Wait a moment to see if it requires password or succeeds
       setTimeout(async () => {
-        const statusData = await fetchApiJson('/api/tg/status');
+        const statusRes = await fetch('/api/tg/status');
+        const statusData = await statusRes.json();
         if (statusData.loggedIn) {
           setShowTgLogin(false);
           handleTelegramSearch();
@@ -827,15 +624,17 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const data = await fetchApiJson('/api/tg/submitPassword', {
+      const res = await fetch('/api/tg/submitPassword', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: tgPassword })
       });
+      const data = await res.json();
       if (data.error) throw new Error(data.error);
       
       setTimeout(async () => {
-        const statusData = await fetchApiJson('/api/tg/status');
+        const statusRes = await fetch('/api/tg/status');
+        const statusData = await statusRes.json();
         if (statusData.loggedIn) {
           setShowTgLogin(false);
           handleTelegramSearch();
@@ -850,72 +649,22 @@ export default function App() {
     }
   };
 
-  const playTgVideo = async (result: any) => {
-    setTgSubtitleUrl(null);
+  const playTgVideo = async (peerId: string, messageId: number) => {
+    setTgVideoUrl(`/api/tg/stream/${peerId}/${messageId}`);
+    setTgSubtitleUrl(null); // Reset subtitle
 
-    if (result.messageUrl && result.canUseTmd) {
-      try {
-        setIsTmdLoading(true);
-        setTmdStatusLabel('מוריד את הווידאו מטלגרם דרך TMD...');
-        const jobData = await fetchApiJson('/api/tg/tmd/download', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messageUrl: result.messageUrl, title: result.title }),
-        });
-
-        for (let attempt = 0; attempt < 80; attempt += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 1500));
-          const statusData = await fetchApiJson(`/api/tg/tmd/download/${jobData.jobId}`);
-
-          if (statusData.status === 'completed' && statusData.streamUrl) {
-            setTgVideoUrl(apiUrl(statusData.streamUrl));
-            setTmdStatusLabel('הווידאו מוכן לניגון');
-            setIsTmdLoading(false);
-            return;
-          }
-
-          if (statusData.status === 'failed') {
-            throw new Error(statusData.error || 'TMD download failed');
-          }
-        }
-
-        throw new Error('TMD download timed out');
-      } catch (e) {
-        console.error('TMD playback failed, falling back to direct stream', e);
-        setTmdStatusLabel('TMD נכשל, מנסה סטרים ישיר...');
-      } finally {
-        setIsTmdLoading(false);
-      }
-    }
-
-    setTmdStatusLabel('');
-    setTgVideoUrl(apiUrl(`/api/tg/stream/${result.peerId}/${result.id}`));
-
+    // Try to find subtitles automatically
     try {
-      const subData = await fetchApiJson(`/api/tg/search-subtitles?query=${encodeURIComponent(selectedMovie.title)}`);
+      const subRes = await fetch(`/api/tg/search-subtitles?query=${encodeURIComponent(selectedMovie.title)}`);
+      const subData = await subRes.json();
       if (subData.results && subData.results.length > 0) {
         const bestSub = subData.results[0];
-        setTgSubtitleUrl(apiUrl(`/api/tg/subtitle/${bestSub.peerId}/${bestSub.id}`));
+        setTgSubtitleUrl(`/api/tg/subtitle/${bestSub.peerId}/${bestSub.id}`);
       }
     } catch (e) {
       console.error('Failed to fetch subtitles', e);
     }
   };
-
-  useEffect(() => {
-    if (!selectedMovie) {
-      setSelectedTitleInfo(null);
-      return;
-    }
-
-    const title = selectedMovie.title?.replace(/\s+\(.+\)$/, '') || selectedMovie.title;
-    const year = selectedMovie.year || '';
-    const type = selectedMovie.mediaType === 'series' ? 'series' : 'movie';
-
-    fetchApiJson(`/api/title-info?title=${encodeURIComponent(title)}&year=${encodeURIComponent(year)}&type=${encodeURIComponent(type)}`)
-      .then((data) => setSelectedTitleInfo(data.info || null))
-      .catch(() => setSelectedTitleInfo(null));
-  }, [selectedMovie]);
 
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative font-sans text-white" dir="rtl">
@@ -956,31 +705,8 @@ export default function App() {
 
       {/* Crosshair */}
       <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10">
-        <div className="relative flex items-center justify-center">
-          <div className={`h-4 w-4 rounded-full border transition-colors duration-200 ${hoveredPoster ? 'border-[#00ffcc] shadow-[0_0_16px_#00ffcc]' : 'border-white/70'}`} />
-          <div className={`absolute h-1.5 w-1.5 rounded-full transition-colors duration-200 ${hoveredPoster ? 'bg-[#00ffcc]' : 'bg-white/70'}`} />
-        </div>
+        <div className={`w-2 h-2 rounded-full transition-colors duration-200 ${hoveredPoster ? 'bg-[#00ffcc] shadow-[0_0_10px_#00ffcc]' : 'bg-white/50'}`} />
       </div>
-
-      {(currentCorridorLayer || genre === SERIES_GENRE || corridorTransitionLabel || isCorridorLoading) && (
-        <div className="pointer-events-none absolute top-6 left-1/2 z-20 flex -translate-x-1/2 flex-col items-center gap-3">
-          {(currentCorridorLayer || genre === SERIES_GENRE) && (
-            <div className="rounded-full border border-[#00ffcc]/25 bg-black/55 px-6 py-2 text-sm text-white backdrop-blur-md">
-              {currentCorridorLayer ? `${currentCorridorLayer.label} • חזור כדי לצאת שלב אחד` : 'ספריית סדרות • בחר סדרה כדי לפתוח עונות'}
-            </div>
-          )}
-          {isCorridorLoading && (
-            <div className="rounded-full border border-[#00ffcc]/25 bg-black/55 px-5 py-2 text-sm text-[#00ffcc] backdrop-blur-md">
-              טוען מסדרון פנימי...
-            </div>
-          )}
-          {corridorTransitionLabel && (
-            <div className="rounded-full border border-[#00ffcc]/30 bg-[#020b0d]/80 px-6 py-2 text-sm text-[#00ffcc] backdrop-blur-md">
-              הדלת נפתחת: {corridorTransitionLabel}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Hover Info (Locked Mode) */}
       <AnimatePresence>
@@ -1069,7 +795,7 @@ export default function App() {
               <div className="mb-8">
                 <label className="block text-xs font-mono text-[#00ffcc] mb-3 uppercase tracking-widest">סינון ז'אנר</label>
                 <div className="flex flex-wrap gap-2">
-                  {['הכל', SERIES_GENRE, 'ישראלי', 'פעולה', 'מדע בדיוני', 'אנימציה', 'מותחן', 'סרט'].map(g => (
+                  {['הכל', 'ישראלי', 'פעולה', 'מדע בדיוני', 'אנימציה', 'מותחן', 'סרט'].map(g => (
                     <button
                       key={g}
                       onClick={() => setGenre(g)}
@@ -1171,15 +897,12 @@ export default function App() {
               <div className="w-full md:w-2/3 p-6 md:p-10 flex flex-col">
                 <div className="flex items-center gap-3 mb-2">
                   <span className="px-3 py-1 bg-[#00ffcc]/10 text-[#00ffcc] border border-[#00ffcc]/20 rounded-full text-xs font-mono uppercase tracking-wider">
-                    {selectedTitleInfo?.genres || selectedMovie.genre}
+                    {selectedMovie.genre}
                   </span>
                   <span className="flex items-center gap-1 text-yellow-400 text-sm font-bold">
                     <Star size={16} fill="currentColor" />
-                    {selectedTitleInfo?.imdbRating || selectedMovie.rating}
+                    {selectedMovie.rating}
                   </span>
-                  {selectedTitleInfo?.year && (
-                    <span className="text-sm text-gray-300">{selectedTitleInfo.year}</span>
-                  )}
                   {favorites.includes(selectedMovie.id) && (
                     <span className="flex items-center gap-1 text-[#ff0055] text-sm font-bold mr-auto">
                       <Heart size={16} fill="currentColor" />
@@ -1190,7 +913,7 @@ export default function App() {
                 
                 <h2 className="text-3xl md:text-5xl font-bold mb-4">{selectedMovie.title}</h2>
                 <p className="text-gray-400 mb-8 leading-relaxed text-lg">
-                  {selectedTitleInfo?.plot || selectedMovie.desc}
+                  {selectedMovie.desc}
                 </p>
 
                 {/* Trailer Video */}
@@ -1315,7 +1038,7 @@ export default function App() {
           >
             <div className="w-full h-full max-w-7xl flex flex-col relative">
               <button 
-                onClick={() => { setShowCinemaScreen(false); setTgVideoUrl(null); setTmdStatusLabel(''); }}
+                onClick={() => { setShowCinemaScreen(false); setTgVideoUrl(null); }}
                 className="absolute top-0 right-0 z-50 p-3 bg-white/10 hover:bg-red-500 rounded-full transition-colors"
               >
                 <X size={24} />
@@ -1324,7 +1047,6 @@ export default function App() {
               <div className="text-center mb-6">
                 <h2 className="text-3xl font-bold text-[#2AABEE] uppercase tracking-widest">מסך קולנוע: {selectedMovie?.title}</h2>
                 <p className="text-gray-400">מקורות צפייה מקבוצות הטלגרם שלך</p>
-                {tmdStatusLabel && <p className="text-sm text-[#2AABEE] mt-2">{tmdStatusLabel}</p>}
               </div>
 
               {/* Main Screen Area */}
@@ -1364,11 +1086,6 @@ export default function App() {
                         <Loader2 className="animate-spin w-16 h-16 mb-4" />
                         <p className="text-xl animate-pulse">סורק את מאגר הטלגרם...</p>
                       </div>
-                    ) : isTmdLoading ? (
-                      <div className="flex flex-col items-center justify-center h-full text-[#2AABEE]">
-                        <Loader2 className="animate-spin w-16 h-16 mb-4" />
-                        <p className="text-xl animate-pulse">{tmdStatusLabel || 'מוריד מטלגרם דרך TMD...'}</p>
-                      </div>
                     ) : tgSearchResults.length === 0 ? (
                       <div className="flex flex-col items-center justify-center h-full text-gray-500">
                         <Search className="w-16 h-16 mb-4 opacity-50" />
@@ -1379,7 +1096,7 @@ export default function App() {
                         {tgSearchResults.map((res, idx) => (
                           <button 
                             key={idx} 
-                            onClick={() => playTgVideo(res)}
+                            onClick={() => playTgVideo(res.peerId, res.id)}
                             className="bg-white/5 border border-white/10 hover:border-[#2AABEE] p-4 rounded-xl cursor-pointer transition-all hover:bg-white/10 group focus:ring-4 focus:ring-[#2AABEE] focus:outline-none text-right w-full"
                           >
                             <div className="flex items-start gap-4">
@@ -1389,9 +1106,6 @@ export default function App() {
                               <div className="flex-1 min-w-0 text-right">
                                 <h3 className="font-bold text-white truncate" dir="ltr">{res.title}</h3>
                                 <p className="text-sm text-gray-400 truncate mt-1">מאת: {res.chatName}</p>
-                                {res.canUseTmd && (
-                                  <p className="text-xs text-[#2AABEE] mt-1">זמין גם דרך TMD</p>
-                                )}
                                 <div className="flex items-center justify-end gap-3 mt-2 text-xs text-gray-500 font-mono">
                                   <span>{res.size}</span>
                                   <span>•</span>
