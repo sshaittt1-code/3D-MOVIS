@@ -10,6 +10,8 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = 3000;
+const TMDB_API_BASE = 'https://api.themoviedb.org/3';
+const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p';
 
 // In-memory storage for the session (in a real app, save to DB)
 let sessionString = '';
@@ -19,6 +21,101 @@ let tgClient: TelegramClient | null = null;
 let resolveCode: ((code: string) => void) | null = null;
 let resolvePassword: ((pw: string) => void) | null = null;
 let rejectLogin: ((err: any) => void) | null = null;
+
+const buildTmdbApiUrl = (path: string, params: Record<string, string | number>) => {
+  const url = new URL(`${TMDB_API_BASE}${path}`);
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, String(value)));
+  return url.toString();
+};
+
+const buildPosterProxyPath = (posterPath: string | null | undefined, size = 'w780') => {
+  if (!posterPath) return '';
+  return `/api/poster?path=${encodeURIComponent(posterPath)}&size=${encodeURIComponent(size)}`;
+};
+
+const fetchTmdbCatalog = async (tmdbKey: string) => {
+  const language = 'he-IL';
+  const fallbackLanguage = 'en-US';
+  const catalogRequests = [
+    ['/movie/popular', 1],
+    ['/movie/popular', 2],
+    ['/movie/popular', 3],
+    ['/movie/top_rated', 1],
+    ['/movie/top_rated', 2],
+    ['/movie/now_playing', 1],
+    ['/movie/now_playing', 2],
+    ['/movie/upcoming', 1],
+    ['/movie/upcoming', 2],
+    ['/discover/movie', 1],
+    ['/discover/movie', 2],
+    ['/discover/movie', 3],
+  ] as const;
+
+  const [genreResponse, ...catalogResponses] = await Promise.all([
+    fetch(buildTmdbApiUrl('/genre/movie/list', { api_key: tmdbKey, language })),
+    ...catalogRequests.map(([path, page]) =>
+      fetch(
+        buildTmdbApiUrl(path, {
+          api_key: tmdbKey,
+          language,
+          page,
+          include_adult: 'false',
+          sort_by: path === '/discover/movie' ? 'popularity.desc' : 'popularity.desc',
+          'vote_count.gte': path === '/discover/movie' ? 200 : 0,
+        }),
+      ),
+    ),
+  ]);
+
+  const genrePayload = await genreResponse.json();
+  const genreMap = new Map<number, string>((genrePayload.genres || []).map((genre: any) => [genre.id, genre.name]));
+
+  const payloads = await Promise.all(catalogResponses.map((response) => response.json()));
+  const uniqueMovies = new Map<number, any>();
+
+  for (const payload of payloads) {
+    for (const movie of payload.results || []) {
+      if (!movie?.id || !movie.poster_path || uniqueMovies.has(movie.id)) {
+        continue;
+      }
+
+      uniqueMovies.set(movie.id, {
+        id: movie.id,
+        title: movie.title || movie.original_title || 'Untitled',
+        genre: genreMap.get(movie.genre_ids?.[0]) || 'סרט',
+        rating: Number(movie.vote_average || 0).toFixed(1),
+        popularity: Math.round(movie.popularity || 0),
+        poster: buildPosterProxyPath(movie.poster_path),
+        backdrop: movie.backdrop_path ? buildPosterProxyPath(movie.backdrop_path, 'w1280') : '',
+        trailer: '',
+        desc: movie.overview || 'אין תיאור זמין כרגע.',
+        year: movie.release_date ? String(movie.release_date).slice(0, 4) : '',
+      });
+    }
+  }
+
+  const movies = Array.from(uniqueMovies.values());
+  if (movies.length > 0) {
+    return movies;
+  }
+
+  const fallbackResponse = await fetch(buildTmdbApiUrl('/movie/popular', { api_key: tmdbKey, language: fallbackLanguage, page: 1 }));
+  const fallbackPayload = await fallbackResponse.json();
+  return (fallbackPayload.results || [])
+    .filter((movie: any) => movie?.poster_path)
+    .map((movie: any) => ({
+      id: movie.id,
+      title: movie.title || movie.original_title || 'Untitled',
+      genre: 'Movie',
+      rating: Number(movie.vote_average || 0).toFixed(1),
+      popularity: Math.round(movie.popularity || 0),
+      poster: buildPosterProxyPath(movie.poster_path),
+      backdrop: movie.backdrop_path ? buildPosterProxyPath(movie.backdrop_path, 'w1280') : '',
+      trailer: '',
+      desc: movie.overview || 'No description available.',
+      year: movie.release_date ? String(movie.release_date).slice(0, 4) : '',
+    }));
+};
 
 const getClient = async () => {
   if (tgClient) return tgClient;
@@ -267,22 +364,36 @@ app.get('/api/tg/subtitle/:peerId/:messageId', async (req, res) => {
 });
 
 // Fetch Movies (TMDB or Fallback)
+app.get('/api/poster', async (req, res) => {
+  try {
+    const path = typeof req.query.path === 'string' ? req.query.path : '';
+    const size = typeof req.query.size === 'string' ? req.query.size : 'w780';
+
+    if (!path) {
+      return res.status(400).send('Missing poster path');
+    }
+
+    const posterResponse = await fetch(`${TMDB_IMAGE_BASE}/${size}${path}`);
+    if (!posterResponse.ok) {
+      return res.status(posterResponse.status).send('Poster not found');
+    }
+
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', posterResponse.headers.get('content-type') || 'image/jpeg');
+
+    const buffer = Buffer.from(await posterResponse.arrayBuffer());
+    res.send(buffer);
+  } catch (e: any) {
+    res.status(500).send(e.message);
+  }
+});
+
 app.get('/api/movies', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
     if (tmdbKey) {
-      const response = await fetch(`https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=1`);
-      const data = await response.json();
-      const movies = data.results.map((m: any) => ({
-        id: m.id,
-        title: m.title,
-        genre: 'סרט',
-        rating: m.vote_average,
-        popularity: m.popularity,
-        poster: `https://image.tmdb.org/t/p/w500${m.poster_path}`,
-        trailer: '', 
-        desc: m.overview || 'אין תיאור זמין בעברית.'
-      }));
+      const movies = await fetchTmdbCatalog(tmdbKey);
       return res.json({ movies });
     }
     

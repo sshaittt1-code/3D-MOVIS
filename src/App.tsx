@@ -7,6 +7,24 @@ import { X, Play, Info, Star, TrendingUp, Type, Film, Heart, Shuffle, Search, Ph
 
 const API_BASE_URL = 'https://ais-pre-zgturhw4row6gtvlf3jbq3-185322315707.europe-west2.run.app';
 const apiUrl = (path: string) => `${API_BASE_URL}${path}`;
+const withApiOrigin = (url?: string) => {
+  if (!url) return url;
+  return url.startsWith('/api/') ? apiUrl(url) : url;
+};
+const withPosterProxy = (url?: string) => {
+  if (!url) return url;
+  if (url.startsWith('/api/')) return apiUrl(url);
+
+  if (url.includes('image.tmdb.org/t/p/')) {
+    const match = url.match(/image\.tmdb\.org\/t\/p\/([^/]+)(\/.+)$/);
+    if (match) {
+      const [, size, path] = match;
+      return apiUrl(`/api/poster?path=${encodeURIComponent(path)}&size=${encodeURIComponent(size)}`);
+    }
+  }
+
+  return url;
+};
 
 // Extended Mock Data with Israeli content (Fallback if API fails)
 const BASE_MOVIES: any[] = [
@@ -355,10 +373,21 @@ export default function App() {
         if (!res.ok) throw new Error('Network response was not ok');
         return res.json();
       })
-      .then(data => setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES))
+      .then(data => {
+        const movies = data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES;
+        setBaseMovies(movies.map((movie: any) => ({
+          ...movie,
+          poster: withPosterProxy(movie.poster),
+          backdrop: withPosterProxy(movie.backdrop),
+        })));
+      })
       .catch(err => {
         console.error('Failed to fetch movies, using fallback', err);
-        setBaseMovies(BASE_MOVIES);
+        setBaseMovies(BASE_MOVIES.map((movie) => ({
+          ...movie,
+          poster: withPosterProxy(movie.poster),
+          backdrop: withPosterProxy(movie.backdrop),
+        })));
       });
 
     // Smart Update System: Check GitHub for new commits
@@ -453,11 +482,12 @@ export default function App() {
       else if (sortBy === 'name') sorted.sort((a, b) => a.title.localeCompare(b.title));
     }
 
-    // Repeat the array 10 times to create an "infinite" corridor feel
-    // If filtered is empty, return empty array
     if (sorted.length === 0) return [];
-    
-    return Array(10).fill(sorted).flat().map((m, i) => ({
+
+    const minCorridorEntries = 80;
+    const repeatCount = Math.max(1, Math.ceil(minCorridorEntries / sorted.length));
+
+    return Array(repeatCount).fill(sorted).flat().map((m, i) => ({
       ...m,
       uniqueId: `${m.id}-${i}`
     }));
