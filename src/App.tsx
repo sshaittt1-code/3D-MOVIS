@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { PointerLockControls, Text, Environment, SpotLight } from '@react-three/drei';
+import { PointerLockControls, Text, Environment, SpotLight, useGLTF, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Play, Info, Star, TrendingUp, Type, Film, Heart, Shuffle, Search, Phone, Key, Lock, Loader2 } from 'lucide-react';
@@ -25,6 +25,14 @@ const withPosterProxy = (url?: string) => {
 
   return url;
 };
+
+const CINEMA_TEXTURES = {
+  wall: '/textures/velour_velvet_diff_1k.jpg',
+  carpet: '/textures/quatrefoil_jacquard_fabric_diff_1k.jpg',
+  panel: '/textures/fabric_leather_01_diff_1k.jpg',
+};
+
+const SERIES_GENRE = 'סדרות';
 
 // Extended Mock Data with Israeli content (Fallback if API fails)
 const BASE_MOVIES: any[] = [
@@ -268,8 +276,28 @@ const CameraController = ({ isLocked, isTvMode, corridorZ, lookDirection }: any)
   return null;
 };
 
+const CinemaSeat = ({ position, rotation }: any) => {
+  const { scene } = useGLTF('/models/SheenChair.glb');
+  const seat = scene.clone();
+
+  return <primitive object={seat} position={position} rotation={rotation} scale={[1.4, 1.4, 1.4]} />;
+};
+
 const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggleFavorite, isTvMode, isLocked, corridorZ, lookDirection }: any) => {
   const length = (movies.length / 2) * 5 + 10;
+  const wallTexture = useTexture(CINEMA_TEXTURES.wall);
+  const carpetTexture = useTexture(CINEMA_TEXTURES.carpet);
+  const panelTexture = useTexture(CINEMA_TEXTURES.panel);
+
+  [wallTexture, carpetTexture, panelTexture].forEach((texture) => {
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.colorSpace = THREE.SRGBColorSpace;
+  });
+
+  wallTexture.repeat.set(length / 12, 2);
+  carpetTexture.repeat.set(3, length / 8);
+  panelTexture.repeat.set(length / 10, 2);
   
   // Generate holographic arches
   const numArches = Math.floor(length / 10);
@@ -295,13 +323,13 @@ const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggle
       {/* Floor */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, -length / 2 + 5]}>
         <planeGeometry args={[10, length]} />
-        <meshStandardMaterial color="#050505" roughness={0.8} metalness={0.2} />
+        <meshStandardMaterial map={carpetTexture} color="#1f1614" roughness={0.88} metalness={0.05} />
       </mesh>
 
       {/* Holographic Path / Red Carpet */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, -length / 2 + 5]}>
         <planeGeometry args={[3, length]} />
-        <meshStandardMaterial color="#001122" roughness={0.4} metalness={0.8} />
+        <meshStandardMaterial map={panelTexture} color="#4a0d15" roughness={0.72} metalness={0.12} />
       </mesh>
       {/* Path glowing edges */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[-1.5, 0.02, -length / 2 + 5]}>
@@ -316,19 +344,19 @@ const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggle
       {/* Ceiling */}
       <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 5, -length / 2 + 5]}>
         <planeGeometry args={[10, length]} />
-        <meshStandardMaterial color="#020202" roughness={0.9} metalness={0.1} />
+        <meshStandardMaterial map={wallTexture} color="#1d0b10" roughness={0.95} metalness={0.02} />
       </mesh>
 
       {/* Left Wall */}
       <mesh position={[-5, 2.5, -length / 2 + 5]} rotation={[0, Math.PI / 2, 0]}>
         <planeGeometry args={[length, 5]} />
-        <meshStandardMaterial color="#0a0a0a" roughness={0.5} metalness={0.5} />
+        <meshStandardMaterial map={wallTexture} color="#2a1118" roughness={0.82} metalness={0.08} />
       </mesh>
 
       {/* Right Wall */}
       <mesh position={[5, 2.5, -length / 2 + 5]} rotation={[0, -Math.PI / 2, 0]}>
         <planeGeometry args={[length, 5]} />
-        <meshStandardMaterial color="#0a0a0a" roughness={0.5} metalness={0.5} />
+        <meshStandardMaterial map={wallTexture} color="#2a1118" roughness={0.82} metalness={0.08} />
       </mesh>
       
       {/* Grid Helpers for holographic feel */}
@@ -336,6 +364,16 @@ const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggle
       <gridHelper args={[10, length, '#00ffcc', '#003322']} position={[0, 4.99, -length / 2 + 5]} rotation={[0, 0, 0]} />
 
       {arches}
+
+      {Array.from({ length: Math.max(2, Math.floor(length / 14)) }).map((_, i) => {
+        const z = -i * 14 - 4;
+        return (
+          <React.Fragment key={`seat-row-${i}`}>
+            <CinemaSeat position={[-3.2, 0.05, z]} rotation={[0, Math.PI / 2, 0]} />
+            <CinemaSeat position={[3.2, 0.05, z]} rotation={[0, -Math.PI / 2, 0]} />
+          </React.Fragment>
+        );
+      })}
 
       {/* Posters */}
       {movies.map((movie: any, index: number) => {
@@ -362,10 +400,14 @@ const Corridor = ({ movies, onPosterClick, setHoveredPoster, favorites, onToggle
 
 export default function App() {
   const [baseMovies, setBaseMovies] = useState<any[]>([]);
+  const [seriesCatalog, setSeriesCatalog] = useState<any[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<any>(null);
   const [isLocked, setIsLocked] = useState(false);
   const [hoveredPoster, setHoveredPoster] = useState<any>(null);
   const controlsRef = useRef<any>(null);
+  const [corridorStack, setCorridorStack] = useState<any[]>([]);
+  const [isCorridorLoading, setIsCorridorLoading] = useState(false);
+  const [corridorTransitionLabel, setCorridorTransitionLabel] = useState('');
 
   useEffect(() => {
     fetch(apiUrl('/api/movies'))
@@ -388,6 +430,22 @@ export default function App() {
           poster: withPosterProxy(movie.poster),
           backdrop: withPosterProxy(movie.backdrop),
         })));
+      });
+
+    fetch(apiUrl('/api/series'))
+      .then((res) => {
+        if (!res.ok) throw new Error('Series network response was not ok');
+        return res.json();
+      })
+      .then((data) => {
+        setSeriesCatalog((data.series || []).map((item: any) => ({
+          ...item,
+          mediaType: item.mediaType || 'series',
+          poster: withPosterProxy(item.poster),
+        })));
+      })
+      .catch((err) => {
+        console.error('Failed to fetch series', err);
       });
 
     // Smart Update System: Check GitHub for new commits
@@ -459,8 +517,83 @@ export default function App() {
     setFavorites(prev => prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id]);
   };
 
+  const currentCorridorLayer = corridorStack[corridorStack.length - 1] || null;
+
+  const openCorridorLayer = (label: string, items: any[], meta: Record<string, any> = {}) => {
+    setCorridorTransitionLabel(label);
+    setCorridorStack((prev) => [...prev, { label, items, ...meta }]);
+    setCorridorZ(0);
+    setLookDirection('forward');
+    window.setTimeout(() => setCorridorTransitionLabel(''), 650);
+  };
+
+  const goBackCorridorLayer = () => {
+    setCorridorStack((prev) => prev.slice(0, -1));
+    setCorridorZ(0);
+    setLookDirection('forward');
+    setSelectedMovie(null);
+  };
+
+  const openSeriesSeasons = async (series: any) => {
+    setIsCorridorLoading(true);
+    try {
+      const res = await fetch(apiUrl(`/api/series/${series.id}/seasons`));
+      const data = await res.json();
+      const seasons = (data.seasons || []).map((item: any) => ({
+        ...item,
+        mediaType: 'season',
+        poster: withPosterProxy(item.poster || series.poster),
+        seriesTitle: series.title,
+      }));
+      openCorridorLayer(`פתיחת ${series.title}`, seasons, { type: 'seasons', parent: series });
+    } finally {
+      setIsCorridorLoading(false);
+    }
+  };
+
+  const openSeasonEpisodes = async (series: any, season: any) => {
+    setIsCorridorLoading(true);
+    try {
+      const res = await fetch(apiUrl(`/api/series/${series.id}/seasons/${season.seasonNumber}/episodes`));
+      const data = await res.json();
+      const episodes = (data.episodes || []).map((item: any) => ({
+        ...item,
+        mediaType: 'episode',
+        poster: withPosterProxy(item.poster || season.poster || series.poster),
+        seriesTitle: series.title,
+        seasonTitle: season.title,
+      }));
+      openCorridorLayer(`${series.title} • ${season.title}`, episodes, { type: 'episodes', parent: season, series });
+    } finally {
+      setIsCorridorLoading(false);
+    }
+  };
+
   // Generate "Infinite" Movie List based on filters
   const displayMovies = useMemo(() => {
+    if (currentCorridorLayer) {
+      const items = currentCorridorLayer.items || [];
+      if (items.length === 0) return [];
+
+      const minCorridorEntries = currentCorridorLayer.type === 'episodes' ? 30 : 24;
+      const repeatCount = Math.max(1, Math.ceil(minCorridorEntries / items.length));
+      return Array(repeatCount).fill(items).flat().map((m, i) => ({
+        ...m,
+        uniqueId: `${m.id}-${i}`,
+      }));
+    }
+
+    if (genre === SERIES_GENRE) {
+      const items = seriesCatalog;
+      if (items.length === 0) return [];
+
+      const repeatCount = Math.max(1, Math.ceil(36 / items.length));
+      return Array(repeatCount).fill(items).flat().map((m, i) => ({
+        ...m,
+        uniqueId: `${m.id}-${i}`,
+      }));
+    }
+
     let filtered = baseMovies;
     
     // Apply Genre / Category Filter
@@ -491,11 +624,23 @@ export default function App() {
       ...m,
       uniqueId: `${m.id}-${i}`
     }));
-  }, [baseMovies, sortBy, genre, favorites]);
+  }, [baseMovies, sortBy, genre, favorites, currentCorridorLayer, seriesCatalog]);
 
   const corridorLength = (displayMovies.length / 2) * 5 + 10;
 
-  const handlePosterClick = (movie: any) => {
+  const handlePosterClick = async (movie: any) => {
+    if (genre === SERIES_GENRE || currentCorridorLayer) {
+      if ((genre === SERIES_GENRE || currentCorridorLayer?.type === 'seasons') && movie.mediaType === 'series') {
+        await openSeriesSeasons(movie);
+        return;
+      }
+
+      if (currentCorridorLayer?.type === 'seasons' && movie.mediaType === 'season') {
+        await openSeasonEpisodes(currentCorridorLayer.parent, movie);
+        return;
+      }
+    }
+
     setSelectedMovie(movie);
     if (controlsRef.current) {
       controlsRef.current.unlock();
@@ -526,12 +671,14 @@ export default function App() {
             const index = corridorZ * 2 + (isLookingLeft ? 0 : 1);
             const movie = displayMovies[index];
             if (movie) {
-              setSelectedMovie(movie);
-              setIsLocked(false);
-              document.exitPointerLock?.();
+              void handlePosterClick(movie);
             }
           }
         } else if (e.key === 'Escape' || e.key === 'Backspace') {
+          if (currentCorridorLayer) {
+            goBackCorridorLayer();
+            return;
+          }
           setIsLocked(false);
           document.exitPointerLock?.();
         }
@@ -547,11 +694,13 @@ export default function App() {
             setShowCinemaScreen(false);
           }
         }
+      } else if ((e.key === 'Escape' || e.key === 'Backspace') && currentCorridorLayer) {
+        goBackCorridorLayer();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isLocked, selectedMovie, showTgLogin, showCinemaScreen, tgVideoUrl, corridorZ, lookDirection, displayMovies]);
+  }, [isLocked, selectedMovie, showTgLogin, showCinemaScreen, tgVideoUrl, corridorZ, lookDirection, displayMovies, currentCorridorLayer, genre]);
 
   useEffect(() => {
     if (!isLocked && !selectedMovie && sidebarRef.current) {
@@ -570,6 +719,12 @@ export default function App() {
   const handleCloseModal = () => {
     setSelectedMovie(null);
   };
+
+  useEffect(() => {
+    if (genre !== SERIES_GENRE && corridorStack.length > 0) {
+      setCorridorStack([]);
+    }
+  }, [genre, corridorStack.length]);
 
   const handleTelegramSearch = async () => {
     try {
@@ -738,8 +893,31 @@ export default function App() {
 
       {/* Crosshair */}
       <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10">
-        <div className={`w-2 h-2 rounded-full transition-colors duration-200 ${hoveredPoster ? 'bg-[#00ffcc] shadow-[0_0_10px_#00ffcc]' : 'bg-white/50'}`} />
+        <div className="relative flex items-center justify-center">
+          <div className={`h-4 w-4 rounded-full border transition-colors duration-200 ${hoveredPoster ? 'border-[#00ffcc] shadow-[0_0_16px_#00ffcc]' : 'border-white/70'}`} />
+          <div className={`absolute h-1.5 w-1.5 rounded-full transition-colors duration-200 ${hoveredPoster ? 'bg-[#00ffcc]' : 'bg-white/70'}`} />
+        </div>
       </div>
+
+      {(currentCorridorLayer || genre === SERIES_GENRE || corridorTransitionLabel || isCorridorLoading) && (
+        <div className="pointer-events-none absolute top-6 left-1/2 z-20 flex -translate-x-1/2 flex-col items-center gap-3">
+          {(currentCorridorLayer || genre === SERIES_GENRE) && (
+            <div className="rounded-full border border-[#00ffcc]/25 bg-black/55 px-6 py-2 text-sm text-white backdrop-blur-md">
+              {currentCorridorLayer ? `${currentCorridorLayer.label} • חזור כדי לצאת שלב אחד` : 'ספריית סדרות • בחר סדרה כדי לפתוח עונות'}
+            </div>
+          )}
+          {isCorridorLoading && (
+            <div className="rounded-full border border-[#00ffcc]/25 bg-black/55 px-5 py-2 text-sm text-[#00ffcc] backdrop-blur-md">
+              טוען מסדרון פנימי...
+            </div>
+          )}
+          {corridorTransitionLabel && (
+            <div className="rounded-full border border-[#00ffcc]/30 bg-[#020b0d]/80 px-6 py-2 text-sm text-[#00ffcc] backdrop-blur-md">
+              הדלת נפתחת: {corridorTransitionLabel}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Hover Info (Locked Mode) */}
       <AnimatePresence>
@@ -828,7 +1006,7 @@ export default function App() {
               <div className="mb-8">
                 <label className="block text-xs font-mono text-[#00ffcc] mb-3 uppercase tracking-widest">סינון ז'אנר</label>
                 <div className="flex flex-wrap gap-2">
-                  {['הכל', 'ישראלי', 'פעולה', 'מדע בדיוני', 'אנימציה', 'מותחן', 'סרט'].map(g => (
+                  {['הכל', SERIES_GENRE, 'ישראלי', 'פעולה', 'מדע בדיוני', 'אנימציה', 'מותחן', 'סרט'].map(g => (
                     <button
                       key={g}
                       onClick={() => setGenre(g)}

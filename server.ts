@@ -33,6 +33,75 @@ const buildPosterProxyPath = (posterPath: string | null | undefined, size = 'w78
   return `/api/poster?path=${encodeURIComponent(posterPath)}&size=${encodeURIComponent(size)}`;
 };
 
+const FALLBACK_SERIES = [
+  {
+    id: 1001,
+    title: 'Stranger Things',
+    genre: 'Series',
+    rating: '8.7',
+    popularity: 94,
+    poster: 'https://image.tmdb.org/t/p/w500/49WJfeN0moxb9IPfGn8AIqMGskD.jpg',
+    desc: 'A group of kids uncovers mysteries, experiments, and creatures from another dimension.',
+    seasons: [
+      {
+        id: 1101,
+        title: 'Season 1',
+        seasonNumber: 1,
+        rating: '8.6',
+        popularity: 90,
+        poster: 'https://image.tmdb.org/t/p/w500/49WJfeN0moxb9IPfGn8AIqMGskD.jpg',
+        desc: 'The disappearance of Will Byers opens a supernatural mystery.',
+        episodes: [
+          { id: 11101, title: 'Chapter One: The Vanishing of Will Byers', episodeNumber: 1, rating: '8.5', popularity: 88, poster: 'https://image.tmdb.org/t/p/w500/49WJfeN0moxb9IPfGn8AIqMGskD.jpg', desc: 'Will disappears and Eleven appears.' },
+          { id: 11102, title: 'Chapter Two: The Weirdo on Maple Street', episodeNumber: 2, rating: '8.3', popularity: 86, poster: 'https://image.tmdb.org/t/p/w500/49WJfeN0moxb9IPfGn8AIqMGskD.jpg', desc: 'The boys hide Eleven and the search intensifies.' },
+        ],
+      },
+      {
+        id: 1102,
+        title: 'Season 2',
+        seasonNumber: 2,
+        rating: '8.4',
+        popularity: 87,
+        poster: 'https://image.tmdb.org/t/p/w500/x2LSRK2Cm7MZhjluni1msVJ3wDF.jpg',
+        desc: 'The gate is still open and Hawkins is not safe yet.',
+        episodes: [
+          { id: 11201, title: 'MADMAX', episodeNumber: 1, rating: '8.2', popularity: 84, poster: 'https://image.tmdb.org/t/p/w500/x2LSRK2Cm7MZhjluni1msVJ3wDF.jpg', desc: 'A new school year begins with a new mystery.' },
+          { id: 11202, title: 'Trick or Treat, Freak', episodeNumber: 2, rating: '8.0', popularity: 82, poster: 'https://image.tmdb.org/t/p/w500/x2LSRK2Cm7MZhjluni1msVJ3wDF.jpg', desc: 'The gang senses something is wrong again.' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 1002,
+    title: 'Breaking Bad',
+    genre: 'Series',
+    rating: '9.5',
+    popularity: 97,
+    poster: 'https://image.tmdb.org/t/p/w500/ztkUQFLlC19CCMYHW9o1zWhJRNq.jpg',
+    desc: 'A chemistry teacher turns to meth production and transforms his life.',
+    seasons: [
+      {
+        id: 1201,
+        title: 'Season 1',
+        seasonNumber: 1,
+        rating: '9.0',
+        popularity: 93,
+        poster: 'https://image.tmdb.org/t/p/w500/ztkUQFLlC19CCMYHW9o1zWhJRNq.jpg',
+        desc: 'Walter White takes his first steps into a criminal empire.',
+        episodes: [
+          { id: 12101, title: 'Pilot', episodeNumber: 1, rating: '8.9', popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/ztkUQFLlC19CCMYHW9o1zWhJRNq.jpg', desc: 'Walter White makes a desperate decision.' },
+          { id: 12102, title: 'Cat\'s in the Bag...', episodeNumber: 2, rating: '8.7', popularity: 88, poster: 'https://image.tmdb.org/t/p/w500/ztkUQFLlC19CCMYHW9o1zWhJRNq.jpg', desc: 'Walter and Jesse try to clean up the mess.' },
+        ],
+      },
+    ],
+  },
+];
+
+const withPosterProxyObject = (item: any) => ({
+  ...item,
+  poster: item.poster?.includes('/api/poster') ? item.poster : item.poster,
+});
+
 const fetchTmdbCatalog = async (tmdbKey: string) => {
   const language = 'he-IL';
   const fallbackLanguage = 'en-US';
@@ -115,6 +184,71 @@ const fetchTmdbCatalog = async (tmdbKey: string) => {
       desc: movie.overview || 'No description available.',
       year: movie.release_date ? String(movie.release_date).slice(0, 4) : '',
     }));
+};
+
+const fetchTmdbSeriesCatalog = async (tmdbKey: string) => {
+  const language = 'en-US';
+  const pages = [1, 2, 3, 4];
+  const responses = await Promise.all(
+    pages.flatMap((page) => [
+      fetch(buildTmdbApiUrl('/tv/popular', { api_key: tmdbKey, language, page })),
+      fetch(buildTmdbApiUrl('/tv/top_rated', { api_key: tmdbKey, language, page })),
+      fetch(buildTmdbApiUrl('/tv/on_the_air', { api_key: tmdbKey, language, page })),
+    ]),
+  );
+  const payloads = await Promise.all(responses.map((response) => response.json()));
+  const uniqueSeries = new Map<number, any>();
+
+  for (const payload of payloads) {
+    for (const show of payload.results || []) {
+      if (!show?.id || !show.poster_path || uniqueSeries.has(show.id)) continue;
+      uniqueSeries.set(show.id, {
+        id: show.id,
+        title: show.name || show.original_name || 'Untitled Series',
+        genre: 'Series',
+        rating: Number(show.vote_average || 0).toFixed(1),
+        popularity: Math.round(show.popularity || 0),
+        poster: buildPosterProxyPath(show.poster_path),
+        desc: show.overview || 'No description available.',
+        mediaType: 'series',
+      });
+    }
+  }
+
+  return Array.from(uniqueSeries.values());
+};
+
+const fetchTmdbSeasons = async (tmdbKey: string, seriesId: string) => {
+  const response = await fetch(buildTmdbApiUrl(`/tv/${seriesId}`, { api_key: tmdbKey, language: 'en-US' }));
+  const show = await response.json();
+  return (show.seasons || [])
+    .filter((season: any) => season.season_number > 0)
+    .map((season: any) => ({
+      id: season.id,
+      seriesId: Number(seriesId),
+      title: season.name || `Season ${season.season_number}`,
+      seasonNumber: season.season_number,
+      rating: show.vote_average ? Number(show.vote_average).toFixed(1) : '0.0',
+      popularity: Math.round(show.popularity || 0),
+      poster: buildPosterProxyPath(season.poster_path || show.poster_path),
+      desc: season.overview || show.overview || 'No description available.',
+      mediaType: 'season',
+    }));
+};
+
+const fetchTmdbEpisodes = async (tmdbKey: string, seriesId: string, seasonNumber: string) => {
+  const response = await fetch(buildTmdbApiUrl(`/tv/${seriesId}/season/${seasonNumber}`, { api_key: tmdbKey, language: 'en-US' }));
+  const season = await response.json();
+  return (season.episodes || []).map((episode: any) => ({
+    id: episode.id,
+    title: episode.name || `Episode ${episode.episode_number}`,
+    episodeNumber: episode.episode_number,
+    rating: episode.vote_average ? Number(episode.vote_average).toFixed(1) : '0.0',
+    popularity: Math.round(episode.vote_average ? episode.vote_average * 10 : 0),
+    poster: buildPosterProxyPath(episode.still_path || season.poster_path),
+    desc: episode.overview || 'No description available.',
+    mediaType: 'episode',
+  }));
 };
 
 const getClient = async () => {
@@ -415,6 +549,61 @@ app.get('/api/movies', async (req, res) => {
       { id: 14, title: 'שטיסל (Shtisel)', genre: 'ישראלי', rating: 8.6, popularity: 82, poster: 'https://image.tmdb.org/t/p/w500/1W1hA12R1XQ.jpg', trailer: 'https://www.youtube.com/embed/1W1hA12R1XQ', desc: 'משפחה חרדית המתגוררת בשכונה חרדית בירושלים מתמודדת עם אהבה, אובדן ושגרת חיי היומיום.' },
     ];
     res.json({ movies: fallback });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/series', async (req, res) => {
+  try {
+    const tmdbKey = process.env.TMDB_API_KEY;
+    if (tmdbKey) {
+      const series = await fetchTmdbSeriesCatalog(tmdbKey);
+      return res.json({ series });
+    }
+
+    res.json({
+      series: FALLBACK_SERIES.map(({ seasons, ...series }) => withPosterProxyObject(series)),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/series/:seriesId/seasons', async (req, res) => {
+  try {
+    const tmdbKey = process.env.TMDB_API_KEY;
+    if (tmdbKey) {
+      const seasons = await fetchTmdbSeasons(tmdbKey, req.params.seriesId);
+      return res.json({ seasons });
+    }
+
+    const series = FALLBACK_SERIES.find((item) => String(item.id) === req.params.seriesId);
+    if (!series) return res.status(404).json({ error: 'Series not found' });
+
+    res.json({
+      seasons: series.seasons.map(({ episodes, ...season }) => withPosterProxyObject(season)),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/series/:seriesId/seasons/:seasonNumber/episodes', async (req, res) => {
+  try {
+    const tmdbKey = process.env.TMDB_API_KEY;
+    if (tmdbKey) {
+      const episodes = await fetchTmdbEpisodes(tmdbKey, req.params.seriesId, req.params.seasonNumber);
+      return res.json({ episodes });
+    }
+
+    const series = FALLBACK_SERIES.find((item) => String(item.id) === req.params.seriesId);
+    const season = series?.seasons.find((item) => String(item.seasonNumber) === req.params.seasonNumber);
+    if (!season) return res.status(404).json({ error: 'Season not found' });
+
+    res.json({
+      episodes: season.episodes.map((episode) => withPosterProxyObject(episode)),
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
