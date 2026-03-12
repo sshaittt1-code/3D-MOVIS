@@ -2,14 +2,17 @@ package com.holocinema.tv;
 
 import android.os.Bundle;
 import android.os.Message;
+import android.net.Uri;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebChromeClient;
+import com.getcapacitor.BridgeWebViewClient;
 
 public class MainActivity extends BridgeActivity {
+    private static final String AI_STUDIO_HOST = "ais-pre-zgturhw4row6gtvlf3jbq3-185322315707.europe-west2.run.app";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -41,6 +44,17 @@ public class MainActivity extends BridgeActivity {
                 transport.setWebView(popupWebView);
                 resultMsg.sendToTarget();
                 return true;
+            }
+        });
+
+        webView.setWebViewClient(new BridgeWebViewClient(getBridge()) {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                Uri url = request.getUrl();
+                if (AI_STUDIO_HOST.equalsIgnoreCase(url.getHost())) {
+                    return false;
+                }
+                return super.shouldOverrideUrlLoading(view, request);
             }
         });
     }
