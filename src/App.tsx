@@ -5,6 +5,9 @@ import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Play, Info, Star, TrendingUp, Type, Film, Heart, Shuffle, Search, Phone, Key, Lock, Loader2 } from 'lucide-react';
 
+const API_BASE_URL = 'https://ais-pre-zgturhw4row6gtvlf3jbq3-185322315707.europe-west2.run.app';
+const apiUrl = (path: string) => `${API_BASE_URL}${path}`;
+
 // Extended Mock Data with Israeli content (Fallback if API fails)
 const BASE_MOVIES: any[] = [
   { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: 'https://www.youtube.com/embed/YoHD9XEInc0', desc: 'גנב שגונב סודות תאגידיים באמצעות טכנולוגיית שיתוף חלומות מקבל משימה הפוכה של שתילת רעיון במוחו של מנכ"ל.' },
@@ -347,7 +350,7 @@ export default function App() {
   const controlsRef = useRef<any>(null);
 
   useEffect(() => {
-    fetch('/api/movies')
+    fetch(apiUrl('/api/movies'))
       .then(res => {
         if (!res.ok) throw new Error('Network response was not ok');
         return res.json();
@@ -541,7 +544,7 @@ export default function App() {
   const handleTelegramSearch = async () => {
     try {
       setIsSearchingTg(true);
-      const res = await fetch('/api/tg/status');
+      const res = await fetch(apiUrl('/api/tg/status'));
       const data = await res.json();
       
       if (!data.loggedIn) {
@@ -555,7 +558,7 @@ export default function App() {
       setTgSearchResults([]);
       setTgVideoUrl(null);
       
-      const searchRes = await fetch(`/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`);
+      const searchRes = await fetch(apiUrl(`/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`));
       if (!searchRes.ok) {
         throw new Error('Backend API not available.');
       }
@@ -575,7 +578,7 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const res = await fetch('/api/tg/startLogin', {
+      const res = await fetch(apiUrl('/api/tg/startLogin'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: tgPhone })
@@ -594,7 +597,7 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const res = await fetch('/api/tg/submitCode', {
+      const res = await fetch(apiUrl('/api/tg/submitCode'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: tgCode })
@@ -604,7 +607,7 @@ export default function App() {
       
       // Wait a moment to see if it requires password or succeeds
       setTimeout(async () => {
-        const statusRes = await fetch('/api/tg/status');
+        const statusRes = await fetch(apiUrl('/api/tg/status'));
         const statusData = await statusRes.json();
         if (statusData.loggedIn) {
           setShowTgLogin(false);
@@ -624,7 +627,7 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const res = await fetch('/api/tg/submitPassword', {
+      const res = await fetch(apiUrl('/api/tg/submitPassword'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: tgPassword })
@@ -633,7 +636,7 @@ export default function App() {
       if (data.error) throw new Error(data.error);
       
       setTimeout(async () => {
-        const statusRes = await fetch('/api/tg/status');
+        const statusRes = await fetch(apiUrl('/api/tg/status'));
         const statusData = await statusRes.json();
         if (statusData.loggedIn) {
           setShowTgLogin(false);
@@ -650,16 +653,16 @@ export default function App() {
   };
 
   const playTgVideo = async (peerId: string, messageId: number) => {
-    setTgVideoUrl(`/api/tg/stream/${peerId}/${messageId}`);
+    setTgVideoUrl(apiUrl(`/api/tg/stream/${peerId}/${messageId}`));
     setTgSubtitleUrl(null); // Reset subtitle
 
     // Try to find subtitles automatically
     try {
-      const subRes = await fetch(`/api/tg/search-subtitles?query=${encodeURIComponent(selectedMovie.title)}`);
+      const subRes = await fetch(apiUrl(`/api/tg/search-subtitles?query=${encodeURIComponent(selectedMovie.title)}`));
       const subData = await subRes.json();
       if (subData.results && subData.results.length > 0) {
         const bestSub = subData.results[0];
-        setTgSubtitleUrl(`/api/tg/subtitle/${bestSub.peerId}/${bestSub.id}`);
+        setTgSubtitleUrl(apiUrl(`/api/tg/subtitle/${bestSub.peerId}/${bestSub.id}`));
       }
     } catch (e) {
       console.error('Failed to fetch subtitles', e);
