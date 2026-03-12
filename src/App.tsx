@@ -506,6 +506,8 @@ export default function App() {
   const [isSearchingTg, setIsSearchingTg] = useState(false);
   const [tgVideoUrl, setTgVideoUrl] = useState<string | null>(null);
   const [tgSubtitleUrl, setTgSubtitleUrl] = useState<string | null>(null);
+  const [isTmdLoading, setIsTmdLoading] = useState(false);
+  const [tmdStatusLabel, setTmdStatusLabel] = useState('');
   
   const [tgPhone, setTgPhone] = useState('');
   const [tgCode, setTgCode] = useState('');
@@ -752,6 +754,7 @@ export default function App() {
       setShowCinemaScreen(true);
       setTgSearchResults([]);
       setTgVideoUrl(null);
+      setTmdStatusLabel('');
       
       const searchData = await fetchApiJson(`/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`);
       
@@ -838,11 +841,47 @@ export default function App() {
     }
   };
 
-  const playTgVideo = async (peerId: string, messageId: number) => {
-    setTgVideoUrl(apiUrl(`/api/tg/stream/${peerId}/${messageId}`));
-    setTgSubtitleUrl(null); // Reset subtitle
+  const playTgVideo = async (result: any) => {
+    setTgSubtitleUrl(null);
 
-    // Try to find subtitles automatically
+    if (result.messageUrl && result.canUseTmd) {
+      try {
+        setIsTmdLoading(true);
+        setTmdStatusLabel('מוריד את הווידאו מטלגרם דרך TMD...');
+        const jobData = await fetchApiJson('/api/tg/tmd/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messageUrl: result.messageUrl, title: result.title }),
+        });
+
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1500));
+          const statusData = await fetchApiJson(`/api/tg/tmd/download/${jobData.jobId}`);
+
+          if (statusData.status === 'completed' && statusData.streamUrl) {
+            setTgVideoUrl(apiUrl(statusData.streamUrl));
+            setTmdStatusLabel('הווידאו מוכן לניגון');
+            setIsTmdLoading(false);
+            return;
+          }
+
+          if (statusData.status === 'failed') {
+            throw new Error(statusData.error || 'TMD download failed');
+          }
+        }
+
+        throw new Error('TMD download timed out');
+      } catch (e) {
+        console.error('TMD playback failed, falling back to direct stream', e);
+        setTmdStatusLabel('TMD נכשל, מנסה סטרים ישיר...');
+      } finally {
+        setIsTmdLoading(false);
+      }
+    }
+
+    setTmdStatusLabel('');
+    setTgVideoUrl(apiUrl(`/api/tg/stream/${result.peerId}/${result.id}`));
+
     try {
       const subData = await fetchApiJson(`/api/tg/search-subtitles?query=${encodeURIComponent(selectedMovie.title)}`);
       if (subData.results && subData.results.length > 0) {
@@ -1267,7 +1306,7 @@ export default function App() {
           >
             <div className="w-full h-full max-w-7xl flex flex-col relative">
               <button 
-                onClick={() => { setShowCinemaScreen(false); setTgVideoUrl(null); }}
+                onClick={() => { setShowCinemaScreen(false); setTgVideoUrl(null); setTmdStatusLabel(''); }}
                 className="absolute top-0 right-0 z-50 p-3 bg-white/10 hover:bg-red-500 rounded-full transition-colors"
               >
                 <X size={24} />
@@ -1276,6 +1315,7 @@ export default function App() {
               <div className="text-center mb-6">
                 <h2 className="text-3xl font-bold text-[#2AABEE] uppercase tracking-widest">מסך קולנוע: {selectedMovie?.title}</h2>
                 <p className="text-gray-400">מקורות צפייה מקבוצות הטלגרם שלך</p>
+                {tmdStatusLabel && <p className="text-sm text-[#2AABEE] mt-2">{tmdStatusLabel}</p>}
               </div>
 
               {/* Main Screen Area */}
@@ -1315,6 +1355,11 @@ export default function App() {
                         <Loader2 className="animate-spin w-16 h-16 mb-4" />
                         <p className="text-xl animate-pulse">סורק את מאגר הטלגרם...</p>
                       </div>
+                    ) : isTmdLoading ? (
+                      <div className="flex flex-col items-center justify-center h-full text-[#2AABEE]">
+                        <Loader2 className="animate-spin w-16 h-16 mb-4" />
+                        <p className="text-xl animate-pulse">{tmdStatusLabel || 'מוריד מטלגרם דרך TMD...'}</p>
+                      </div>
                     ) : tgSearchResults.length === 0 ? (
                       <div className="flex flex-col items-center justify-center h-full text-gray-500">
                         <Search className="w-16 h-16 mb-4 opacity-50" />
@@ -1325,7 +1370,7 @@ export default function App() {
                         {tgSearchResults.map((res, idx) => (
                           <button 
                             key={idx} 
-                            onClick={() => playTgVideo(res.peerId, res.id)}
+                            onClick={() => playTgVideo(res)}
                             className="bg-white/5 border border-white/10 hover:border-[#2AABEE] p-4 rounded-xl cursor-pointer transition-all hover:bg-white/10 group focus:ring-4 focus:ring-[#2AABEE] focus:outline-none text-right w-full"
                           >
                             <div className="flex items-start gap-4">
@@ -1335,6 +1380,9 @@ export default function App() {
                               <div className="flex-1 min-w-0 text-right">
                                 <h3 className="font-bold text-white truncate" dir="ltr">{res.title}</h3>
                                 <p className="text-sm text-gray-400 truncate mt-1">מאת: {res.chatName}</p>
+                                {res.canUseTmd && (
+                                  <p className="text-xs text-[#2AABEE] mt-1">זמין גם דרך TMD</p>
+                                )}
                                 <div className="flex items-center justify-end gap-3 mt-2 text-xs text-gray-500 font-mono">
                                   <span>{res.size}</span>
                                   <span>•</span>

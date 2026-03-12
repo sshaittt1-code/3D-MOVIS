@@ -4,6 +4,9 @@ import { createServer as createViteServer } from 'vite';
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import cors from 'cors';
+import { spawn } from 'node:child_process';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 
 const app = express();
 app.use(cors());
@@ -12,6 +15,10 @@ app.use(express.json());
 const PORT = 3000;
 const TMDB_API_BASE = 'https://api.themoviedb.org/3';
 const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p';
+const TMD_IMAGE = process.env.TMD_IMAGE || 'ghcr.io/xumeiquer/tmd';
+const TMD_RUNTIME_ROOT = process.env.TMD_RUNTIME_ROOT || path.resolve('.tmd-runtime');
+const TMD_DATA_ROOT = path.join(TMD_RUNTIME_ROOT, 'data');
+const TMD_DOWNLOADS_ROOT = path.join(TMD_RUNTIME_ROOT, 'downloads');
 
 // In-memory storage for the session (in a real app, save to DB)
 let sessionString = '';
@@ -21,6 +28,23 @@ let tgClient: TelegramClient | null = null;
 let resolveCode: ((code: string) => void) | null = null;
 let resolvePassword: ((pw: string) => void) | null = null;
 let rejectLogin: ((err: any) => void) | null = null;
+
+type TmdJobStatus = 'queued' | 'running' | 'completed' | 'failed';
+
+type TmdJob = {
+  id: string;
+  status: TmdJobStatus;
+  createdAt: number;
+  updatedAt: number;
+  title: string;
+  messageUrl: string;
+  outputDir: string;
+  filePath: string | null;
+  streamPath: string | null;
+  error: string | null;
+};
+
+const tmdJobs = new Map<string, TmdJob>();
 
 const buildTmdbApiUrl = (path: string, params: Record<string, string | number>) => {
   const url = new URL(`${TMDB_API_BASE}${path}`);
@@ -44,6 +68,135 @@ const normalizePosterUrl = (poster: string | null | undefined) => {
   if (poster.startsWith('http://') || poster.startsWith('https://')) return buildRemoteImageProxyPath(poster);
   if (poster.startsWith('/')) return buildPosterProxyPath(poster);
   return poster;
+};
+
+const slugifyTitle = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'telegram-item';
+
+const isTmdConfigured = () => {
+  return Boolean(process.env.TG_API_ID && process.env.TG_API_HASH);
+};
+
+const isTmdPublicMessageUrl = (messageUrl: string) => /^https:\/\/t\.me\/[A-Za-z0-9_]+\/\d+/.test(messageUrl);
+
+const createTmdJob = (title: string, messageUrl: string) => {
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const outputDir = path.join(TMD_DOWNLOADS_ROOT, `${slugifyTitle(title)}-${id}`);
+  const job: TmdJob = {
+    id,
+    status: 'queued',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    title,
+    messageUrl,
+    outputDir,
+    filePath: null,
+    streamPath: null,
+    error: null,
+  };
+  tmdJobs.set(id, job);
+  return job;
+};
+
+const withTmdStatus = () => {
+  if (!isTmdConfigured()) {
+    return {
+      enabled: false,
+      reason: 'Missing TG_API_ID or TG_API_HASH for TMD runtime.',
+    };
+  }
+
+  return {
+    enabled: true,
+    image: TMD_IMAGE,
+    runtimeRoot: TMD_RUNTIME_ROOT,
+  };
+};
+
+const ensureTmdDirectories = async () => {
+  await fs.mkdir(TMD_DATA_ROOT, { recursive: true });
+  await fs.mkdir(TMD_DOWNLOADS_ROOT, { recursive: true });
+};
+
+const runTmdDownloadJob = async (job: TmdJob) => {
+  await ensureTmdDirectories();
+
+  job.status = 'running';
+  job.updatedAt = Date.now();
+
+  const dockerArgs = [
+    'run',
+    '--rm',
+    '-e', `TMD_TDLIB_API_ID=${process.env.TG_API_ID || ''}`,
+    '-e', `TMD_TDLIB_API_HASH=${process.env.TG_API_HASH || ''}`,
+    '-e', 'TMD_TDLIB_PATH=/data/tdlib',
+    '-e', 'TMD_TDLIB_FILES_PATH=/data/files',
+    '-e', 'TMD_TDLIB_DATABASE_PATH=/data/database',
+    '-v', `${TMD_DATA_ROOT}:/data`,
+    '-v', `${TMD_DOWNLOADS_ROOT}:/downloads`,
+    TMD_IMAGE,
+    'download',
+    'message',
+    '--store',
+    `/downloads/${path.basename(job.outputDir)}`,
+    '--message-url',
+    job.messageUrl,
+  ];
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('docker', dockerArgs, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    });
+
+    let stderr = '';
+    let stdout = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => reject(error));
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(stderr.trim() || stdout.trim() || `tmd exited with code ${code}`));
+    });
+  });
+
+  const files = await fs.readdir(job.outputDir).catch(() => []);
+  const candidates = await Promise.all(
+    files.map(async (fileName) => {
+      const filePath = path.join(job.outputDir, fileName);
+      const stats = await fs.stat(filePath).catch(() => null);
+      if (!stats?.isFile()) return null;
+      return { filePath, size: stats.size };
+    }),
+  );
+
+  const selected = candidates
+    .filter((item): item is { filePath: string; size: number } => Boolean(item))
+    .sort((left, right) => right.size - left.size)[0];
+
+  if (!selected) {
+    throw new Error('tmd completed but no downloaded file was found');
+  }
+
+  job.filePath = selected.filePath;
+  job.streamPath = `/api/tg/tmd/stream/${job.id}`;
+  job.status = 'completed';
+  job.updatedAt = Date.now();
 };
 
 const fetchOmdbTitleInfo = async (title: string, year?: string, type?: string) => {
@@ -476,14 +629,19 @@ app.post('/api/tg/submitPassword', async (req, res) => {
 app.get('/api/tg/status', async (req, res) => {
   try {
     if (!sessionString && !tgClient) {
-      return res.json({ loggedIn: false });
+      return res.json({ loggedIn: false, tmd: withTmdStatus() });
     }
     const client = await getClient();
     const isAuth = await client.checkAuthorization();
-    res.json({ loggedIn: isAuth });
+    res.json({ loggedIn: isAuth, tmd: withTmdStatus() });
   } catch (e) {
-    res.json({ loggedIn: false });
+    res.json({ loggedIn: false, tmd: withTmdStatus() });
   }
+});
+
+app.get('/api/tg/tmd/status', async (req, res) => {
+  const status = withTmdStatus();
+  res.json(status);
 });
 
 // Search for Movie
@@ -524,11 +682,15 @@ app.get('/api/tg/search', async (req, res) => {
         if (attr) title = attr.fileName;
       }
 
+      const messageUrl = chat?.username ? `https://t.me/${chat.username}/${m.id}` : '';
+
       return {
         id: m.id,
         peerId: peerId?.toString(),
         title: title.substring(0, 100) + (title.length > 100 ? '...' : ''),
         chatName: chat ? (chat.title || chat.username || 'Unknown Chat') : 'Unknown Chat',
+        messageUrl,
+        canUseTmd: Boolean(messageUrl),
         date: m.date,
         size: m.media?.document?.size ? (m.media.document.size / (1024 * 1024)).toFixed(2) + ' MB' : 'Unknown Size',
       };
@@ -667,6 +829,99 @@ app.get('/api/poster', async (req, res) => {
 
     const buffer = Buffer.from(await posterResponse.arrayBuffer());
     res.send(buffer);
+  } catch (e: any) {
+    res.status(500).send(e.message);
+  }
+});
+
+app.post('/api/tg/tmd/download', async (req, res) => {
+  try {
+    const { messageUrl, title } = req.body || {};
+    if (!messageUrl || typeof messageUrl !== 'string') {
+      return res.status(400).json({ error: 'Missing messageUrl' });
+    }
+
+    if (!isTmdPublicMessageUrl(messageUrl)) {
+      return res.status(400).json({ error: 'TMD currently supports only public t.me message links.' });
+    }
+
+    const status = withTmdStatus();
+    if (!status.enabled) {
+      return res.status(400).json({ error: status.reason || 'TMD is not configured' });
+    }
+
+    const job = createTmdJob(typeof title === 'string' ? title : 'telegram-video', messageUrl);
+    runTmdDownloadJob(job).catch((error) => {
+      job.status = 'failed';
+      job.error = error instanceof Error ? error.message : String(error);
+      job.updatedAt = Date.now();
+    });
+
+    res.json({
+      jobId: job.id,
+      status: job.status,
+      provider: 'tmd',
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/tg/tmd/download/:jobId', async (req, res) => {
+  const job = tmdJobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'TMD job not found' });
+  }
+
+  res.json({
+    jobId: job.id,
+    status: job.status,
+    title: job.title,
+    error: job.error,
+    streamUrl: job.streamPath,
+    provider: 'tmd',
+  });
+});
+
+app.get('/api/tg/tmd/stream/:jobId', async (req, res) => {
+  try {
+    const job = tmdJobs.get(req.params.jobId);
+    if (!job?.filePath) {
+      return res.status(404).send('Downloaded file not found');
+    }
+
+    const stats = await fs.stat(job.filePath);
+    const range = req.headers.range;
+    const contentType = 'video/mp4';
+
+    if (range) {
+      const [startText, endText] = range.replace(/bytes=/, '').split('-');
+      const start = Number.parseInt(startText, 10);
+      const end = endText ? Number.parseInt(endText, 10) : stats.size - 1;
+      const chunkSize = (end - start) + 1;
+
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${stats.size}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*',
+      });
+
+      const stream = (await import('node:fs')).createReadStream(job.filePath, { start, end });
+      stream.pipe(res);
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Length': stats.size,
+      'Content-Type': contentType,
+      'Access-Control-Allow-Origin': '*',
+      'Accept-Ranges': 'bytes',
+    });
+
+    const stream = (await import('node:fs')).createReadStream(job.filePath);
+    stream.pipe(res);
   } catch (e: any) {
     res.status(500).send(e.message);
   }
