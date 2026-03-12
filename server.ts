@@ -23,9 +23,8 @@ let rejectLogin: ((err: any) => void) | null = null;
 
 const getClient = async () => {
   if (tgClient) return tgClient;
-  const apiId = parseInt(process.env.TG_API_ID || '0');
-  const apiHash = process.env.TG_API_HASH || '';
-  if (!apiId || !apiHash) throw new Error('Missing TG_API_ID or TG_API_HASH in environment variables');
+  const apiId = 30431141;
+  const apiHash = 'f702b44f4c8d695e4116b17df4408221';
 
   tgClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
     connectionRetries: 5,
@@ -47,7 +46,7 @@ app.post('/api/tg/startLogin', async (req, res) => {
 
     // We don't await this completely here because it blocks waiting for code
     client.signInUser(
-      { apiId: parseInt(process.env.TG_API_ID!), apiHash: process.env.TG_API_HASH! },
+      { apiId: 30431141, apiHash: 'f702b44f4c8d695e4116b17df4408221' },
       {
         phoneNumber: phone,
         phoneCode: async () => {
@@ -161,34 +160,63 @@ app.get('/api/tg/search', async (req, res) => {
   }
 });
 
-// Stream Video
+// Stream Video with Range Support (Buffering)
 app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
   try {
     const client = await getClient();
     const peerId = req.params.peerId;
     const messageId = parseInt(req.params.messageId);
 
-    // Get the specific message
     const messages = await client.getMessages(peerId, { ids: [messageId] });
     if (!messages || messages.length === 0) return res.status(404).send('Message not found');
     const message = messages[0];
 
-    if (!message.media) return res.status(404).send('No media found');
+    if (!message.media || !('document' in message.media)) return res.status(404).send('No video media found');
 
-    res.setHeader('Content-Type', 'video/mp4');
-    
-    // Note: This is a basic streaming implementation.
-    // GramJS iterDownload fetches chunks. We pipe them to the response.
-    // It does not support HTTP Range requests natively, so seeking may not work perfectly.
-    const stream = client.iterDownload({
-      file: message.media,
-      requestSize: 1024 * 1024, // 1MB chunks
-    });
+    const fileSize = (message.media.document as any).size;
+    const range = req.headers.range;
 
-    for await (const chunk of stream) {
-      res.write(chunk);
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunksize = (end - start) + 1;
+
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
+        'Content-Type': 'video/mp4',
+      });
+
+      const stream = client.iterDownload({
+        file: message.media,
+        offset: BigInt(start),
+        limit: chunksize,
+        requestSize: 1024 * 1024, // 1MB chunks
+      });
+
+      for await (const chunk of stream) {
+        res.write(chunk);
+      }
+      res.end();
+    } else {
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Content-Type': 'video/mp4',
+        'Accept-Ranges': 'bytes',
+      });
+
+      const stream = client.iterDownload({
+        file: message.media,
+        requestSize: 1024 * 1024,
+      });
+
+      for await (const chunk of stream) {
+        res.write(chunk);
+      }
+      res.end();
     }
-    res.end();
   } catch (e: any) {
     console.error('Streaming error:', e);
     if (!res.headersSent) res.status(500).send(e.message);
