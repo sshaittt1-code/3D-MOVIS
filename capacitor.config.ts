@@ -4,7 +4,6 @@ const config: CapacitorConfig = {
   appId: 'com.holocinema.tv',
   appName: 'HoloCinema TV',
   webDir: 'dist',
-  bundledWebRuntime: false,
   android: {
     // Allow the app to be installed on Android TV
     allowMixedContent: true

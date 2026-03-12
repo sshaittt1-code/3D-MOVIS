@@ -108,7 +108,7 @@ const Poster = ({ movie, position, rotation, onClick, setHoveredPoster, isFavori
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const [hovered, setHovered] = useState(false);
   const [heartHovered, setHeartHovered] = useState(false);
-  const groupRef = useRef<any>();
+  const groupRef = useRef<any>(null);
 
   useEffect(() => {
     const loader = new THREE.TextureLoader();
