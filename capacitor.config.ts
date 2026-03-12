@@ -5,9 +5,8 @@ const config: CapacitorConfig = {
   appName: 'HoloCinema TV',
   webDir: 'dist',
   server: {
-    // This is the magic part! The app will load your live AI Studio URL.
-    // Every time you update the app here, it will automatically update on your TV!
-    url: 'https://ais-pre-zgturhw4row6gtvlf3jbq3-185322315707.europe-west2.run.app',
+    // Correct URL for your live GitHub Pages site
+    url: 'https://sshaittt1-code.github.io/3D-MOVIS/',
     cleartext: true
   },
   android: {
