@@ -246,7 +246,7 @@ app.get('/api/tg/subtitle/:peerId/:messageId', async (req, res) => {
 
     if (!message.media) return res.status(404).send('No media found');
 
-    const buffer = await client.downloadMedia(message.media);
+    const buffer = await client.downloadMedia(message.media, { workers: 1 });
     if (!buffer) return res.status(500).send('Failed to download subtitle');
 
     // Convert SRT to VTT (HTML5 video requires VTT)
