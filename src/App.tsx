@@ -402,6 +402,7 @@ export default function App() {
   const [baseMovies, setBaseMovies] = useState<any[]>([]);
   const [seriesCatalog, setSeriesCatalog] = useState<any[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<any>(null);
+  const [selectedTitleInfo, setSelectedTitleInfo] = useState<any>(null);
   const [isLocked, setIsLocked] = useState(false);
   const [hoveredPoster, setHoveredPoster] = useState<any>(null);
   const controlsRef = useRef<any>(null);
@@ -718,6 +719,7 @@ export default function App() {
 
   const handleCloseModal = () => {
     setSelectedMovie(null);
+    setSelectedTitleInfo(null);
   };
 
   useEffect(() => {
@@ -853,6 +855,22 @@ export default function App() {
       console.error('Failed to fetch subtitles', e);
     }
   };
+
+  useEffect(() => {
+    if (!selectedMovie) {
+      setSelectedTitleInfo(null);
+      return;
+    }
+
+    const title = selectedMovie.title?.replace(/\s+\(.+\)$/, '') || selectedMovie.title;
+    const year = selectedMovie.year || '';
+    const type = selectedMovie.mediaType === 'series' ? 'series' : 'movie';
+
+    fetch(apiUrl(`/api/title-info?title=${encodeURIComponent(title)}&year=${encodeURIComponent(year)}&type=${encodeURIComponent(type)}`))
+      .then((res) => res.json())
+      .then((data) => setSelectedTitleInfo(data.info || null))
+      .catch(() => setSelectedTitleInfo(null));
+  }, [selectedMovie]);
 
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative font-sans text-white" dir="rtl">
@@ -1108,12 +1126,15 @@ export default function App() {
               <div className="w-full md:w-2/3 p-6 md:p-10 flex flex-col">
                 <div className="flex items-center gap-3 mb-2">
                   <span className="px-3 py-1 bg-[#00ffcc]/10 text-[#00ffcc] border border-[#00ffcc]/20 rounded-full text-xs font-mono uppercase tracking-wider">
-                    {selectedMovie.genre}
+                    {selectedTitleInfo?.genres || selectedMovie.genre}
                   </span>
                   <span className="flex items-center gap-1 text-yellow-400 text-sm font-bold">
                     <Star size={16} fill="currentColor" />
-                    {selectedMovie.rating}
+                    {selectedTitleInfo?.imdbRating || selectedMovie.rating}
                   </span>
+                  {selectedTitleInfo?.year && (
+                    <span className="text-sm text-gray-300">{selectedTitleInfo.year}</span>
+                  )}
                   {favorites.includes(selectedMovie.id) && (
                     <span className="flex items-center gap-1 text-[#ff0055] text-sm font-bold mr-auto">
                       <Heart size={16} fill="currentColor" />
@@ -1124,7 +1145,7 @@ export default function App() {
                 
                 <h2 className="text-3xl md:text-5xl font-bold mb-4">{selectedMovie.title}</h2>
                 <p className="text-gray-400 mb-8 leading-relaxed text-lg">
-                  {selectedMovie.desc}
+                  {selectedTitleInfo?.plot || selectedMovie.desc}
                 </p>
 
                 {/* Trailer Video */}

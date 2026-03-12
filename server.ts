@@ -33,6 +33,36 @@ const buildPosterProxyPath = (posterPath: string | null | undefined, size = 'w78
   return `/api/poster?path=${encodeURIComponent(posterPath)}&size=${encodeURIComponent(size)}`;
 };
 
+const fetchOmdbTitleInfo = async (title: string, year?: string, type?: string) => {
+  const omdbKey = process.env.OMDB_API_KEY;
+  if (!omdbKey || !title) return null;
+
+  const url = new URL('https://www.omdbapi.com/');
+  url.searchParams.set('apikey', omdbKey);
+  url.searchParams.set('t', title);
+  if (year) url.searchParams.set('y', year);
+  if (type && (type === 'movie' || type === 'series')) url.searchParams.set('type', type);
+
+  const response = await fetch(url.toString());
+  const data = await response.json();
+  if (!response.ok || data?.Response === 'False') {
+    return null;
+  }
+
+  return {
+    imdbId: data.imdbID || '',
+    imdbRating: data.imdbRating || '',
+    imdbVotes: data.imdbVotes || '',
+    poster: data.Poster && data.Poster !== 'N/A' ? data.Poster : '',
+    year: data.Year || '',
+    runtime: data.Runtime || '',
+    rated: data.Rated || '',
+    plot: data.Plot && data.Plot !== 'N/A' ? data.Plot : '',
+    genres: data.Genre || '',
+    totalSeasons: data.totalSeasons || '',
+  };
+};
+
 const FALLBACK_SERIES = [
   {
     id: 1001,
@@ -604,6 +634,22 @@ app.get('/api/series/:seriesId/seasons/:seasonNumber/episodes', async (req, res)
     res.json({
       episodes: season.episodes.map((episode) => withPosterProxyObject(episode)),
     });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/title-info', async (req, res) => {
+  try {
+    const title = typeof req.query.title === 'string' ? req.query.title : '';
+    const year = typeof req.query.year === 'string' ? req.query.year : '';
+    const type = typeof req.query.type === 'string' ? req.query.type : '';
+    if (!title) return res.status(400).json({ error: 'Missing title' });
+
+    const info = await fetchOmdbTitleInfo(title, year, type);
+    if (!info) return res.json({ info: null });
+
+    res.json({ info });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
