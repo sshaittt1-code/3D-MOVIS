@@ -5,8 +5,27 @@ import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Play, Info, Star, TrendingUp, Type, Film, Heart, Shuffle, Search, Phone, Key, Lock, Loader2 } from 'lucide-react';
 
-const API_BASE_URL = 'https://ais-pre-zgturhw4row6gtvlf3jbq3-185322315707.europe-west2.run.app';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://ais-pre-zgturhw4row6gtvlf3jbq3-185322315707.europe-west2.run.app';
 const apiUrl = (path: string) => `${API_BASE_URL}${path}`;
+const isHtmlResponse = (contentType: string | null) => contentType?.toLowerCase().includes('text/html');
+const extractApiError = async (response: Response) => {
+  const contentType = response.headers.get('content-type');
+
+  if (isHtmlResponse(contentType)) {
+    throw new Error('שרת ה-API מחזיר עמוד Cookie Check במקום JSON. צריך להגדיר VITE_API_BASE_URL לשרת backend ישיר.');
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(payload?.error || `API request failed with status ${response.status}`);
+  }
+
+  return payload;
+};
+const fetchApiJson = async (path: string, init?: RequestInit) => {
+  const response = await fetch(apiUrl(path), init);
+  return extractApiError(response);
+};
 const withApiOrigin = (url?: string) => {
   if (!url) return url;
   return url.startsWith('/api/') ? apiUrl(url) : url;
@@ -411,11 +430,7 @@ export default function App() {
   const [corridorTransitionLabel, setCorridorTransitionLabel] = useState('');
 
   useEffect(() => {
-    fetch(apiUrl('/api/movies'))
-      .then(res => {
-        if (!res.ok) throw new Error('Network response was not ok');
-        return res.json();
-      })
+    fetchApiJson('/api/movies')
       .then(data => {
         const movies = data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES;
         setBaseMovies(movies.map((movie: any) => ({
@@ -433,11 +448,7 @@ export default function App() {
         })));
       });
 
-    fetch(apiUrl('/api/series'))
-      .then((res) => {
-        if (!res.ok) throw new Error('Series network response was not ok');
-        return res.json();
-      })
+    fetchApiJson('/api/series')
       .then((data) => {
         setSeriesCatalog((data.series || []).map((item: any) => ({
           ...item,
@@ -538,8 +549,7 @@ export default function App() {
   const openSeriesSeasons = async (series: any) => {
     setIsCorridorLoading(true);
     try {
-      const res = await fetch(apiUrl(`/api/series/${series.id}/seasons`));
-      const data = await res.json();
+      const data = await fetchApiJson(`/api/series/${series.id}/seasons`);
       const seasons = (data.seasons || []).map((item: any) => ({
         ...item,
         mediaType: 'season',
@@ -555,8 +565,7 @@ export default function App() {
   const openSeasonEpisodes = async (series: any, season: any) => {
     setIsCorridorLoading(true);
     try {
-      const res = await fetch(apiUrl(`/api/series/${series.id}/seasons/${season.seasonNumber}/episodes`));
-      const data = await res.json();
+      const data = await fetchApiJson(`/api/series/${series.id}/seasons/${season.seasonNumber}/episodes`);
       const episodes = (data.episodes || []).map((item: any) => ({
         ...item,
         mediaType: 'episode',
@@ -731,8 +740,7 @@ export default function App() {
   const handleTelegramSearch = async () => {
     try {
       setIsSearchingTg(true);
-      const res = await fetch(apiUrl('/api/tg/status'));
-      const data = await res.json();
+      const data = await fetchApiJson('/api/tg/status');
       
       if (!data.loggedIn) {
         setShowTgLogin(true);
@@ -745,17 +753,13 @@ export default function App() {
       setTgSearchResults([]);
       setTgVideoUrl(null);
       
-      const searchRes = await fetch(apiUrl(`/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`));
-      if (!searchRes.ok) {
-        throw new Error('Backend API not available.');
-      }
-      const searchData = await searchRes.json();
+      const searchData = await fetchApiJson(`/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`);
       
       if (searchData.error) throw new Error(searchData.error);
       setTgSearchResults(searchData.results || []);
     } catch (e: any) {
       console.error(e);
-      alert('Error connecting to Telegram: ' + e.message);
+      alert('שגיאת Telegram: ' + e.message);
     } finally {
       setIsSearchingTg(false);
     }
@@ -765,12 +769,11 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const res = await fetch(apiUrl('/api/tg/startLogin'), {
+      const data = await fetchApiJson('/api/tg/startLogin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: tgPhone })
       });
-      const data = await res.json();
       if (data.error) throw new Error(data.error);
       setTgLoginStep('code');
     } catch (e: any) {
@@ -784,18 +787,16 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const res = await fetch(apiUrl('/api/tg/submitCode'), {
+      const data = await fetchApiJson('/api/tg/submitCode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: tgCode })
       });
-      const data = await res.json();
       if (data.error) throw new Error(data.error);
       
       // Wait a moment to see if it requires password or succeeds
       setTimeout(async () => {
-        const statusRes = await fetch(apiUrl('/api/tg/status'));
-        const statusData = await statusRes.json();
+        const statusData = await fetchApiJson('/api/tg/status');
         if (statusData.loggedIn) {
           setShowTgLogin(false);
           handleTelegramSearch();
@@ -814,17 +815,15 @@ export default function App() {
     setIsTgLoading(true);
     setTgLoginError('');
     try {
-      const res = await fetch(apiUrl('/api/tg/submitPassword'), {
+      const data = await fetchApiJson('/api/tg/submitPassword', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: tgPassword })
       });
-      const data = await res.json();
       if (data.error) throw new Error(data.error);
       
       setTimeout(async () => {
-        const statusRes = await fetch(apiUrl('/api/tg/status'));
-        const statusData = await statusRes.json();
+        const statusData = await fetchApiJson('/api/tg/status');
         if (statusData.loggedIn) {
           setShowTgLogin(false);
           handleTelegramSearch();
@@ -845,8 +844,7 @@ export default function App() {
 
     // Try to find subtitles automatically
     try {
-      const subRes = await fetch(apiUrl(`/api/tg/search-subtitles?query=${encodeURIComponent(selectedMovie.title)}`));
-      const subData = await subRes.json();
+      const subData = await fetchApiJson(`/api/tg/search-subtitles?query=${encodeURIComponent(selectedMovie.title)}`);
       if (subData.results && subData.results.length > 0) {
         const bestSub = subData.results[0];
         setTgSubtitleUrl(apiUrl(`/api/tg/subtitle/${bestSub.peerId}/${bestSub.id}`));
@@ -866,8 +864,7 @@ export default function App() {
     const year = selectedMovie.year || '';
     const type = selectedMovie.mediaType === 'series' ? 'series' : 'movie';
 
-    fetch(apiUrl(`/api/title-info?title=${encodeURIComponent(title)}&year=${encodeURIComponent(year)}&type=${encodeURIComponent(type)}`))
-      .then((res) => res.json())
+    fetchApiJson(`/api/title-info?title=${encodeURIComponent(title)}&year=${encodeURIComponent(year)}&type=${encodeURIComponent(type)}`)
       .then((data) => setSelectedTitleInfo(data.info || null))
       .catch(() => setSelectedTitleInfo(null));
   }, [selectedMovie]);
