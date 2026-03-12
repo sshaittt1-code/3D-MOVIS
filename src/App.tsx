@@ -7,6 +7,14 @@ import { X, Play, Star, Film, Loader2, Search, Phone, Key, Lock, Heart, Shuffle,
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
+const isTvSelectKey = (e: KeyboardEvent) =>
+  e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
+
+const blurActiveElement = () => {
+  const activeElement = document.activeElement as HTMLElement | null;
+  activeElement?.blur?.();
+};
+
 // --- Helper for Android Intents (MX Player) ---
 const openInMXPlayer = (videoUrl: string, title: string, subtitleUrl?: string) => {
   const intentUrl = `intent:${videoUrl}#Intent;` +
@@ -42,6 +50,11 @@ const TVController = ({ movies, isLocked, setIsLocked, setSelectedMovie, setFocu
   useEffect(() => {
     const handleInput = (e: KeyboardEvent) => {
       if (!isLocked) return;
+      const isDirectionalKey = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key);
+      if (isDirectionalKey || isTvSelectKey(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
       if (e.key === 'ArrowUp') {
         setTargetPos(p => new THREE.Vector3(p.x, p.y, p.z - STEP_SIZE));
         setTargetRot(new THREE.Euler(0, 0, 0));
@@ -50,7 +63,7 @@ const TVController = ({ movies, isLocked, setIsLocked, setSelectedMovie, setFocu
         setTargetRot(new THREE.Euler(0, 0, 0));
       } else if (e.key === 'ArrowLeft') setTargetRot(new THREE.Euler(0, Math.PI / 2.2, 0));
       else if (e.key === 'ArrowRight') setTargetRot(new THREE.Euler(0, -Math.PI / 2.2, 0));
-      else if (e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23) {
+      else if (isTvSelectKey(e)) {
         if (focusedMovieRef.current) {
           setSelectedMovie(focusedMovieRef.current);
           setIsLocked(false);
@@ -115,6 +128,27 @@ export default function App() {
   const [bufferProgress, setBufferProgress] = useState(0);
 
   const [apiBase, setApiBase] = useState(() => localStorage.getItem('api_base') || API_BASE);
+
+  useEffect(() => {
+    const handleMenuInput = (e: KeyboardEvent) => {
+      if (isLocked || selectedMovie || showCinemaScreen) return;
+      if (!isTvSelectKey(e)) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      blurActiveElement();
+      setIsLocked(true);
+    };
+
+    window.addEventListener('keydown', handleMenuInput);
+    return () => window.removeEventListener('keydown', handleMenuInput);
+  }, [isLocked, selectedMovie, showCinemaScreen]);
+
+  useEffect(() => {
+    if (isLocked) {
+      blurActiveElement();
+    }
+  }, [isLocked]);
 
   useEffect(() => {
     const base = apiBase.replace(/\/$/, '');
