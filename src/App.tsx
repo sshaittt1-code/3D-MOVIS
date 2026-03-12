@@ -19,18 +19,8 @@ const BASE_MOVIES: any[] = [
   { id: 10, title: 'הנוקמים: סוף המשחק', genre: 'פעולה', rating: 8.4, popularity: 96, poster: 'https://image.tmdb.org/t/p/w500/or06FN3Dka5tukK1e9sl16pB3iy.jpg', trailer: 'https://www.youtube.com/embed/TcMBFSGVi1c', desc: 'לאחר האירועים ההרסניים של מלחמת האינסוף, היקום נמצא בהריסות. בעזרת בני ברית שנותרו, הנוקמים מתאספים פעם נוספת כדי להפוך את פעולותיו של תאנוס.' }
 ];
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://ais-pre-zgturhw4row6gtvlf3jbq3-185322315707.europe-west2.run.app';
-
-const buildApiUrl = (path: string) => {
-  if (path.startsWith('http://') || path.startsWith('https://')) {
-    return path;
-  }
-
-  return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
-};
-
 const fetchApiJson = async (path: string, init?: RequestInit) => {
-  const response = await fetch(buildApiUrl(path), init);
+  const response = await fetch(path, init);
   const contentType = response.headers.get('content-type') || '';
   const bodyText = await response.text();
 
@@ -669,7 +659,7 @@ export default function App() {
   };
 
   const playTgVideo = async (peerId: string, messageId: number) => {
-    setTgVideoUrl(buildApiUrl(`/api/tg/stream/${peerId}/${messageId}`));
+    setTgVideoUrl(`/api/tg/stream/${peerId}/${messageId}`);
     setTgSubtitleUrl(null); // Reset subtitle
 
     // Try to find subtitles automatically
@@ -677,7 +667,7 @@ export default function App() {
       const subData = await fetchApiJson(`/api/tg/search-subtitles?query=${encodeURIComponent(selectedMovie.title)}`);
       if (subData.results && subData.results.length > 0) {
         const bestSub = subData.results[0];
-        setTgSubtitleUrl(buildApiUrl(`/api/tg/subtitle/${bestSub.peerId}/${bestSub.id}`));
+        setTgSubtitleUrl(`/api/tg/subtitle/${bestSub.peerId}/${bestSub.id}`);
       }
     } catch (e) {
       console.error('Failed to fetch subtitles', e);
