@@ -33,6 +33,19 @@ const buildPosterProxyPath = (posterPath: string | null | undefined, size = 'w78
   return `/api/poster?path=${encodeURIComponent(posterPath)}&size=${encodeURIComponent(size)}`;
 };
 
+const buildRemoteImageProxyPath = (url: string | null | undefined) => {
+  if (!url) return '';
+  return `/api/remote-image?url=${encodeURIComponent(url)}`;
+};
+
+const normalizePosterUrl = (poster: string | null | undefined) => {
+  if (!poster) return '';
+  if (poster.includes('/api/poster') || poster.includes('/api/remote-image')) return poster;
+  if (poster.startsWith('http://') || poster.startsWith('https://')) return buildRemoteImageProxyPath(poster);
+  if (poster.startsWith('/')) return buildPosterProxyPath(poster);
+  return poster;
+};
+
 const fetchOmdbTitleInfo = async (title: string, year?: string, type?: string) => {
   const omdbKey = process.env.OMDB_API_KEY;
   if (!omdbKey || !title) return null;
@@ -129,8 +142,114 @@ const FALLBACK_SERIES = [
 
 const withPosterProxyObject = (item: any) => ({
   ...item,
-  poster: item.poster?.includes('/api/poster') ? item.poster : item.poster,
+  poster: normalizePosterUrl(item.poster),
+  backdrop: normalizePosterUrl(item.backdrop),
 });
+
+const fetchOmdbCatalog = async () => {
+  const omdbKey = process.env.OMDB_API_KEY;
+  if (!omdbKey) return [];
+
+  const searchTerms = ['star', 'love', 'night', 'war', 'man', 'world', 'dark', 'last', 'girl', 'king'];
+  const pages = [1, 2, 3, 4, 5];
+  const responses = await Promise.all(
+    searchTerms.flatMap((term) =>
+      pages.map((page) =>
+        fetch(`https://www.omdbapi.com/?apikey=${encodeURIComponent(omdbKey)}&s=${encodeURIComponent(term)}&type=movie&page=${page}`),
+      ),
+    ),
+  );
+  const payloads = await Promise.all(responses.map((response) => response.json()));
+  const uniqueMovies = new Map<string, any>();
+
+  for (const payload of payloads) {
+    for (const movie of payload.Search || []) {
+      if (!movie?.imdbID || !movie?.Poster || movie.Poster === 'N/A' || uniqueMovies.has(movie.imdbID)) {
+        continue;
+      }
+
+      uniqueMovies.set(movie.imdbID, {
+        id: movie.imdbID,
+        title: movie.Title || 'Untitled',
+        genre: 'Movie',
+        rating: '0.0',
+        popularity: 60,
+        poster: normalizePosterUrl(movie.Poster),
+        backdrop: normalizePosterUrl(movie.Poster),
+        trailer: '',
+        desc: '',
+        year: movie.Year || '',
+        mediaType: 'movie',
+      });
+    }
+  }
+
+  return Array.from(uniqueMovies.values());
+};
+
+const fetchTvMazeCatalog = async () => {
+  const pages = [0, 1, 2, 3, 4];
+  const responses = await Promise.all(pages.map((page) => fetch(`https://api.tvmaze.com/shows?page=${page}`)));
+  const payloads = await Promise.all(responses.map((response) => response.json()));
+  const shows = payloads
+    .flat()
+    .filter((show: any) => show?.id && (show.image?.original || show.image?.medium))
+    .map((show: any) => ({
+      id: show.id,
+      title: show.name || 'Untitled Series',
+      genre: show.genres?.[0] || 'Series',
+      rating: Number(show.rating?.average || 0).toFixed(1),
+      popularity: Math.round(show.weight || show.rating?.average * 10 || 0),
+      poster: normalizePosterUrl(show.image?.original || show.image?.medium),
+      backdrop: normalizePosterUrl(show.image?.original || show.image?.medium),
+      desc: show.summary ? String(show.summary).replace(/<[^>]+>/g, '').trim() : '',
+      year: show.premiered ? String(show.premiered).slice(0, 4) : '',
+      mediaType: 'series',
+    }));
+
+  shows.sort((left: any, right: any) => {
+    const ratingDiff = Number(right.rating || 0) - Number(left.rating || 0);
+    if (ratingDiff !== 0) return ratingDiff;
+    return Number(right.popularity || 0) - Number(left.popularity || 0);
+  });
+
+  return shows;
+};
+
+const fetchTvMazeSeasons = async (seriesId: string) => {
+  const response = await fetch(`https://api.tvmaze.com/shows/${seriesId}/seasons`);
+  const seasons = await response.json();
+  return (seasons || [])
+    .filter((season: any) => Number(season.number) > 0)
+    .map((season: any) => ({
+      id: season.id,
+      seriesId: Number(seriesId),
+      title: season.name || `Season ${season.number}`,
+      seasonNumber: season.number,
+      rating: '0.0',
+      popularity: Math.round(season.episodeOrder || 0),
+      poster: normalizePosterUrl(season.image?.original || season.image?.medium),
+      desc: season.summary ? String(season.summary).replace(/<[^>]+>/g, '').trim() : '',
+      mediaType: 'season',
+    }));
+};
+
+const fetchTvMazeEpisodes = async (seriesId: string, seasonNumber: string) => {
+  const response = await fetch(`https://api.tvmaze.com/shows/${seriesId}/episodes`);
+  const episodes = await response.json();
+  return (episodes || [])
+    .filter((episode: any) => String(episode.season) === seasonNumber)
+    .map((episode: any) => ({
+      id: episode.id,
+      title: episode.name || `Episode ${episode.number}`,
+      episodeNumber: episode.number,
+      rating: Number(episode.rating?.average || 0).toFixed(1),
+      popularity: Math.round(episode.rating?.average ? episode.rating.average * 10 : 0),
+      poster: normalizePosterUrl(episode.image?.original || episode.image?.medium),
+      desc: episode.summary ? String(episode.summary).replace(/<[^>]+>/g, '').trim() : '',
+      mediaType: 'episode',
+    }));
+};
 
 const fetchTmdbCatalog = async (tmdbKey: string) => {
   const language = 'he-IL';
@@ -553,14 +672,53 @@ app.get('/api/poster', async (req, res) => {
   }
 });
 
+app.get('/api/remote-image', async (req, res) => {
+  try {
+    const url = typeof req.query.url === 'string' ? req.query.url : '';
+    if (!url) {
+      return res.status(400).send('Missing image url');
+    }
+
+    const parsedUrl = new URL(url);
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      return res.status(400).send('Invalid image url');
+    }
+
+    const imageResponse = await fetch(parsedUrl.toString());
+    if (!imageResponse.ok) {
+      return res.status(imageResponse.status).send('Image not found');
+    }
+
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', imageResponse.headers.get('content-type') || 'image/jpeg');
+
+    const buffer = Buffer.from(await imageResponse.arrayBuffer());
+    res.send(buffer);
+  } catch (e: any) {
+    res.status(500).send(e.message);
+  }
+});
+
 app.get('/api/movies', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
     if (tmdbKey) {
-      const movies = await fetchTmdbCatalog(tmdbKey);
-      return res.json({ movies });
+      try {
+        const movies = await fetchTmdbCatalog(tmdbKey);
+        if (movies.length > 0) {
+          return res.json({ movies });
+        }
+      } catch (error) {
+        console.warn('TMDb movie catalog failed, falling back to OMDb:', error);
+      }
     }
-    
+
+    const omdbMovies = await fetchOmdbCatalog();
+    if (omdbMovies.length > 0) {
+      return res.json({ movies: omdbMovies });
+    }
+
     // Fallback Hebrew movies (High quality posters from TMDB)
     const fallback = [
       { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: 'https://www.youtube.com/embed/YoHD9XEInc0', desc: 'גנב שגונב סודות תאגידיים באמצעות טכנולוגיית שיתוף חלומות מקבל משימה הפוכה של שתילת רעיון במוחו של מנכ"ל.' },
@@ -578,7 +736,7 @@ app.get('/api/movies', async (req, res) => {
       { id: 13, title: 'פאודה (Fauda)', genre: 'ישראלי', rating: 8.3, popularity: 88, poster: 'https://image.tmdb.org/t/p/w500/8j12jctzB0XQGkE9B0n2PEnQk4.jpg', trailer: 'https://www.youtube.com/embed/3bOWJWQzMGE', desc: 'הסיפורים האנושיים משני צידי הסכסוך הישראלי-פלסטיני. סוכן ישראלי בכיר יוצא מפרישה כדי לצוד פעיל פלסטיני.' },
       { id: 14, title: 'שטיסל (Shtisel)', genre: 'ישראלי', rating: 8.6, popularity: 82, poster: 'https://image.tmdb.org/t/p/w500/1W1hA12R1XQ.jpg', trailer: 'https://www.youtube.com/embed/1W1hA12R1XQ', desc: 'משפחה חרדית המתגוררת בשכונה חרדית בירושלים מתמודדת עם אהבה, אובדן ושגרת חיי היומיום.' },
     ];
-    res.json({ movies: fallback });
+    res.json({ movies: fallback.map((movie) => withPosterProxyObject(movie)) });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -588,7 +746,18 @@ app.get('/api/series', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
     if (tmdbKey) {
-      const series = await fetchTmdbSeriesCatalog(tmdbKey);
+      try {
+        const series = await fetchTmdbSeriesCatalog(tmdbKey);
+        if (series.length > 0) {
+          return res.json({ series });
+        }
+      } catch (error) {
+        console.warn('TMDb series catalog failed, falling back to TVMaze:', error);
+      }
+    }
+
+    const series = await fetchTvMazeCatalog();
+    if (series.length > 0) {
       return res.json({ series });
     }
 
@@ -604,7 +773,18 @@ app.get('/api/series/:seriesId/seasons', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
     if (tmdbKey) {
-      const seasons = await fetchTmdbSeasons(tmdbKey, req.params.seriesId);
+      try {
+        const seasons = await fetchTmdbSeasons(tmdbKey, req.params.seriesId);
+        if (seasons.length > 0) {
+          return res.json({ seasons });
+        }
+      } catch (error) {
+        console.warn('TMDb seasons failed, falling back to TVMaze:', error);
+      }
+    }
+
+    const seasons = await fetchTvMazeSeasons(req.params.seriesId);
+    if (seasons.length > 0) {
       return res.json({ seasons });
     }
 
@@ -623,7 +803,18 @@ app.get('/api/series/:seriesId/seasons/:seasonNumber/episodes', async (req, res)
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
     if (tmdbKey) {
-      const episodes = await fetchTmdbEpisodes(tmdbKey, req.params.seriesId, req.params.seasonNumber);
+      try {
+        const episodes = await fetchTmdbEpisodes(tmdbKey, req.params.seriesId, req.params.seasonNumber);
+        if (episodes.length > 0) {
+          return res.json({ episodes });
+        }
+      } catch (error) {
+        console.warn('TMDb episodes failed, falling back to TVMaze:', error);
+      }
+    }
+
+    const episodes = await fetchTvMazeEpisodes(req.params.seriesId, req.params.seasonNumber);
+    if (episodes.length > 0) {
       return res.json({ episodes });
     }
 
