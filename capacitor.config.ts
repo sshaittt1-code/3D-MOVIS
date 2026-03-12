@@ -6,8 +6,7 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   bundledWebRuntime: false,
   server: {
-    // This is the magic part! The app will load your live AI Studio URL.
-    // Every time you update the app here, it will automatically update on your TV!
+    // Reverted to AI Studio live URL for full server-side support (Telegram, etc.)
     url: 'https://ais-pre-zgturhw4row6gtvlf3jbq3-185322315707.europe-west2.run.app',
     cleartext: true
   },
