@@ -12,6 +12,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: Date.now(),
+    tgConfigured: isTmdConfigured(),
+    env: {
+      TG_API_ID: process.env.TG_API_ID ? 'set' : 'missing',
+      TG_API_HASH: process.env.TG_API_HASH ? 'set' : 'missing',
+    }
+  });
+});
+
 const PORT = 3000;
 const TMDB_API_BASE = 'https://api.themoviedb.org/3';
 const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p';

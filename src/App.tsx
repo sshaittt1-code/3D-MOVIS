@@ -17,14 +17,23 @@ const extractApiError = async (response: Response) => {
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
+    console.error('[API Error]', response.status, payload);
     throw new Error(payload?.error || `API request failed with status ${response.status}`);
   }
 
   return payload;
 };
 const fetchApiJson = async (path: string, init?: RequestInit) => {
-  const response = await fetch(apiUrl(path), init);
-  return extractApiError(response);
+  const url = apiUrl(path);
+  console.log(`[API] Fetching: ${url}`);
+  try {
+    const response = await fetch(url, init);
+    console.log(`[API] Response status: ${response.status}`);
+    return extractApiError(response);
+  } catch (err) {
+    console.error(`[API] Fetch error for ${url}:`, err);
+    throw err;
+  }
 };
 const withApiOrigin = (url?: string) => {
   if (!url) return url;
