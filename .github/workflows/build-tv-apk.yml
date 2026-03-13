@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch: # Allows manual trigger
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-android:
     runs-on: ubuntu-latest
@@ -16,7 +19,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -27,20 +30,21 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Build Web App
+      - name: Build Web App (creates dist/)
         run: npm run build
 
-      - name: Sync Capacitor
+      - name: Sync Capacitor (copies dist/ into Android assets)
         run: npx cap sync android
 
       - name: Build APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: HoloCinema-TV-App
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
