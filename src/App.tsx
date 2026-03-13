@@ -54,8 +54,8 @@ const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, 
   const [targetPos, setTargetPos] = useState(new THREE.Vector3(0, 1.6, 2));
   const focusedMovieRef = useRef<any>(null);
   const STEP_SIZE = 0.8;
-  const ROTATION_SPEED = 0.035;
-
+  const ROTATION_SPEED = 0.012; // slow down significantly
+  
   // Track key states for smooth camera movement
   const keys = useRef<{ left: boolean; right: boolean }>({ left: false, right: false });
   // We explicitly control the target Y rotation
@@ -132,10 +132,8 @@ const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, 
       
       let foundPoster = false;
       for (const intersect of intersects) {
-        // We set a name 'poster_mesh' on the poster mesh to easily identify it
-        if (intersect.object.name === 'poster_mesh') {
-          // Find the corresponding movie from the posterLayout using the parent group's position mapping
-          // or ideally, we inject the movie ID into userData.
+        // We set a name 'poster_mesh' on BOTH the poster picture and its back mesh
+        if (intersect.object.name === 'poster_mesh' && intersect.object.userData.uniqueId) {
           const movieId = intersect.object.userData.uniqueId;
           const matchedPoster = posterLayout.find((p: any) => p.movie.uniqueId === movieId);
           
@@ -161,14 +159,37 @@ const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, 
 const Poster = ({ movie, position, rotation, isFocused }: any) => {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const groupRef = useRef<THREE.Group>(null!);
-  useEffect(() => { new THREE.TextureLoader().load(movie.poster, (tex) => { tex.colorSpace = THREE.SRGBColorSpace; setTexture(tex); }); }, [movie.poster]);
-  useFrame(() => { const targetScale = isFocused ? 1.4 : 1; groupRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, 1), 0.1); });
+  useEffect(() => { 
+    const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin('anonymous');
+    loader.load(movie.poster, (tex) => { 
+      tex.colorSpace = THREE.SRGBColorSpace; 
+      setTexture(tex); 
+    }); 
+  }, [movie.poster]);
+  useFrame(() => { 
+    const targetScale = isFocused ? 1.4 : 1; 
+    groupRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, 1), 0.1); 
+  });
   return (
     <group position={position} rotation={rotation} ref={groupRef}>
-      <mesh name="poster_mesh" userData={{ uniqueId: movie.uniqueId }}><planeGeometry args={[2.5, 3.75]} /><meshStandardMaterial map={texture} color={isFocused ? '#ffffff' : '#666666'} /></mesh>
-      <mesh position={[0, 0, -0.02]}><planeGeometry args={[2.6, 3.85]} /><meshBasicMaterial color={isFocused ? '#00ffcc' : '#111111'} /></mesh>
+      {/* Target both meshes for raycasting */}
+      <mesh name="poster_mesh" userData={{ uniqueId: movie.uniqueId }} position={[0, 0, 0.01]}>
+        <planeGeometry args={[2.5, 3.75]} />
+        <meshStandardMaterial map={texture} color={isFocused ? '#ffffff' : '#acacac'} />
+      </mesh>
+      <mesh name="poster_mesh" userData={{ uniqueId: movie.uniqueId }} position={[0, 0, -0.02]}>
+        <planeGeometry args={[2.6, 3.85]} />
+        <meshBasicMaterial color={isFocused ? '#00ffcc' : '#111111'} />
+      </mesh>
+      
+      {/* Title always shows, glows when focused */}
+      <Text position={[0, -2.4, 0.01]} fontSize={0.3} color={isFocused ? "#00ffcc" : "#ffffff"} anchorX="center" maxWidth={2.6} textAlign="center">
+        {movie.title}
+      </Text>
+      
       {isFocused && (
-        <><Text position={[0, -2.3, 0]} fontSize={0.3} color="#00ffcc" anchorX="center">{movie.title}</Text><SpotLight position={[0, 2, 3]} intensity={5} color="#00ffcc" angle={0.6} penumbra={0.5} /></>
+        <SpotLight position={[0, 2, 3]} intensity={5} color="#00ffcc" angle={0.6} penumbra={0.5} />
       )}
     </group>
   );
@@ -193,6 +214,7 @@ export default function App() {
 
   useEffect(() => {
     const handleGlobalBack = (e: KeyboardEvent) => {
+      // Catch TV Android escape buttons. TV remotes might send 'Escape' or 'Backspace'
       if (e.key === 'Escape' || e.key === 'Backspace') {
         if (showCinemaScreen) {
           stopTvEvent(e);
@@ -200,23 +222,33 @@ export default function App() {
         } else if (selectedMovie) {
           stopTvEvent(e);
           setSelectedMovie(null);
+        } else if (isLocked) {
+          // If in 3D mode but no movie selected, go back to main screen
+          stopTvEvent(e);
+          setIsLocked(false);
+          setFocusedId(null);
         }
       }
     };
     
     const handleMenuInput = (e: KeyboardEvent) => {
-      // If we're fully in the corridor (no modals open), listen to OK to enter the corridor
-      // But if we are ALREADY locked in the corridor, TVController handles it.
-      if (isLocked || selectedMovie || showCinemaScreen) return;
       if (!isTvSelectKey(e)) return;
-
-      stopTvEvent(e);
-      blurActiveElement();
-      setIsLocked(true);
-    };
-    const suppressMenuKeyUp = (e: KeyboardEvent) => {
-      if (!isLocked && !selectedMovie && !showCinemaScreen && isTvSelectKey(e)) {
+      
+      // If we are showing the corridor and nothing selected yet, start playing
+      if (!isLocked && !selectedMovie && !showCinemaScreen) {
         stopTvEvent(e);
+        blurActiveElement();
+        setIsLocked(true);
+      }
+      // If we're already locked and looking at a movie (but no modal open), that's handled by TVController
+    };
+    
+    const suppressMenuKeyUp = (e: KeyboardEvent) => {
+      if (isTvSelectKey(e)) {
+        // VERY IMPORTANT: Prevent Android webview from firing synthetic "onClick" events across the DOM
+        // when the user releases the "OK/Enter" button on the TV remote.
+        e.preventDefault();
+        e.stopPropagation();
       }
     };
 
