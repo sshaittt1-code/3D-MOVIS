@@ -11,50 +11,62 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT || '3000', 10);
+
+// Use crypto for simple ids
+import crypto from 'crypto';
+
 const SESSION_FILE = path.join(process.cwd(), 'tg_session.txt');
 
 // Serve Latest Built APK for OTA Updates
 app.use('/apk', express.static(path.join(process.cwd(), 'android', 'app', 'build', 'outputs', 'apk', 'debug')));
 
-// Load session from disk or environment
-let sessionString = process.env.TG_SESSION || '';
-if (!sessionString && fs.existsSync(SESSION_FILE)) {
-  sessionString = fs.readFileSync(SESSION_FILE, 'utf-8');
+// Active Connected Clients
+const activeClients = new Map<string, TelegramClient>();
+
+// Login Sessions
+interface LoginSession {
+  client: TelegramClient;
+  resolveCode: ((code: string) => void) | null;
+  resolvePassword: ((pw: string) => void) | null;
+  rejectLogin: ((err: any) => void) | null;
+  stage: 'none' | 'pending_code' | 'pending_password' | 'success' | 'error';
+  errorMsg: string;
 }
-let tgClient: TelegramClient | null = null;
+const loginSessions = new Map<string, LoginSession>();
 
-// Auth state resolvers
-let resolveCode: ((code: string) => void) | null = null;
-let resolvePassword: ((pw: string) => void) | null = null;
-let rejectLogin: ((err: any) => void) | null = null;
-let loginStage: 'none' | 'pending_code' | 'pending_password' | 'success' | 'error' = 'none';
-let loginErrorMsg: string = '';
-
-const getClient = async () => {
-  if (tgClient) return tgClient;
+const getClientParam = async (sessionStr: string) => {
+  if (!sessionStr) throw new Error("Missing Telegram Session! Please login on your TV.");
+  if (activeClients.has(sessionStr)) return activeClients.get(sessionStr)!;
+  
   const apiId = 30431141;
   const apiHash = 'f702b44f4c8d695e4116b17df4408221';
 
-  tgClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+  const client = new TelegramClient(new StringSession(sessionStr), apiId, apiHash, {
     connectionRetries: 5,
   });
-  await tgClient.connect();
-  return tgClient;
+  await client.connect();
+  activeClients.set(sessionStr, client);
+  return client;
 };
 
 // Start Login Flow
 app.post('/api/tg/startLogin', async (req, res) => {
   try {
     const { phone } = req.body;
-    const client = await getClient();
+    const loginId = crypto.randomUUID();
     
-    // Reset resolvers & state
-    resolveCode = null;
-    resolvePassword = null;
-    rejectLogin = null;
-    loginStage = 'pending_code';
-    loginErrorMsg = '';
+    const client = new TelegramClient(new StringSession(''), 30431141, 'f702b44f4c8d695e4116b17df4408221', { connectionRetries: 5 });
+    
+    const sessionObj: LoginSession = {
+      client,
+      resolveCode: null,
+      resolvePassword: null,
+      rejectLogin: null,
+      stage: 'pending_code',
+      errorMsg: ''
+    };
+    loginSessions.set(loginId, sessionObj);
 
     // We don't await this completely here because it blocks waiting for code
     client.signInUser(
@@ -62,36 +74,28 @@ app.post('/api/tg/startLogin', async (req, res) => {
       {
         phoneNumber: phone,
         phoneCode: async () => {
-          loginStage = 'pending_code';
-          return new Promise((resolve) => { resolveCode = resolve; });
+          sessionObj.stage = 'pending_code';
+          return new Promise((resolve) => { sessionObj.resolveCode = resolve; });
         },
         password: async () => {
-          loginStage = 'pending_password';
-          return new Promise((resolve) => { resolvePassword = resolve; });
+          sessionObj.stage = 'pending_password';
+          return new Promise((resolve) => { sessionObj.resolvePassword = resolve; });
         },
         onError: (err) => {
-          loginStage = 'error';
-          loginErrorMsg = err.message;
-          if (rejectLogin) rejectLogin(err);
+          sessionObj.stage = 'error';
+          sessionObj.errorMsg = err.message;
+          if (sessionObj.rejectLogin) sessionObj.rejectLogin(err);
         }
       }
     ).then(() => {
-      loginStage = 'success';
-      sessionString = (client.session as StringSession).save() as unknown as string;
-      fs.writeFileSync(SESSION_FILE, sessionString);
-      console.log("\n==========================================================");
-      console.log("✅ YOUR TELEGRAM SESSION STRING (SAVE THIS FOR CLOUD DEPLOYMENT) ✅");
-      console.log("Add this to your Render/Railway Environment Variables as TG_SESSION:");
-      console.log(sessionString);
-      console.log("==========================================================\n");
+      sessionObj.stage = 'success';
     }).catch(err => {
-      loginStage = 'error';
-      loginErrorMsg = err.message;
+      sessionObj.stage = 'error';
+      sessionObj.errorMsg = err.message;
       console.error('Login error:', err);
     });
 
-    // We send success immediately to let the client know to ask for the code
-    res.json({ success: true });
+    res.json({ success: true, loginId });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -99,76 +103,86 @@ app.post('/api/tg/startLogin', async (req, res) => {
 
 // Submit Code
 app.post('/api/tg/submitCode', async (req, res) => {
-  if (resolveCode) {
-    resolveCode(req.body.code);
+  const { loginId, code } = req.body;
+  const sessionObj = loginSessions.get(loginId);
+  if (!sessionObj) return res.status(404).json({ error: 'Login session expired or not found.' });
+
+  if (sessionObj.resolveCode) {
+    sessionObj.resolveCode(code);
     
     // Wait for the signInUser promise to progress to either success, error, or password state
     let attempts = 0;
-    while (loginStage === 'pending_code' && attempts < 30) {
+    while (sessionObj.stage === 'pending_code' && attempts < 30) {
       await new Promise(r => setTimeout(r, 200));
       attempts++;
     }
 
-    if (loginStage === 'pending_password') {
+    if (sessionObj.stage === 'pending_password') {
       res.json({ requiresPassword: true });
-    } else if (loginStage === 'success') {
-      res.json({ success: true });
-    } else if (loginStage === 'error') {
-      res.status(400).json({ error: loginErrorMsg });
+    } else if (sessionObj.stage === 'success') {
+      const finalSessionStr = (sessionObj.client.session as StringSession).save() as unknown as string;
+      activeClients.set(finalSessionStr, sessionObj.client);
+      loginSessions.delete(loginId);
+      res.json({ success: true, sessionString: finalSessionStr });
     } else {
-      res.status(500).json({ error: 'Timeout waiting for Telegram validation' });
+      res.status(400).json({ error: sessionObj.errorMsg || 'Failed to verify code' });
     }
   } else {
-    res.status(400).json({ error: 'No active login session waiting for code' });
+    res.status(400).json({ error: 'Not waiting for code' });
   }
 });
 
 // Submit Password (2FA)
 app.post('/api/tg/submitPassword', async (req, res) => {
-  if (resolvePassword) {
-    resolvePassword(req.body.password);
+  const { loginId, password } = req.body;
+  const sessionObj = loginSessions.get(loginId);
+  if (!sessionObj) return res.status(404).json({ error: 'Login session expired or not found.' });
+
+  if (sessionObj.resolvePassword) {
+    sessionObj.resolvePassword(password);
     
     let attempts = 0;
-    while (loginStage === 'pending_password' && attempts < 30) {
+    while (sessionObj.stage === 'pending_password' && attempts < 30) {
       await new Promise(r => setTimeout(r, 200));
       attempts++;
     }
 
-    if (loginStage === 'success') {
-      res.json({ success: true });
-    } else if (loginStage === 'error') {
-      res.status(400).json({ error: loginErrorMsg });
+    if (sessionObj.stage === 'success') {
+      const finalSessionStr = (sessionObj.client.session as StringSession).save() as unknown as string;
+      activeClients.set(finalSessionStr, sessionObj.client);
+      loginSessions.delete(loginId);
+      res.json({ success: true, sessionString: finalSessionStr });
     } else {
-      res.status(500).json({ error: 'Timeout waiting for 2FA validation' });
+      res.status(400).json({ error: sessionObj.errorMsg || 'Failed to verify password' });
     }
   } else {
-    res.status(400).json({ error: 'No active login session waiting for password' });
+    res.status(400).json({ error: 'Not waiting for password' });
   }
 });
 
 // Logout
 app.post('/api/tg/logout', async (req, res) => {
   try {
-    if (tgClient) {
-      await tgClient.invoke(new Api.auth.LogOut());
-      await tgClient.disconnect();
-      tgClient = null;
+    const sessionStr = req.headers['x-tg-session'] as string;
+    if (sessionStr) {
+       const client = activeClients.get(sessionStr);
+       if (client) {
+         await client.invoke(new Api.auth.LogOut());
+         activeClients.delete(sessionStr);
+       }
     }
-    sessionString = '';
-    if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE);
     res.json({ success: true });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.json({ success: true });
   }
 });
 
 // Check Auth Status
 app.get('/api/tg/status', async (req, res) => {
   try {
-    if (!sessionString && !tgClient) {
-      return res.json({ loggedIn: false });
-    }
-    const client = await getClient();
+    const sessionStr = req.headers['x-tg-session'] as string;
+    if (!sessionStr) return res.json({ loggedIn: false });
+    const client = await getClientParam(sessionStr);
     const isAuth = await client.checkAuthorization();
     res.json({ loggedIn: isAuth });
   } catch (e) {
@@ -182,7 +196,8 @@ app.get('/api/tg/search', async (req, res) => {
     const { query } = req.query;
     if (!query) return res.status(400).json({ error: 'Missing query' });
     
-    const client = await getClient();
+    const sessionStr = req.headers['x-tg-session'] as string;
+    const client = await getClientParam(sessionStr);
     
     // Search globally across all dialogs for video files matching the query
     const result = await client.invoke(new Api.messages.SearchGlobal({
@@ -233,7 +248,8 @@ app.get('/api/tg/search', async (req, res) => {
 // Stream Video with Range Support (Buffering)
 app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
   try {
-    const client = await getClient();
+    const sessionStr = req.query.session as string || req.headers['x-tg-session'] as string;
+    const client = await getClientParam(sessionStr);
     const peerId = req.params.peerId;
     const messageId = parseInt(req.params.messageId);
 
@@ -299,7 +315,8 @@ app.get('/api/tg/search-subtitles', async (req, res) => {
     const { query } = req.query;
     if (!query) return res.status(400).json({ error: 'Missing query' });
     
-    const client = await getClient();
+    const sessionStr = req.headers['x-tg-session'] as string;
+    const client = await getClientParam(sessionStr);
     
     // Search globally for Hebrew .srt files matching the movie
     const result = await client.invoke(new Api.messages.SearchGlobal({
@@ -335,7 +352,8 @@ app.get('/api/tg/search-subtitles', async (req, res) => {
 // Stream and Convert Subtitle (SRT to VTT)
 app.get('/api/tg/subtitle/:peerId/:messageId', async (req, res) => {
   try {
-    const client = await getClient();
+    const sessionStr = req.query.session as string || req.headers['x-tg-session'] as string;
+    const client = await getClientParam(sessionStr);
     const peerId = req.params.peerId;
     const messageId = parseInt(req.params.messageId);
 
@@ -418,7 +436,11 @@ app.get('/api/movies', async (req, res) => {
 async function startServer() {
   // OTA Version Check
   app.get('/api/version', (req, res) => {
-    res.json({ version: '1.1.0', message: 'עדכון קריטי: נגן וידאו מובנה ואופטימיזציה מסיבית לסטרימרים ומסכי טעינה.' });
+    res.json({
+      version: '1.0.4',
+      date: '13 במרץ 2026',
+      message: 'עדכון מערכת רחב: כל משתמש כעת מנהל חיבור פרטי לטלגרם על גבי הענן בשמירה מקומית! תוקנו שלל באגים של תנועת השלט עבור כפתורים והוספת מקורות.'
+    });
   });
 
   // Vite middleware for development

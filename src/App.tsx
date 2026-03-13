@@ -34,7 +34,12 @@ const BASE_MOVIES: any[] = [
   { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', desc: 'צוות חוקרים נוסע דרך חור תולעת בחלל.' },
 ];
 
-const fetchApiJson = async (path: string, init?: RequestInit) => {
+const fetchApiJson = async (path: string, init: RequestInit = {}) => {
+  const sessionStr = localStorage.getItem('tg_session') || '';
+  init.headers = {
+    ...init.headers,
+    'x-tg-session': sessionStr
+  };
   const response = await fetch(path, init);
   const bodyText = await response.text();
   if (bodyText.trim().startsWith('<')) throw new Error('API returned HTML. Check API Base URL.');
@@ -234,9 +239,12 @@ export default function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [activeMedia, setActiveMedia] = useState<{ url: string, title: string, subtitleUrl?: string } | null>(null);
 
-  const CURRENT_VERSION = '1.0.0';
+  const [loginId, setLoginId] = useState('');
+
+  const CURRENT_VERSION = '1.0.3';
   const [otaVersion, setOtaVersion] = useState<string | null>(null);
   const [otaMessage, setOtaMessage] = useState<string | null>(null);
+  const [otaDate, setOtaDate] = useState<string | null>(null);
 
   useEffect(() => {
     const base = apiBase.replace(/\/$/, '');
@@ -246,6 +254,7 @@ export default function App() {
         if (data.version && data.version !== CURRENT_VERSION) {
           setOtaVersion(data.version);
           setOtaMessage(data.message);
+          setOtaDate(data.date);
         }
       })
       .catch(() => {});
@@ -253,7 +262,8 @@ export default function App() {
 
   useEffect(() => {
     const base = apiBase.replace(/\/$/, '');
-    fetch(`${base}/api/tg/status`)
+    const sessionStr = localStorage.getItem('tg_session') || '';
+    fetch(`${base}/api/tg/status`, { headers: { 'x-tg-session': sessionStr } })
       .then(res => res.json())
       .then(data => setTgStatus(data.loggedIn ? 'loggedIn' : 'loggedOut'))
       .catch(() => setTgStatus('loggedOut'));
@@ -397,7 +407,8 @@ export default function App() {
     setIsBuffering(true);
     setBufferProgress(0);
     const base = apiBase.replace(/\/$/, '');
-    const videoUrl = `${window.location.origin}${base}/api/tg/stream/${peerId}/${messageId}`;
+    const sessionStr = localStorage.getItem('tg_session') || '';
+    const videoUrl = `${window.location.origin}${base}/api/tg/stream/${peerId}/${messageId}?session=${sessionStr}`;
     
     let progress = 0;
     const interval = setInterval(() => {
@@ -455,7 +466,7 @@ export default function App() {
                     setIsLoggingIn(true);
                     const base = apiBase.replace(/\/$/, '');
                     fetchApiJson(`${base}/api/tg/startLogin`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ phone }) })
-                      .then(() => { setTgStatus('codeInput'); setIsLoggingIn(false); })
+                      .then((res) => { setLoginId(res.loginId); setTgStatus('codeInput'); setIsLoggingIn(false); })
                       .catch(err => { setLoginError(`שגיאה: ${err.message}`); setIsLoggingIn(false); });
                   }} disabled={isLoggingIn} className={`w-full py-5 ${isLoggingIn ? 'bg-gray-500' : 'bg-[#2AABEE]'} text-white text-2xl font-bold rounded-2xl shadow-xl transition-colors`}>{isLoggingIn ? 'מתחבר (אנא המתן)...' : 'שלח קוד אימות'}</button>
                 </>
@@ -469,10 +480,13 @@ export default function App() {
                      setLoginError('');
                      setIsLoggingIn(true);
                      const base = apiBase.replace(/\/$/, '');
-                     fetchApiJson(`${base}/api/tg/submitCode`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ code }) })
+                     fetchApiJson(`${base}/api/tg/submitCode`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ loginId, code }) })
                        .then((res) => {
                           if (res.requiresPassword) setTgStatus('passwordInput');
-                          else setTgStatus('loggedIn');
+                          else {
+                            localStorage.setItem('tg_session', res.sessionString);
+                            setTgStatus('loggedIn');
+                          }
                           setIsLoggingIn(false);
                        })
                        .catch(err => {
@@ -492,8 +506,12 @@ export default function App() {
                      setLoginError('');
                      setIsLoggingIn(true);
                      const base = apiBase.replace(/\/$/, '');
-                     fetchApiJson(`${base}/api/tg/submitPassword`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ password }) })
-                       .then(() => { setTgStatus('loggedIn'); setIsLoggingIn(false); })
+                     fetchApiJson(`${base}/api/tg/submitPassword`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ loginId, password }) })
+                       .then((res) => {
+                          localStorage.setItem('tg_session', res.sessionString);
+                          setTgStatus('loggedIn');
+                          setIsLoggingIn(false);
+                       })
                        .catch(err => { setLoginError(`שגיאה בסיסמה: ${err.message}`); setIsLoggingIn(false); });
                   }} disabled={isLoggingIn} className={`w-full py-5 ${isLoggingIn ? 'bg-gray-500' : 'bg-red-500'} text-white text-2xl font-bold rounded-2xl shadow-xl transition-colors`}>{isLoggingIn ? 'מתחבר למערכת...' : 'שלח סיסמה'}</button>
                 </>
@@ -542,7 +560,8 @@ export default function App() {
                 <div className="w-full bg-blue-500/20 border border-blue-500/50 rounded-2xl p-6 mb-8 flex flex-col gap-4 relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-full h-1 bg-gradient-to-r from-blue-600 via-blue-400 to-transparent"></div>
                   <h3 className="text-2xl font-bold text-blue-300">עדכון גרסה זמין ({otaVersion})!</h3>
-                  <p className="text-gray-300 text-lg leading-relaxed">{otaMessage}</p>
+                  {otaDate && <p className="text-sm font-bold text-blue-400 mb-2">תאריך שחרור: {otaDate}</p>}
+                  <p className="text-gray-300 text-lg leading-relaxed whitespace-pre-wrap">{otaMessage}</p>
                   <a href={`${apiBase.replace(/\/$/, '')}/apk/app-debug.apk`} download className="mt-4 w-full text-center py-4 bg-blue-600 text-white font-bold text-2xl rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.6)] hover:bg-blue-500 transition-colors border border-blue-400/50">
                     הורד והתקן עדכון עכשיו
                   </a>
@@ -568,6 +587,22 @@ export default function App() {
                     חפש עדכונים ידנית
                   </button>
                 )}
+                <div className="flex items-center justify-between border-t border-white/10 pt-6 mt-2">
+                  <div>
+                    <p className="text-gray-400 text-sm mb-1">חיבור טלגרם למכשיר זה</p>
+                    <p className="text-2xl font-bold">{tgStatus === 'loggedIn' ? 'מחובר ✔️' : 'מנותק ❌'}</p>
+                  </div>
+                  {tgStatus === 'loggedIn' ? (
+                    <button onClick={() => {
+                       const base = apiBase.replace(/\/$/, '');
+                       const sessionStr = localStorage.getItem('tg_session') || '';
+                       fetchApiJson(`${base}/api/tg/logout`, { method: 'POST', headers: { 'x-tg-session': sessionStr } })
+                         .then(() => { localStorage.removeItem('tg_session'); setTgStatus('loggedOut'); });
+                    }} className="px-6 py-3 bg-red-500/20 text-red-400 border border-red-500/50 rounded-xl hover:bg-red-500 hover:text-white transition-colors">התנתק מהמכשיר</button>
+                  ) : (
+                    <button onClick={() => { setShowSettings(false); setTgStatus('phoneInput'); }} className="px-6 py-3 bg-[#2AABEE]/20 text-[#2AABEE] border border-[#2AABEE]/50 rounded-xl hover:bg-[#2AABEE] hover:text-white transition-colors">התחבר עכשיו</button>
+                  )}
+                </div>
               </div>
 
               <button onClick={() => setShowSettings(false)} className="px-10 py-4 bg-white/10 hover:bg-white/20 rounded-2xl transition-colors w-full text-xl font-bold">סגור</button>
@@ -607,7 +642,7 @@ export default function App() {
               <div className="flex-1 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-6 p-4">
                 {isSearchingTg ? <div className="col-span-full text-center"><Loader2 className="animate-spin mx-auto w-16 h-16 text-blue-400" /></div> :
                   tgSearchResults.map((res, i) => (
-                    <button key={i} onClick={() => handlePlayVideo(res.peerId, res.id, res.title)} className="bg-white/5 border border-white/10 p-8 rounded-[30px] text-right hover:border-blue-500 flex items-center gap-6 focus:ring-4 focus:ring-blue-400">
+                    <button autoFocus={i === 0} key={i} onClick={() => handlePlayVideo(res.peerId, res.id, res.title)} className="bg-white/5 border border-white/10 p-8 rounded-[30px] text-right hover:border-blue-500 flex items-center gap-6 focus:ring-4 focus:ring-blue-400">
                       <Play fill="#3b82f6" size={32} />
                       <div className="flex-1 min-w-0"><h3 className="font-bold text-2xl truncate">{res.title}</h3><p className="text-gray-400 mt-2">{res.size} • {res.chatName}</p></div>
                     </button>
