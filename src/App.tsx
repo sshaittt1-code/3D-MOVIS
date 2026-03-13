@@ -6,6 +6,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Play, Search, LogOut, Settings, Film, X, Loader2 } from 'lucide-react';
 import { App as CapApp } from '@capacitor/app';
 import { textureManager } from './utils/TextureManager';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { registerPlugin } from '@capacitor/core';
+
+const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
 // --- API Helpers ---
 const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://threed-movis.onrender.com';
@@ -241,10 +245,12 @@ export default function App() {
 
   const [loginId, setLoginId] = useState('');
 
-  const CURRENT_VERSION = '1.0.3';
+  const CURRENT_VERSION = '1.0.4';
   const [otaVersion, setOtaVersion] = useState<string | null>(null);
   const [otaMessage, setOtaMessage] = useState<string | null>(null);
   const [otaDate, setOtaDate] = useState<string | null>(null);
+  const [isDownloadingOta, setIsDownloadingOta] = useState(false);
+  const [otaDownloadProgress, setOtaDownloadProgress] = useState(0);
 
   useEffect(() => {
     const base = apiBase.replace(/\/$/, '');
@@ -562,9 +568,36 @@ export default function App() {
                   <h3 className="text-2xl font-bold text-blue-300">עדכון גרסה זמין ({otaVersion})!</h3>
                   {otaDate && <p className="text-sm font-bold text-blue-400 mb-2">תאריך שחרור: {otaDate}</p>}
                   <p className="text-gray-300 text-lg leading-relaxed whitespace-pre-wrap">{otaMessage}</p>
-                  <a href={`${apiBase.replace(/\/$/, '')}/apk/app-debug.apk`} download className="mt-4 w-full text-center py-4 bg-blue-600 text-white font-bold text-2xl rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.6)] hover:bg-blue-500 transition-colors border border-blue-400/50">
-                    הורד והתקן עדכון עכשיו
-                  </a>
+                  <button disabled={isDownloadingOta} onClick={async () => {
+                    try {
+                      setIsDownloadingOta(true);
+                      setOtaDownloadProgress(0);
+                      const base = apiBase.replace(/\/$/, '');
+                      const apkUrl = `${base}/apk/app-debug.apk`;
+                      
+                      const listener = await Filesystem.addListener('progress', (progress) => {
+                         setOtaDownloadProgress(Math.floor((progress.bytes / progress.contentLength) * 100));
+                      });
+
+                      const download = await Filesystem.downloadFile({
+                        url: apkUrl,
+                        path: 'holocinema_update.apk',
+                        directory: Directory.Cache,
+                        progress: true
+                      });
+                      
+                      listener.remove();
+
+                      await ApkInstaller.install({ filePath: download.path });
+                    } catch (e: any) {
+                      alert(`שגיאה בהתקנת העדכון: ${e.message}`);
+                    } finally {
+                      setIsDownloadingOta(false);
+                      setOtaDownloadProgress(0);
+                    }
+                  }} className={`mt-4 w-full text-center py-4 text-white font-bold text-2xl rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.6)] transition-colors border border-blue-400/50 ${isDownloadingOta ? 'bg-gray-600' : 'bg-blue-600 hover:bg-blue-500'}`}>
+                    {isDownloadingOta ? `מוריד עדכון... ${otaDownloadProgress}%` : 'הורד והתקן עדכון עכשיו'}
+                  </button>
                 </div>
               )}
 

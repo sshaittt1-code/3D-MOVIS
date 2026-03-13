@@ -57,6 +57,7 @@ app.post('/api/tg/startLogin', async (req, res) => {
     const loginId = crypto.randomUUID();
     
     const client = new TelegramClient(new StringSession(''), 30431141, 'f702b44f4c8d695e4116b17df4408221', { connectionRetries: 5 });
+    await client.connect();
     
     const sessionObj: LoginSession = {
       client,
