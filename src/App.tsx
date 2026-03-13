@@ -131,17 +131,20 @@ const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, 
       const intersects = raycaster.current.intersectObjects(state.scene.children, true);
       
       let foundPoster = false;
-      for (const intersect of intersects) {
-        // We set a name 'poster_mesh' on BOTH the poster picture and its back mesh
-        if (intersect.object.name === 'poster_mesh' && intersect.object.userData.uniqueId) {
-          const movieId = intersect.object.userData.uniqueId;
+      if (intersects.length > 0) {
+        // Find the FIRST object in the intersection list that is a poster
+        const firstPosterIntersect = intersects.find(
+          (intersect) => intersect.object.name === 'poster_mesh' && intersect.object.userData.uniqueId
+        );
+
+        if (firstPosterIntersect) {
+          const movieId = firstPosterIntersect.object.userData.uniqueId;
           const matchedPoster = posterLayout.find((p: any) => p.movie.uniqueId === movieId);
           
           if (matchedPoster) {
             focusedMovieRef.current = matchedPoster.movie;
             setFocusedId(movieId);
             foundPoster = true;
-            break;
           }
         }
       }
@@ -333,8 +336,8 @@ export default function App() {
 
       {/* Red Dot Reticle */}
       {isLocked && !selectedMovie && !showCinemaScreen && (
-        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none">
-          <div className="w-2 h-2 bg-red-600 rounded-full shadow-[0_0_8px_4px_rgba(220,38,38,0.6)]"></div>
+        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none flex items-center justify-center">
+          <div className="w-2 h-2 bg-red-600 rounded-full shadow-[0_0_8px_4px_rgba(220,38,38,0.8)]"></div>
         </div>
       )}
 
