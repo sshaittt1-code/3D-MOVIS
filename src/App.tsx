@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Text, SpotLight } from '@react-three/drei';
+import { Text, SpotLight, useKeyboardControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Play, Star, Film, Loader2, Search, Phone, Key, Lock, Heart, Shuffle, Type, TrendingUp } from 'lucide-react';
+import { Play, Search, LogOut, Settings, Film, X, Loader2 } from 'lucide-react';
+import { App as CapApp } from '@capacitor/app';
+import { textureManager } from './utils/TextureManager';
 
+// --- API Helpers ---
 const getApiBase = () => {
   if (import.meta.env.VITE_API_BASE) return import.meta.env.VITE_API_BASE;
   if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
@@ -182,17 +185,12 @@ const Poster = ({ movie, position, rotation, isFocused }: any) => {
     groupRef.current.visible = isVisible;
     if (showText !== isTextVisible) setShowText(isTextVisible);
 
-    // Lazy load the texture only when it comes into view
+    // Lazy load the texture off the main thread so Android TV doesn't hang!
     if (isVisible && !fetchAttempted.current) {
       fetchAttempted.current = true;
-      const loader = new THREE.TextureLoader();
-      loader.setCrossOrigin('anonymous');
-      loader.load(movie.poster, (tex) => { 
-        tex.colorSpace = THREE.SRGBColorSpace; 
-        tex.generateMipmaps = false; // Massive memory saving for weak TV hardware
-        tex.minFilter = THREE.LinearFilter;
-        setTexture(tex); 
-      }); 
+      textureManager.loadTexture(movie.poster)
+        .then(tex => setTexture(tex))
+        .catch(err => console.error("Failed to load poster texture", err));
     }
   });
   return (
@@ -273,21 +271,65 @@ export default function App() {
       .catch(() => setTgStatus('loggedOut'));
   }, [apiBase]);
 
+  const exitPressCount = useRef(0);
+  const exitTimeout = useRef<any>(null);
+
+  // Hardware Back Button Interceptor for Android TV (so remote 'Back' doesn't kill the app)
+  useEffect(() => {
+    const handleBackEvent = () => {
+      if (activeMedia) { setActiveMedia(null); return; }
+      if (showCinemaScreen) { setShowCinemaScreen(false); return; }
+      if (showSettings) { setShowSettings(false); return; }
+      if (tgStatus === 'phoneInput' || tgStatus === 'codeInput' || tgStatus === 'passwordInput') {
+        setTgStatus('loggedOut'); 
+        return; 
+      }
+      if (isLocked) {
+        setIsLocked(false);
+        setFocusedId(null);
+        return;
+      }
+      
+      // In Main Menu Root
+      exitPressCount.current += 1;
+      if (exitPressCount.current >= 3) {
+        CapApp.exitApp();
+      } else {
+        clearTimeout(exitTimeout.current);
+        exitTimeout.current = setTimeout(() => { exitPressCount.current = 0; }, 2000);
+      }
+    };
+
+    let backListener: any;
+    CapApp.addListener('backButton', handleBackEvent).then(l => backListener = l);
+    return () => { if (backListener) backListener.remove(); };
+  }, [activeMedia, showCinemaScreen, showSettings, isLocked, tgStatus]);
+
   useEffect(() => {
     const handleGlobalBack = (e: KeyboardEvent) => {
-      // Catch TV Android escape buttons. TV remotes might send 'Escape' or 'Backspace'
+      // Catch conventional keyboard ESC for Web compatibility
       if (e.key === 'Escape' || e.key === 'Backspace') {
         if (tgStatus === 'phoneInput' || tgStatus === 'codeInput' || tgStatus === 'passwordInput') {
           stopTvEvent(e);
           setTgStatus('loggedOut');
-        } else if (showCinemaScreen) {
+          return;
+        }
+        if (isSearchingTg) {
+          stopTvEvent(e);
+          setIsSearchingTg(false);
+          return;
+        }
+        if (showCinemaScreen) {
           stopTvEvent(e);
           setShowCinemaScreen(false);
-        } else if (selectedMovie) {
+          return;
+        }
+        if (showSettings) {
           stopTvEvent(e);
-          setSelectedMovie(null);
-        } else if (isLocked) {
-          // If in 3D mode but no movie selected, go back to main screen
+          setShowSettings(false);
+          return;
+        }
+        if (isLocked) {
           stopTvEvent(e);
           setIsLocked(false);
           setFocusedId(null);

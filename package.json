@@ -16,6 +16,7 @@
     "android:apk": "npm run android:sync && .\\android\\gradlew.bat -p .\\android assembleDebug"
   },
   "dependencies": {
+    "@capacitor/app": "^8.0.1",
     "@capacitor/core": "^8.2.0",
     "@google/genai": "^1.29.0",
     "@react-three/drei": "^10.7.7",
