@@ -34,16 +34,7 @@ const stopTvEvent = (e: KeyboardEvent) => {
   e.stopImmediatePropagation?.();
 };
 
-// --- Helper for Android Intents (MX Player) ---
-const openInMXPlayer = (videoUrl: string, title: string, subtitleUrl?: string) => {
-  const intentUrl = `intent:${videoUrl}#Intent;` +
-    `package=com.mxtech.videoplayer.ad;` +
-    `S.title=${encodeURIComponent(title)};` +
-    (subtitleUrl ? `S.subs=${encodeURIComponent(subtitleUrl)};S.subs.name=Hebrew;` : '') +
-    `end`;
-
-  window.location.href = intentUrl;
-};
+// Native Video Player replaced MX Player requirement
 
 // --- Mock Data ---
 const BASE_MOVIES: any[] = [
@@ -171,6 +162,7 @@ const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, 
 
 const Poster = ({ movie, position, rotation, isFocused }: any) => {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
+  const [showText, setShowText] = useState(false);
   const groupRef = useRef<THREE.Group>(null!);
   const fetchAttempted = useRef(false);
 
@@ -184,7 +176,11 @@ const Poster = ({ movie, position, rotation, isFocused }: any) => {
     // Frustum Culling for Android TV Performance (Only render what's near the camera)
     const distZ = state.camera.position.z - groupRef.current.position.z;
     const isVisible = distZ > -15 && distZ < 35; 
+    // Further optimization: Text polygons are heavy, only render if relatively close!
+    const isTextVisible = isVisible && distZ < 15;
+    
     groupRef.current.visible = isVisible;
+    if (showText !== isTextVisible) setShowText(isTextVisible);
 
     // Lazy load the texture only when it comes into view
     if (isVisible && !fetchAttempted.current) {
@@ -211,10 +207,12 @@ const Poster = ({ movie, position, rotation, isFocused }: any) => {
         <meshBasicMaterial color={isFocused ? '#00ffcc' : '#111111'} />
       </mesh>
       
-      {/* Title always shows, glows when focused */}
-      <Text position={[0, -2.4, 0.01]} fontSize={0.3} color={isFocused ? "#00ffcc" : "#ffffff"} anchorX="center" maxWidth={2.6} textAlign="center">
-        {movie.title}
-      </Text>
+      {/* Title only renders when near the camera to save Polygon heavy load */}
+      {showText && (
+        <Text position={[0, -2.4, 0.01]} fontSize={0.3} color={isFocused ? "#00ffcc" : "#ffffff"} anchorX="center" maxWidth={2.6} textAlign="center">
+          {movie.title}
+        </Text>
+      )}
       
       {isFocused && (
         <SpotLight position={[0, 2, 3]} intensity={5} color="#00ffcc" angle={0.6} penumbra={0.5} />
@@ -247,6 +245,25 @@ export default function App() {
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [activeMedia, setActiveMedia] = useState<{ url: string, title: string, subtitleUrl?: string } | null>(null);
+
+  const CURRENT_VERSION = '1.0.0';
+  const [otaVersion, setOtaVersion] = useState<string | null>(null);
+  const [otaMessage, setOtaMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const base = apiBase.replace(/\/$/, '');
+    fetch(`${base}/api/version`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.version && data.version !== CURRENT_VERSION) {
+          setOtaVersion(data.version);
+          setOtaMessage(data.message);
+        }
+      })
+      .catch(() => {});
+  }, [apiBase]);
 
   useEffect(() => {
     const base = apiBase.replace(/\/$/, '');
@@ -368,9 +385,9 @@ export default function App() {
           .then(res => res.json())
           .then(subData => {
             const subUrl = subData.results?.[0] ? `${window.location.origin}${base}/api/tg/subtitle/${subData.results[0].peerId}/${subData.results[0].id}` : undefined;
-            openInMXPlayer(videoUrl, title, subUrl);
+            setActiveMedia({ url: videoUrl, title, subtitleUrl: subUrl });
           })
-          .catch(() => openInMXPlayer(videoUrl, title));
+          .catch(() => setActiveMedia({ url: videoUrl, title }));
       }
     }, 300);
   };
@@ -410,11 +427,12 @@ export default function App() {
                   <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} dir="ltr" className="w-full text-center text-4xl p-6 rounded-2xl bg-white/5 border border-white/10 focus:border-[#2AABEE] focus:bg-white/10 outline-none mb-8 transition-all" placeholder="+972501234567" />
                   <button onClick={() => {
                     setLoginError('');
+                    setIsLoggingIn(true);
                     const base = apiBase.replace(/\/$/, '');
                     fetchApiJson(`${base}/api/tg/startLogin`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ phone }) })
-                      .then(() => setTgStatus('codeInput'))
-                      .catch(err => setLoginError(`שגיאה: ${err.message}`));
-                  }} className="w-full py-5 bg-[#2AABEE] text-white text-2xl font-bold rounded-2xl shadow-xl hover:bg-blue-400 transition-colors">שלח קוד אימות</button>
+                      .then(() => { setTgStatus('codeInput'); setIsLoggingIn(false); })
+                      .catch(err => { setLoginError(`שגיאה: ${err.message}`); setIsLoggingIn(false); });
+                  }} disabled={isLoggingIn} className={`w-full py-5 ${isLoggingIn ? 'bg-gray-500' : 'bg-[#2AABEE]'} text-white text-2xl font-bold rounded-2xl shadow-xl transition-colors`}>{isLoggingIn ? 'מתחבר (אנא המתן)...' : 'שלח קוד אימות'}</button>
                 </>
               )}
               
@@ -424,17 +442,20 @@ export default function App() {
                   <input type="text" value={code} onChange={e => setCode(e.target.value)} dir="ltr" className="w-full text-center text-5xl tracking-[0.5em] p-6 rounded-2xl bg-white/5 border border-white/10 focus:border-green-500 outline-none mb-8" placeholder="12345" />
                   <button onClick={() => {
                      setLoginError('');
+                     setIsLoggingIn(true);
                      const base = apiBase.replace(/\/$/, '');
                      fetchApiJson(`${base}/api/tg/submitCode`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ code }) })
                        .then((res) => {
                           if (res.requiresPassword) setTgStatus('passwordInput');
                           else setTgStatus('loggedIn');
+                          setIsLoggingIn(false);
                        })
                        .catch(err => {
                           if (err.message.includes('password') || err.message.includes('2FA')) setTgStatus('passwordInput');
                           else setLoginError(`שגיאה בקוד: ${err.message}`);
+                          setIsLoggingIn(false);
                        });
-                  }} className="w-full py-5 bg-green-500 text-black text-2xl font-bold rounded-2xl shadow-xl hover:bg-green-400 transition-colors">אמת והתחבר</button>
+                  }} disabled={isLoggingIn} className={`w-full py-5 ${isLoggingIn ? 'bg-gray-500' : 'bg-green-500'} text-black text-2xl font-bold rounded-2xl shadow-xl transition-colors`}>{isLoggingIn ? 'מאמת...' : 'אמת והתחבר'}</button>
                 </>
               )}
 
@@ -444,11 +465,12 @@ export default function App() {
                   <input type="password" value={password} onChange={e => setPassword(e.target.value)} dir="ltr" className="w-full text-center text-4xl p-6 rounded-2xl bg-white/5 border border-white/10 focus:border-red-500 outline-none mb-8" />
                   <button onClick={() => {
                      setLoginError('');
+                     setIsLoggingIn(true);
                      const base = apiBase.replace(/\/$/, '');
                      fetchApiJson(`${base}/api/tg/submitPassword`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ password }) })
-                       .then(() => setTgStatus('loggedIn'))
-                       .catch(err => setLoginError(`שגיאה בסיסמה: ${err.message}`));
-                  }} className="w-full py-5 bg-red-500 text-white text-2xl font-bold rounded-2xl shadow-xl hover:bg-red-400 transition-colors">שלח סיסמה</button>
+                       .then(() => { setTgStatus('loggedIn'); setIsLoggingIn(false); })
+                       .catch(err => { setLoginError(`שגיאה בסיסמה: ${err.message}`); setIsLoggingIn(false); });
+                  }} disabled={isLoggingIn} className={`w-full py-5 ${isLoggingIn ? 'bg-gray-500' : 'bg-red-500'} text-white text-2xl font-bold rounded-2xl shadow-xl transition-colors`}>{isLoggingIn ? 'מתחבר למערכת...' : 'שלח סיסמה'}</button>
                 </>
               )}
 
@@ -491,6 +513,17 @@ export default function App() {
             <div className="bg-[#0a0a0a] border border-[#00ffcc]/40 rounded-[40px] p-12 flex flex-col items-center max-w-xl w-full shadow-2xl">
               <h2 className="text-4xl font-bold text-[#00ffcc] mb-8">הגדרות</h2>
               
+              {otaVersion && (
+                <div className="w-full bg-blue-500/20 border border-blue-500/50 rounded-2xl p-6 mb-8 flex flex-col gap-4 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-full h-1 bg-gradient-to-r from-blue-600 via-blue-400 to-transparent"></div>
+                  <h3 className="text-2xl font-bold text-blue-300">עדכון גרסה זמין ({otaVersion})!</h3>
+                  <p className="text-gray-300 text-lg leading-relaxed">{otaMessage}</p>
+                  <a href={`${apiBase.replace(/\/$/, '')}/apk/app-debug.apk`} download className="mt-4 w-full text-center py-4 bg-blue-600 text-white font-bold text-2xl rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.6)] hover:bg-blue-500 transition-colors border border-blue-400/50">
+                    הורד והתקן עדכון עכשיו
+                  </a>
+                </div>
+              )}
+
               <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex flex-col gap-6">
                 <div className="flex flex-col">
                   <p className="text-gray-400 text-sm mb-2">כתובת שרת מקומית (API IP) - חובה לטלוויזיות אמיתיות</p>
@@ -518,6 +551,17 @@ export default function App() {
 
               <button onClick={() => setShowSettings(false)} className="px-10 py-4 bg-white/10 hover:bg-white/20 rounded-2xl transition-colors w-full text-xl font-bold">סגור</button>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {otaVersion && !showSettings && !showCinemaScreen && !selectedMovie && !isLocked && (
+          <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="absolute top-8 left-8 z-50">
+            <button onClick={() => setShowSettings(true)} className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-4 rounded-full font-bold shadow-[0_0_20px_rgba(37,99,235,0.8)] flex items-center gap-3 transition-colors text-lg border border-blue-400/50">
+              <span className="text-2xl">🔔</span>
+              עדכון מערכת זמין!
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -554,6 +598,27 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      <AnimatePresence>
+        {activeMedia && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[100] bg-black">
+            <video 
+               src={activeMedia.url} 
+               controls 
+               autoPlay 
+               className="w-full h-full object-contain"
+               crossOrigin="anonymous"
+               onEnded={() => setActiveMedia(null)}
+            >
+               {activeMedia.subtitleUrl && (
+                 <track kind="subtitles" src={activeMedia.subtitleUrl} srcLang="he" label="Hebrew" default />
+               )}
+            </video>
+            <button onClick={() => setActiveMedia(null)} className="absolute top-8 left-8 z-[110] bg-black/50 p-4 rounded-full text-white hover:bg-white/20 transition-all font-bold">
+               סגור נגן
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {selectedMovie && !showCinemaScreen && (
         <div className="absolute inset-0 z-30 flex items-center justify-center p-8 bg-black/95">
            <div className="bg-[#0a0a0a] border border-[#00ffcc]/40 rounded-[40px] p-12 flex gap-12 max-w-5xl shadow-2xl">

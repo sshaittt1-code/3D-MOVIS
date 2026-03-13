@@ -14,6 +14,9 @@ app.use(express.json());
 const PORT = 3000;
 const SESSION_FILE = path.join(process.cwd(), 'tg_session.txt');
 
+// Serve Latest Built APK for OTA Updates
+app.use('/apk', express.static(path.join(process.cwd(), 'android', 'app', 'build', 'outputs', 'apk', 'debug')));
+
 // Load session from disk if it exists
 let sessionString = '';
 if (fs.existsSync(SESSION_FILE)) {
@@ -423,8 +426,13 @@ async function startServer() {
     });
   }
 
+  // OTA Version Check
+app.get('/api/version', (req, res) => {
+  res.json({ version: '1.1.0', message: 'עדכון קריטי: נגן וידאו מובנה ואופטימיזציה מסיבית לסטרימרים ומסכי טעינה.' });
+});
+
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 }
 
