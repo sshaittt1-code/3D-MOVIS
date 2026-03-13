@@ -5,14 +5,16 @@ import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Play, Star, Film, Loader2, Search, Phone, Key, Lock, Heart, Shuffle, Type, TrendingUp } from 'lucide-react';
 
-// If VITE_API_BASE is empty (e.g. running locally via Capacitor), try to determine the local network IP or default to emulator localhost.
 const getApiBase = () => {
   if (import.meta.env.VITE_API_BASE) return import.meta.env.VITE_API_BASE;
   if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
+  if ((window as any).Capacitor?.isNative || navigator.userAgent.includes('Android')) {
+    return 'http://10.0.2.2:3000'; // Default Android Emulator to Host IP
+  }
   if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     return `http://${window.location.hostname}:3000`;
   }
-  return 'http://10.0.2.2:3000'; // Default Android Emulator to Host IP
+  return 'http://localhost:3000'; // Desktop Browser
 };
 const API_BASE = getApiBase();
 const isTvSelectKey = (e: KeyboardEvent) =>
@@ -170,17 +172,32 @@ const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, 
 const Poster = ({ movie, position, rotation, isFocused }: any) => {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const groupRef = useRef<THREE.Group>(null!);
-  useEffect(() => { 
-    const loader = new THREE.TextureLoader();
-    loader.setCrossOrigin('anonymous');
-    loader.load(movie.poster, (tex) => { 
-      tex.colorSpace = THREE.SRGBColorSpace; 
-      setTexture(tex); 
-    }); 
-  }, [movie.poster]);
-  useFrame(() => { 
+  const fetchAttempted = useRef(false);
+
+  useFrame((state) => { 
+    if (!groupRef.current) return;
+    
+    // Scale animation
     const targetScale = isFocused ? 1.4 : 1; 
     groupRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, 1), 0.1); 
+
+    // Frustum Culling for Android TV Performance (Only render what's near the camera)
+    const distZ = state.camera.position.z - groupRef.current.position.z;
+    const isVisible = distZ > -15 && distZ < 35; 
+    groupRef.current.visible = isVisible;
+
+    // Lazy load the texture only when it comes into view
+    if (isVisible && !fetchAttempted.current) {
+      fetchAttempted.current = true;
+      const loader = new THREE.TextureLoader();
+      loader.setCrossOrigin('anonymous');
+      loader.load(movie.poster, (tex) => { 
+        tex.colorSpace = THREE.SRGBColorSpace; 
+        tex.generateMipmaps = false; // Massive memory saving for weak TV hardware
+        tex.minFilter = THREE.LinearFilter;
+        setTexture(tex); 
+      }); 
+    }
   });
   return (
     <group position={position} rotation={rotation} ref={groupRef}>
@@ -474,18 +491,29 @@ export default function App() {
             <div className="bg-[#0a0a0a] border border-[#00ffcc]/40 rounded-[40px] p-12 flex flex-col items-center max-w-xl w-full shadow-2xl">
               <h2 className="text-4xl font-bold text-[#00ffcc] mb-8">הגדרות</h2>
               
-              <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex items-center justify-between">
-                <div>
-                  <p className="text-gray-400 text-sm mb-1">סטטוס חיבור טלגרם</p>
-                  <p className="text-2xl font-bold">{tgStatus === 'loggedIn' ? 'מחובר ✔️' : 'מנותק ❌'}</p>
+              <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex flex-col gap-6">
+                <div className="flex flex-col">
+                  <p className="text-gray-400 text-sm mb-2">כתובת שרת מקומית (API IP) - חובה לטלוויזיות אמיתיות</p>
+                  <div className="flex gap-4">
+                    <input type="text" value={apiBase} onChange={(e) => setApiBase(e.target.value)} dir="ltr" className="flex-1 bg-black/50 border border-white/20 rounded-xl p-3 text-lg focus:border-[#00ffcc] outline-none" placeholder="http://192.168.1.x:3000" />
+                    <button onClick={() => { localStorage.setItem('api_base', apiBase); window.location.reload(); }} className="px-6 py-3 bg-[#00ffcc]/20 text-[#00ffcc] border border-[#00ffcc]/50 rounded-xl hover:bg-[#00ffcc] hover:text-black font-bold transition-colors">שמור ורענן</button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">* אם אתה מריץ על סטרימר פיזי, הכנס כאן את ה-IP של המחשב שמריץ את הרשת (למשל http://192.168.1.15:3000) במקום 10.0.2.2.</p>
                 </div>
-                {tgStatus === 'loggedIn' && (
-                  <button onClick={() => {
-                     const base = apiBase.replace(/\/$/, '');
-                     fetchApiJson(`${base}/api/tg/logout`, { method: 'POST' })
-                       .then(() => setTgStatus('loggedOut'));
-                  }} className="px-6 py-3 bg-red-500/20 text-red-400 border border-red-500/50 rounded-xl hover:bg-red-500 hover:text-white transition-colors">התנתק</button>
-                )}
+                <div className="w-full h-px bg-white/10 my-2"></div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-gray-400 text-sm mb-1">סטטוס חיבור טלגרם</p>
+                    <p className="text-2xl font-bold">{tgStatus === 'loggedIn' ? 'מחובר ✔️' : 'מנותק ❌'}</p>
+                  </div>
+                  {tgStatus === 'loggedIn' && (
+                    <button onClick={() => {
+                       const base = apiBase.replace(/\/$/, '');
+                       fetchApiJson(`${base}/api/tg/logout`, { method: 'POST' })
+                         .then(() => setTgStatus('loggedOut'));
+                    }} className="px-6 py-3 bg-red-500/20 text-red-400 border border-red-500/50 rounded-xl hover:bg-red-500 hover:text-white transition-colors">התנתק</button>
+                  )}
+                </div>
               </div>
 
               <button onClick={() => setShowSettings(false)} className="px-10 py-4 bg-white/10 hover:bg-white/20 rounded-2xl transition-colors w-full text-xl font-bold">סגור</button>
