@@ -5,21 +5,28 @@ import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import cors from 'cors';
 import path from 'node:path';
+import fs from 'node:fs';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const PORT = 3000;
+const SESSION_FILE = path.join(process.cwd(), 'tg_session.txt');
 
-// In-memory storage for the session (in a real app, save to DB)
+// Load session from disk if it exists
 let sessionString = '';
+if (fs.existsSync(SESSION_FILE)) {
+  sessionString = fs.readFileSync(SESSION_FILE, 'utf-8');
+}
 let tgClient: TelegramClient | null = null;
 
 // Auth state resolvers
 let resolveCode: ((code: string) => void) | null = null;
 let resolvePassword: ((pw: string) => void) | null = null;
 let rejectLogin: ((err: any) => void) | null = null;
+let loginStage: 'none' | 'pending_code' | 'pending_password' | 'success' | 'error' = 'none';
+let loginErrorMsg: string = '';
 
 const getClient = async () => {
   if (tgClient) return tgClient;
@@ -39,10 +46,12 @@ app.post('/api/tg/startLogin', async (req, res) => {
     const { phone } = req.body;
     const client = await getClient();
     
-    // Reset resolvers
+    // Reset resolvers & state
     resolveCode = null;
     resolvePassword = null;
     rejectLogin = null;
+    loginStage = 'pending_code';
+    loginErrorMsg = '';
 
     // We don't await this completely here because it blocks waiting for code
     client.signInUser(
@@ -50,18 +59,26 @@ app.post('/api/tg/startLogin', async (req, res) => {
       {
         phoneNumber: phone,
         phoneCode: async () => {
+          loginStage = 'pending_code';
           return new Promise((resolve) => { resolveCode = resolve; });
         },
         password: async () => {
+          loginStage = 'pending_password';
           return new Promise((resolve) => { resolvePassword = resolve; });
         },
         onError: (err) => {
+          loginStage = 'error';
+          loginErrorMsg = err.message;
           if (rejectLogin) rejectLogin(err);
         }
       }
     ).then(() => {
-      sessionString = (client.session as StringSession).save();
+      loginStage = 'success';
+      sessionString = (client.session as StringSession).save() as unknown as string;
+      fs.writeFileSync(SESSION_FILE, sessionString);
     }).catch(err => {
+      loginStage = 'error';
+      loginErrorMsg = err.message;
       console.error('Login error:', err);
     });
 
@@ -76,7 +93,23 @@ app.post('/api/tg/startLogin', async (req, res) => {
 app.post('/api/tg/submitCode', async (req, res) => {
   if (resolveCode) {
     resolveCode(req.body.code);
-    res.json({ success: true });
+    
+    // Wait for the signInUser promise to progress to either success, error, or password state
+    let attempts = 0;
+    while (loginStage === 'pending_code' && attempts < 30) {
+      await new Promise(r => setTimeout(r, 200));
+      attempts++;
+    }
+
+    if (loginStage === 'pending_password') {
+      res.json({ requiresPassword: true });
+    } else if (loginStage === 'success') {
+      res.json({ success: true });
+    } else if (loginStage === 'error') {
+      res.status(400).json({ error: loginErrorMsg });
+    } else {
+      res.status(500).json({ error: 'Timeout waiting for Telegram validation' });
+    }
   } else {
     res.status(400).json({ error: 'No active login session waiting for code' });
   }
@@ -86,9 +119,38 @@ app.post('/api/tg/submitCode', async (req, res) => {
 app.post('/api/tg/submitPassword', async (req, res) => {
   if (resolvePassword) {
     resolvePassword(req.body.password);
-    res.json({ success: true });
+    
+    let attempts = 0;
+    while (loginStage === 'pending_password' && attempts < 30) {
+      await new Promise(r => setTimeout(r, 200));
+      attempts++;
+    }
+
+    if (loginStage === 'success') {
+      res.json({ success: true });
+    } else if (loginStage === 'error') {
+      res.status(400).json({ error: loginErrorMsg });
+    } else {
+      res.status(500).json({ error: 'Timeout waiting for 2FA validation' });
+    }
   } else {
     res.status(400).json({ error: 'No active login session waiting for password' });
+  }
+});
+
+// Logout
+app.post('/api/tg/logout', async (req, res) => {
+  try {
+    if (tgClient) {
+      await tgClient.invoke(new Api.auth.LogOut());
+      await tgClient.disconnect();
+      tgClient = null;
+    }
+    sessionString = '';
+    if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 

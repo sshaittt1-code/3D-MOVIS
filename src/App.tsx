@@ -214,6 +214,7 @@ export default function App() {
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [genre, setGenre] = useState('הכל');
   const [showCinemaScreen, setShowCinemaScreen] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [tgSearchResults, setTgSearchResults] = useState<any[]>([]);
   const [isSearchingTg, setIsSearchingTg] = useState(false);
 
@@ -408,8 +409,9 @@ export default function App() {
                      setLoginError('');
                      const base = apiBase.replace(/\/$/, '');
                      fetchApiJson(`${base}/api/tg/submitCode`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ code }) })
-                       .then(() => {
-                          setTgStatus('loggedIn');
+                       .then((res) => {
+                          if (res.requiresPassword) setTgStatus('passwordInput');
+                          else setTgStatus('loggedIn');
                        })
                        .catch(err => {
                           if (err.message.includes('password') || err.message.includes('2FA')) setTgStatus('passwordInput');
@@ -449,6 +451,7 @@ export default function App() {
                {['הכל', 'ישראלי', 'פעולה'].map(g => (
                  <button key={g} onClick={() => setGenre(g)} className={`p-4 rounded-xl text-right transition-all ${genre === g ? 'bg-[#00ffcc] text-black' : 'bg-white/5'}`}>{g}</button>
                ))}
+               <button onClick={() => setShowSettings(true)} className="p-4 rounded-xl text-right transition-all bg-white/5 mt-4 text-gray-300 hover:text-white border border-white/5">⚙️ הגדרות</button>
             </div>
             {fetchError && (
               <div className="mt-auto p-4 bg-red-900/50 border border-red-500 rounded-xl text-red-200 text-sm">
@@ -464,6 +467,32 @@ export default function App() {
           </div>
         </div>
       )}
+
+      <AnimatePresence>
+        {showSettings && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-50 bg-black/95 flex flex-col items-center justify-center p-8 backdrop-blur-md">
+            <div className="bg-[#0a0a0a] border border-[#00ffcc]/40 rounded-[40px] p-12 flex flex-col items-center max-w-xl w-full shadow-2xl">
+              <h2 className="text-4xl font-bold text-[#00ffcc] mb-8">הגדרות</h2>
+              
+              <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex items-center justify-between">
+                <div>
+                  <p className="text-gray-400 text-sm mb-1">סטטוס חיבור טלגרם</p>
+                  <p className="text-2xl font-bold">{tgStatus === 'loggedIn' ? 'מחובר ✔️' : 'מנותק ❌'}</p>
+                </div>
+                {tgStatus === 'loggedIn' && (
+                  <button onClick={() => {
+                     const base = apiBase.replace(/\/$/, '');
+                     fetchApiJson(`${base}/api/tg/logout`, { method: 'POST' })
+                       .then(() => setTgStatus('loggedOut'));
+                  }} className="px-6 py-3 bg-red-500/20 text-red-400 border border-red-500/50 rounded-xl hover:bg-red-500 hover:text-white transition-colors">התנתק</button>
+                )}
+              </div>
+
+              <button onClick={() => setShowSettings(false)} className="px-10 py-4 bg-white/10 hover:bg-white/20 rounded-2xl transition-colors w-full text-xl font-bold">סגור</button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {showCinemaScreen && (
@@ -511,9 +540,10 @@ export default function App() {
                         return;
                       }
                       setIsSearchingTg(true); setShowCinemaScreen(true);
-                      fetchApiJson(`${apiBase.replace(/\/$/, '')}/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`)
+                      const cleanTitle = selectedMovie.title.split('(')[0].trim();
+                      fetchApiJson(`${apiBase.replace(/\/$/, '')}/api/tg/search?query=${encodeURIComponent(cleanTitle)}`)
                         .then(data => { setTgSearchResults(data.results || []); setIsSearchingTg(false); });
-                    }} className="flex-1 py-5 bg-[#2AABEE] text-white text-xl font-bold rounded-2xl shadow-xl focus:ring-4 focus:ring-white">צפה בטלגרם (MX Player)</button>
+                    }} className="flex-1 py-5 bg-[#2AABEE] text-white text-xl font-bold rounded-2xl shadow-xl focus:ring-4 focus:ring-white">לצפייה</button>
                     <button onClick={() => setSelectedMovie(null)} className="px-10 py-5 bg-white/10 rounded-2xl focus:ring-4 focus:ring-white">חזור</button>
                  </div>
               </div>
