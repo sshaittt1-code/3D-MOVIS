@@ -222,12 +222,30 @@ export default function App() {
   const [bufferProgress, setBufferProgress] = useState(0);
 
   const [apiBase, setApiBase] = useState(() => localStorage.getItem('api_base') || API_BASE);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  const [tgStatus, setTgStatus] = useState<'checking' | 'loggedOut' | 'phoneInput' | 'codeInput' | 'passwordInput' | 'loggedIn'>('checking');
+  const [phone, setPhone] = useState('+972');
+  const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+
+  useEffect(() => {
+    const base = apiBase.replace(/\/$/, '');
+    fetch(`${base}/api/tg/status`)
+      .then(res => res.json())
+      .then(data => setTgStatus(data.loggedIn ? 'loggedIn' : 'loggedOut'))
+      .catch(() => setTgStatus('loggedOut'));
+  }, [apiBase]);
 
   useEffect(() => {
     const handleGlobalBack = (e: KeyboardEvent) => {
       // Catch TV Android escape buttons. TV remotes might send 'Escape' or 'Backspace'
       if (e.key === 'Escape' || e.key === 'Backspace') {
-        if (showCinemaScreen) {
+        if (tgStatus === 'phoneInput' || tgStatus === 'codeInput' || tgStatus === 'passwordInput') {
+          stopTvEvent(e);
+          setTgStatus('loggedOut');
+        } else if (showCinemaScreen) {
           stopTvEvent(e);
           setShowCinemaScreen(false);
         } else if (selectedMovie) {
@@ -281,7 +299,19 @@ export default function App() {
 
   useEffect(() => {
     const base = apiBase.replace(/\/$/, '');
-    fetch(`${base}/api/movies`).then(res => res.json()).then(data => setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES)).catch(() => setBaseMovies(BASE_MOVIES));
+    fetch(`${base}/api/movies`)
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+        return res.json();
+      })
+      .then(data => {
+        setFetchError(null);
+        setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES);
+      })
+      .catch((err) => {
+        setFetchError(`שגיאת תקשורת: ${err.message}. מנסה להתחבר ל: ${base}/api/movies`);
+        setBaseMovies(BASE_MOVIES);
+      });
   }, [apiBase]);
 
   const displayMovies = useMemo(() => {
@@ -350,6 +380,66 @@ export default function App() {
         </div>
       )}
 
+      <AnimatePresence>
+        {tgStatus !== 'checking' && tgStatus !== 'loggedIn' && tgStatus !== 'loggedOut' && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[60] bg-black/95 flex flex-col items-center justify-center p-8 backdrop-blur-md">
+            <div className="bg-[#0a0a0a] border border-[#2AABEE]/40 rounded-[40px] p-12 flex flex-col items-center max-w-2xl shadow-[0_0_50px_rgba(42,171,238,0.2)]">
+              <h2 className="text-4xl font-bold text-[#2AABEE] mb-4">התחברות לטלגרם</h2>
+              
+              {tgStatus === 'phoneInput' && (
+                <>
+                  <p className="text-xl text-gray-400 mb-8 text-center">כדי לצפות בסרטים ישירות מטלגרם, יש לאמת את חשבונך.</p>
+                  <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} dir="ltr" className="w-full text-center text-4xl p-6 rounded-2xl bg-white/5 border border-white/10 focus:border-[#2AABEE] focus:bg-white/10 outline-none mb-8 transition-all" placeholder="+972501234567" />
+                  <button onClick={() => {
+                    setLoginError('');
+                    const base = apiBase.replace(/\/$/, '');
+                    fetchApiJson(`${base}/api/tg/startLogin`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ phone }) })
+                      .then(() => setTgStatus('codeInput'))
+                      .catch(err => setLoginError(`שגיאה: ${err.message}`));
+                  }} className="w-full py-5 bg-[#2AABEE] text-white text-2xl font-bold rounded-2xl shadow-xl hover:bg-blue-400 transition-colors">שלח קוד אימות</button>
+                </>
+              )}
+              
+              {tgStatus === 'codeInput' && (
+                <>
+                  <p className="text-xl text-gray-400 mb-8 text-center">הזן את הקוד שקיבלת באפליקציית טלגרם למספר {phone}</p>
+                  <input type="text" value={code} onChange={e => setCode(e.target.value)} dir="ltr" className="w-full text-center text-5xl tracking-[0.5em] p-6 rounded-2xl bg-white/5 border border-white/10 focus:border-green-500 outline-none mb-8" placeholder="12345" />
+                  <button onClick={() => {
+                     setLoginError('');
+                     const base = apiBase.replace(/\/$/, '');
+                     fetchApiJson(`${base}/api/tg/submitCode`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ code }) })
+                       .then(() => {
+                          setTgStatus('loggedIn');
+                       })
+                       .catch(err => {
+                          if (err.message.includes('password') || err.message.includes('2FA')) setTgStatus('passwordInput');
+                          else setLoginError(`שגיאה בקוד: ${err.message}`);
+                       });
+                  }} className="w-full py-5 bg-green-500 text-black text-2xl font-bold rounded-2xl shadow-xl hover:bg-green-400 transition-colors">אמת והתחבר</button>
+                </>
+              )}
+
+              {tgStatus === 'passwordInput' && (
+                <>
+                  <p className="text-xl text-gray-400 mb-8 text-center">החשבון מוגן בסיסמה (2FA). הזן סיסמה:</p>
+                  <input type="password" value={password} onChange={e => setPassword(e.target.value)} dir="ltr" className="w-full text-center text-4xl p-6 rounded-2xl bg-white/5 border border-white/10 focus:border-red-500 outline-none mb-8" />
+                  <button onClick={() => {
+                     setLoginError('');
+                     const base = apiBase.replace(/\/$/, '');
+                     fetchApiJson(`${base}/api/tg/submitPassword`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ password }) })
+                       .then(() => setTgStatus('loggedIn'))
+                       .catch(err => setLoginError(`שגיאה בסיסמה: ${err.message}`));
+                  }} className="w-full py-5 bg-red-500 text-white text-2xl font-bold rounded-2xl shadow-xl hover:bg-red-400 transition-colors">שלח סיסמה</button>
+                </>
+              )}
+
+              {loginError && <p className="text-red-400 mt-6 text-lg text-center break-words">{loginError}</p>}
+              <button onClick={() => setTgStatus('loggedOut')} className="mt-8 text-gray-500 hover:text-white transition-colors text-xl">ביטול וחזרה</button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {!isLocked && !selectedMovie && (
         <div className="absolute inset-0 z-20 flex bg-black/80 backdrop-blur-xl">
           <div className="w-80 h-full bg-black/90 p-8 border-l border-[#00ffcc]/30 flex flex-col shadow-2xl">
@@ -360,8 +450,18 @@ export default function App() {
                  <button key={g} onClick={() => setGenre(g)} className={`p-4 rounded-xl text-right transition-all ${genre === g ? 'bg-[#00ffcc] text-black' : 'bg-white/5'}`}>{g}</button>
                ))}
             </div>
+            {fetchError && (
+              <div className="mt-auto p-4 bg-red-900/50 border border-red-500 rounded-xl text-red-200 text-sm">
+                <p className="font-bold mb-1">שגיאת רשת במשיכת סרטים:</p>
+                <p>{fetchError}</p>
+                <p className="mt-2 text-xs">האם שרת ה-Node פועל במחשב (npm run dev)?</p>
+              </div>
+            )}
           </div>
-          <div className="flex-1 flex items-center justify-center text-[#00ffcc] animate-pulse text-2xl">לחץ OK להתחלה</div>
+          <div className="flex-1 flex flex-col items-center justify-center text-[#00ffcc] animate-pulse text-2xl">
+            לחץ OK להתחלה
+            {fetchError && <span className="text-red-400 text-lg mt-4 text-center max-w-lg bg-black/50 p-2 rounded">מציג סרטי גיבוי בלבד בשל שגיאת רשת</span>}
+          </div>
         </div>
       )}
 
@@ -406,6 +506,10 @@ export default function App() {
                  <p className="text-xl text-gray-400 mb-10 leading-relaxed overflow-y-auto max-h-48">{selectedMovie.desc}</p>
                  <div className="flex gap-6 mt-auto">
                     <button onClick={() => {
+                      if (tgStatus !== 'loggedIn') {
+                        setTgStatus('phoneInput');
+                        return;
+                      }
                       setIsSearchingTg(true); setShowCinemaScreen(true);
                       fetchApiJson(`${apiBase.replace(/\/$/, '')}/api/tg/search?query=${encodeURIComponent(selectedMovie.title)}`)
                         .then(data => { setTgSearchResults(data.results || []); setIsSearchingTg(false); });

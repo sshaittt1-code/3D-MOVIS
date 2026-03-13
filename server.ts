@@ -231,9 +231,9 @@ app.get('/api/tg/search-subtitles', async (req, res) => {
     
     const client = await getClient();
     
-    // Search globally for .srt files matching the movie
+    // Search globally for Hebrew .srt files matching the movie
     const result = await client.invoke(new Api.messages.SearchGlobal({
-      q: `${query} srt`,
+      q: `${query} תרגום`,
       filter: new Api.InputMessagesFilterDocument(),
       limit: 5,
       offsetRate: 0,
