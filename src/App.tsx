@@ -5,8 +5,16 @@ import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Play, Star, Film, Loader2, Search, Phone, Key, Lock, Heart, Shuffle, Type, TrendingUp } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE || '';
-
+// If VITE_API_BASE is empty (e.g. running locally via Capacitor), try to determine the local network IP or default to emulator localhost.
+const getApiBase = () => {
+  if (import.meta.env.VITE_API_BASE) return import.meta.env.VITE_API_BASE;
+  if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return `http://${window.location.hostname}:3000`;
+  }
+  return 'http://10.0.2.2:3000'; // Default Android Emulator to Host IP
+};
+const API_BASE = getApiBase();
 const isTvSelectKey = (e: KeyboardEvent) =>
   e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
 
@@ -164,6 +172,7 @@ const Poster = ({ movie, position, rotation, isFocused }: any) => {
   const groupRef = useRef<THREE.Group>(null!);
   useEffect(() => { 
     const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin('anonymous');
     loader.load(movie.poster, (tex) => { 
       tex.colorSpace = THREE.SRGBColorSpace; 
       setTexture(tex); 
