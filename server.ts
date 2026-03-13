@@ -411,6 +411,11 @@ app.get('/api/movies', async (req, res) => {
 });
 
 async function startServer() {
+  // OTA Version Check
+  app.get('/api/version', (req, res) => {
+    res.json({ version: '1.1.0', message: 'עדכון קריטי: נגן וידאו מובנה ואופטימיזציה מסיבית לסטרימרים ומסכי טעינה.' });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -425,11 +430,6 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
-
-  // OTA Version Check
-app.get('/api/version', (req, res) => {
-  res.json({ version: '1.1.0', message: 'עדכון קריטי: נגן וידאו מובנה ואופטימיזציה מסיבית לסטרימרים ומסכי טעינה.' });
-});
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);

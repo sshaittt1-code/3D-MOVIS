@@ -388,6 +388,8 @@ export default function App() {
       .catch((err) => {
         setFetchError(`שגיאת תקשורת: ${err.message}. מנסה להתחבר ל: ${base}/api/movies`);
         setBaseMovies(BASE_MOVIES);
+        // Force the settings menu to open so Android TV users can easily fix the IP!
+        setShowSettings(true);
       });
   }, [apiBase]);
 
@@ -576,6 +578,26 @@ export default function App() {
                   <p className="text-xs text-gray-500 mt-2">* אם אתה מריץ על סטרימר פיזי, הכנס כאן את ה-IP של המחשב שמריץ את הרשת (למשל http://192.168.1.15:3000) במקום 10.0.2.2.</p>
                 </div>
                 <div className="w-full h-px bg-white/10 my-2"></div>
+                
+                {!otaVersion && (
+                  <button onClick={() => {
+                    const base = apiBase.replace(/\/$/, '');
+                    fetch(`${base}/api/version`)
+                      .then(res => res.json())
+                      .then(data => {
+                        if (data.version && data.version !== CURRENT_VERSION) {
+                          setOtaVersion(data.version);
+                          setOtaMessage(data.message);
+                        } else {
+                          alert(`אתה בגרסה העדכנית ביותר (${CURRENT_VERSION})`);
+                        }
+                      })
+                      .catch((err) => alert(`שגיאה בבדיקת עדכונים: ${err.message}`));
+                  }} className="w-full py-4 bg-gray-600/30 hover:bg-blue-600/40 text-blue-300 font-bold rounded-xl transition-colors border border-blue-500/30 mb-4">
+                    חפש עדכונים ידנית
+                  </button>
+                )}
+
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-gray-400 text-sm mb-1">סטטוס חיבור טלגרם</p>

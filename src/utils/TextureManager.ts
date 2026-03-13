@@ -1,13 +1,12 @@
 import * as THREE from 'three';
 
 class TextureManager {
-  private loader: THREE.ImageBitmapLoader;
+  private loader: THREE.TextureLoader;
   private cache: Map<string, THREE.Texture>;
   private pending: Map<string, Promise<THREE.Texture>>;
 
   constructor() {
-    this.loader = new THREE.ImageBitmapLoader();
-    this.loader.setOptions({ imageOrientation: 'flipY' }); 
+    this.loader = new THREE.TextureLoader();
     this.loader.setCrossOrigin('anonymous');
     this.cache = new Map();
     this.pending = new Map();
@@ -25,19 +24,31 @@ class TextureManager {
     const promise = new Promise<THREE.Texture>((resolve, reject) => {
       this.loader.load(
         url,
-        (imageBitmap) => {
-          const texture = new THREE.Texture(imageBitmap as any);
+        (texture) => {
           texture.colorSpace = THREE.SRGBColorSpace;
           texture.generateMipmaps = false;
           texture.minFilter = THREE.LinearFilter;
           
-          this.cache.set(url, texture);
-          this.pending.delete(url);
-          resolve(texture);
+          if (texture.image && typeof texture.image.decode === 'function') {
+            texture.image.decode().then(() => {
+              this.cache.set(url, texture);
+              this.pending.delete(url);
+              resolve(texture);
+            }).catch((err) => {
+              console.warn("TextureManager: async decode failed, fallback to sync", err);
+              this.cache.set(url, texture);
+              this.pending.delete(url);
+              resolve(texture);
+            });
+          } else {
+            this.cache.set(url, texture);
+            this.pending.delete(url);
+            resolve(texture);
+          }
         },
         undefined,
         (err) => {
-          console.error("TextureManager: Failed to load ImageBitmap", err);
+          console.error("TextureManager: Failed to load Texture", err);
           this.pending.delete(url);
           reject(err);
         }
