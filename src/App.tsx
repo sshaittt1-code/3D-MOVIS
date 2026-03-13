@@ -8,18 +8,7 @@ import { App as CapApp } from '@capacitor/app';
 import { textureManager } from './utils/TextureManager';
 
 // --- API Helpers ---
-const getApiBase = () => {
-  if (import.meta.env.VITE_API_BASE) return import.meta.env.VITE_API_BASE;
-  if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
-  if ((window as any).Capacitor?.isNative || navigator.userAgent.includes('Android')) {
-    return 'http://10.0.2.2:3000'; // Default Android Emulator to Host IP
-  }
-  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-    return `http://${window.location.hostname}:3000`;
-  }
-  return 'http://localhost:3000'; // Desktop Browser
-};
-const API_BASE = getApiBase();
+const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://threed-movis.onrender.com';
 const isTvSelectKey = (e: KeyboardEvent) =>
   e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
 
@@ -569,16 +558,6 @@ export default function App() {
               )}
 
               <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex flex-col gap-6">
-                <div className="flex flex-col">
-                  <p className="text-gray-400 text-sm mb-2">כתובת שרת מקומית (API IP) - חובה לטלוויזיות אמיתיות</p>
-                  <div className="flex gap-4">
-                    <input type="text" value={apiBase} onChange={(e) => setApiBase(e.target.value)} dir="ltr" className="flex-1 bg-black/50 border border-white/20 rounded-xl p-3 text-lg focus:border-[#00ffcc] outline-none" placeholder="http://192.168.1.x:3000" />
-                    <button onClick={() => { localStorage.setItem('api_base', apiBase); window.location.reload(); }} className="px-6 py-3 bg-[#00ffcc]/20 text-[#00ffcc] border border-[#00ffcc]/50 rounded-xl hover:bg-[#00ffcc] hover:text-black font-bold transition-colors">שמור ורענן</button>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-2">* אם אתה מריץ על סטרימר פיזי, הכנס כאן את ה-IP של המחשב שמריץ את הרשת (למשל http://192.168.1.15:3000) במקום 10.0.2.2.</p>
-                </div>
-                <div className="w-full h-px bg-white/10 my-2"></div>
-                
                 {!otaVersion && (
                   <button onClick={() => {
                     const base = apiBase.replace(/\/$/, '');
