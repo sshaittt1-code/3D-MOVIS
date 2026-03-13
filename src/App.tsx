@@ -11,7 +11,7 @@ const isTvSelectKey = (e: KeyboardEvent) =>
   e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
 
 const isTvNavigationKey = (e: KeyboardEvent) =>
-  ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || isTvSelectKey(e);
+  ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || isTvSelectKey(e) || e.key === 'Escape' || e.key === 'Backspace';
 
 const blurActiveElement = () => {
   const activeElement = document.activeElement as HTMLElement | null;
@@ -49,66 +49,112 @@ const fetchApiJson = async (path: string, init?: RequestInit) => {
 };
 
 // --- 3D Components ---
-const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId }: any) => {
+const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, isAnyModalOpen }: any) => {
   const { camera } = useThree();
   const [targetPos, setTargetPos] = useState(new THREE.Vector3(0, 1.6, 2));
-  const [targetRot, setTargetRot] = useState(new THREE.Euler(0, 0, 0));
   const focusedMovieRef = useRef<any>(null);
   const STEP_SIZE = 0.8;
+  const ROTATION_SPEED = 0.035;
+
+  // Track key states for smooth camera movement
+  const keys = useRef<{ left: boolean; right: boolean }>({ left: false, right: false });
+  // We explicitly control the target Y rotation
+  const targetRotY = useRef(0);
+
+  // Setup raycaster for center of screen
+  const raycaster = useRef(new THREE.Raycaster());
+  const centerPointer = useRef(new THREE.Vector2(0, 0));
 
   useEffect(() => {
     const handleInput = (e: KeyboardEvent) => {
-      if (!isLocked) return;
+      // Don't intercept global events if a modal is open, let the CSS dialog/focus handle it.
+      if (!isLocked || isAnyModalOpen) return;
+      
       if (isTvNavigationKey(e)) stopTvEvent(e);
+      
       if (e.key === 'ArrowUp') {
         setTargetPos(p => new THREE.Vector3(p.x, p.y, p.z - STEP_SIZE));
-        setTargetRot(new THREE.Euler(0, 0, 0));
+        targetRotY.current = 0;
       } else if (e.key === 'ArrowDown') {
         setTargetPos(p => new THREE.Vector3(p.x, p.y, Math.min(p.z + STEP_SIZE, 5)));
-        setTargetRot(new THREE.Euler(0, 0, 0));
-      } else if (e.key === 'ArrowLeft') setTargetRot(new THREE.Euler(0, Math.PI / 2.2, 0));
-      else if (e.key === 'ArrowRight') setTargetRot(new THREE.Euler(0, -Math.PI / 2.2, 0));
-      else if (isTvSelectKey(e)) {
+        targetRotY.current = 0;
+      } else if (e.key === 'ArrowLeft') {
+        keys.current.left = true;
+      } else if (e.key === 'ArrowRight') {
+        keys.current.right = true;
+      } else if (isTvSelectKey(e)) {
         if (focusedMovieRef.current) {
           setSelectedMovie(focusedMovieRef.current);
         }
       }
     };
-    const suppressKeyUp = (e: KeyboardEvent) => {
-      if (isLocked && isTvNavigationKey(e)) stopTvEvent(e);
+
+    const handleInputUp = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') {
+        keys.current.left = false;
+      } else if (e.key === 'ArrowRight') {
+        keys.current.right = false;
+      }
+      if (isLocked && !isAnyModalOpen && isTvNavigationKey(e)) stopTvEvent(e);
     };
+
     window.addEventListener('keydown', handleInput, true);
-    window.addEventListener('keyup', suppressKeyUp, true);
+    window.addEventListener('keyup', handleInputUp, true);
     return () => {
       window.removeEventListener('keydown', handleInput, true);
-      window.removeEventListener('keyup', suppressKeyUp, true);
+      window.removeEventListener('keyup', handleInputUp, true);
     };
-  }, [isLocked, setSelectedMovie]);
+  }, [isLocked, setSelectedMovie, isAnyModalOpen]);
 
-  useFrame(() => {
-    if (isLocked) {
+  useFrame((state) => {
+    if (isLocked && !isAnyModalOpen) {
+      // Smoothly update camera rotation based on held keys
+      if (keys.current.left) {
+        targetRotY.current += ROTATION_SPEED;
+      }
+      if (keys.current.right) {
+        targetRotY.current -= ROTATION_SPEED;
+      }
+
+      // Clamp rotation to max +- 90 degrees (Math.PI / 2)
+      targetRotY.current = Math.max(-Math.PI / 1.8, Math.min(Math.PI / 1.8, targetRotY.current));
+
+      // Apply lerp to smooth the transition for position
       camera.position.lerp(targetPos, 0.1);
-      const targetQuat = new THREE.Quaternion().setFromEuler(targetRot);
-      camera.quaternion.slerp(targetQuat, 0.1);
+      
+      // Slerp for rotation
+      const targetQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, targetRotY.current, 0));
+      camera.quaternion.slerp(targetQuat, 0.15);
 
-      const isLookingSide = Math.abs(targetRot.y) > 0.5;
-      if (isLookingSide) {
-        const targetX = targetRot.y > 0 ? -1 : 1;
-        const sameSidePosters = posterLayout.filter((item: any) => Math.sign(item.position[0]) === targetX);
-        const closestPoster = sameSidePosters.reduce((closest: any, item: any) => {
-          if (!closest) return item;
-          const currentDistance = Math.abs(camera.position.z - item.position[2]);
-          const closestDistance = Math.abs(camera.position.z - closest.position[2]);
-          return currentDistance < closestDistance ? item : closest;
-        }, null);
-        focusedMovieRef.current = closestPoster?.movie || null;
-        setFocusedId(closestPoster?.movie?.uniqueId || null);
-      } else {
+      // Raycast from the center of the camera to find the poster we're looking at
+      raycaster.current.setFromCamera(centerPointer.current, camera);
+      const intersects = raycaster.current.intersectObjects(state.scene.children, true);
+      
+      let foundPoster = false;
+      for (const intersect of intersects) {
+        // We set a name 'poster_mesh' on the poster mesh to easily identify it
+        if (intersect.object.name === 'poster_mesh') {
+          // Find the corresponding movie from the posterLayout using the parent group's position mapping
+          // or ideally, we inject the movie ID into userData.
+          const movieId = intersect.object.userData.uniqueId;
+          const matchedPoster = posterLayout.find((p: any) => p.movie.uniqueId === movieId);
+          
+          if (matchedPoster) {
+            focusedMovieRef.current = matchedPoster.movie;
+            setFocusedId(movieId);
+            foundPoster = true;
+            break;
+          }
+        }
+      }
+
+      if (!foundPoster) {
         focusedMovieRef.current = null;
         setFocusedId(null);
       }
     }
   });
+
   return null;
 };
 
@@ -119,7 +165,7 @@ const Poster = ({ movie, position, rotation, isFocused }: any) => {
   useFrame(() => { const targetScale = isFocused ? 1.4 : 1; groupRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, 1), 0.1); });
   return (
     <group position={position} rotation={rotation} ref={groupRef}>
-      <mesh><planeGeometry args={[2.5, 3.75]} /><meshStandardMaterial map={texture} color={isFocused ? '#ffffff' : '#666666'} /></mesh>
+      <mesh name="poster_mesh" userData={{ uniqueId: movie.uniqueId }}><planeGeometry args={[2.5, 3.75]} /><meshStandardMaterial map={texture} color={isFocused ? '#ffffff' : '#666666'} /></mesh>
       <mesh position={[0, 0, -0.02]}><planeGeometry args={[2.6, 3.85]} /><meshBasicMaterial color={isFocused ? '#00ffcc' : '#111111'} /></mesh>
       {isFocused && (
         <><Text position={[0, -2.3, 0]} fontSize={0.3} color="#00ffcc" anchorX="center">{movie.title}</Text><SpotLight position={[0, 2, 3]} intensity={5} color="#00ffcc" angle={0.6} penumbra={0.5} /></>
@@ -146,7 +192,21 @@ export default function App() {
   const [apiBase, setApiBase] = useState(() => localStorage.getItem('api_base') || API_BASE);
 
   useEffect(() => {
+    const handleGlobalBack = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Backspace') {
+        if (showCinemaScreen) {
+          stopTvEvent(e);
+          setShowCinemaScreen(false);
+        } else if (selectedMovie) {
+          stopTvEvent(e);
+          setSelectedMovie(null);
+        }
+      }
+    };
+    
     const handleMenuInput = (e: KeyboardEvent) => {
+      // If we're fully in the corridor (no modals open), listen to OK to enter the corridor
+      // But if we are ALREADY locked in the corridor, TVController handles it.
       if (isLocked || selectedMovie || showCinemaScreen) return;
       if (!isTvSelectKey(e)) return;
 
@@ -161,9 +221,11 @@ export default function App() {
     };
 
     window.addEventListener('keydown', handleMenuInput, true);
+    window.addEventListener('keydown', handleGlobalBack, true);
     window.addEventListener('keyup', suppressMenuKeyUp, true);
     return () => {
       window.removeEventListener('keydown', handleMenuInput, true);
+      window.removeEventListener('keydown', handleGlobalBack, true);
       window.removeEventListener('keyup', suppressMenuKeyUp, true);
     };
   }, [isLocked, selectedMovie, showCinemaScreen]);
@@ -229,13 +291,20 @@ export default function App() {
           <group>
              <mesh rotation={[-Math.PI/2, 0, 0]} position={[0,0,-100]}><planeGeometry args={[20, 300]} /><meshStandardMaterial color="#050505" /></mesh>
              <gridHelper args={[100, 50, '#00ffcc', '#001111']} position={[0, 0.01, -50]} />
-             {posterLayout.map(({ movie, position, rotation }: any) => (
+              {posterLayout.map(({ movie, position, rotation }: any) => (
                 <Poster key={movie.uniqueId} movie={movie} isFocused={focusedId === movie.uniqueId} position={position} rotation={rotation} />
              ))}
           </group>
-          <TVController posterLayout={posterLayout} isLocked={isLocked} setSelectedMovie={setSelectedMovie} setFocusedId={setFocusedId} />
+          <TVController posterLayout={posterLayout} isLocked={isLocked} setSelectedMovie={setSelectedMovie} setFocusedId={setFocusedId} isAnyModalOpen={!!selectedMovie || showCinemaScreen} />
         </Suspense>
       </Canvas>
+
+      {/* Red Dot Reticle */}
+      {isLocked && !selectedMovie && !showCinemaScreen && (
+        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none">
+          <div className="w-2 h-2 bg-red-600 rounded-full shadow-[0_0_8px_4px_rgba(220,38,38,0.6)]"></div>
+        </div>
+      )}
 
       {!isLocked && !selectedMovie && (
         <div className="absolute inset-0 z-20 flex bg-black/80 backdrop-blur-xl">
