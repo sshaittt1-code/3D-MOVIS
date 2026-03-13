@@ -17,9 +17,9 @@ const SESSION_FILE = path.join(process.cwd(), 'tg_session.txt');
 // Serve Latest Built APK for OTA Updates
 app.use('/apk', express.static(path.join(process.cwd(), 'android', 'app', 'build', 'outputs', 'apk', 'debug')));
 
-// Load session from disk if it exists
-let sessionString = '';
-if (fs.existsSync(SESSION_FILE)) {
+// Load session from disk or environment
+let sessionString = process.env.TG_SESSION || '';
+if (!sessionString && fs.existsSync(SESSION_FILE)) {
   sessionString = fs.readFileSync(SESSION_FILE, 'utf-8');
 }
 let tgClient: TelegramClient | null = null;
@@ -79,6 +79,11 @@ app.post('/api/tg/startLogin', async (req, res) => {
       loginStage = 'success';
       sessionString = (client.session as StringSession).save() as unknown as string;
       fs.writeFileSync(SESSION_FILE, sessionString);
+      console.log("\n==========================================================");
+      console.log("✅ YOUR TELEGRAM SESSION STRING (SAVE THIS FOR CLOUD DEPLOYMENT) ✅");
+      console.log("Add this to your Render/Railway Environment Variables as TG_SESSION:");
+      console.log(sessionString);
+      console.log("==========================================================\n");
     }).catch(err => {
       loginStage = 'error';
       loginErrorMsg = err.message;
