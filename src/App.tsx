@@ -164,7 +164,6 @@ const Poster = ({ movie, position, rotation, isFocused }: any) => {
   const groupRef = useRef<THREE.Group>(null!);
   useEffect(() => { 
     const loader = new THREE.TextureLoader();
-    loader.setCrossOrigin('anonymous');
     loader.load(movie.poster, (tex) => { 
       tex.colorSpace = THREE.SRGBColorSpace; 
       setTexture(tex); 
@@ -288,7 +287,7 @@ export default function App() {
       const isLeft = index % 2 === 0;
       return {
         movie,
-        position: [isLeft ? -4.9 : 4.9, 2.2, -zIndex * 5 - 2] as [number, number, number],
+        position: [isLeft ? -4.9 : 4.9, 3.2, -zIndex * 5 - 2] as [number, number, number],
         rotation: [0, isLeft ? Math.PI / 2.2 : -Math.PI / 2.2, 0] as [number, number, number],
       };
     });
