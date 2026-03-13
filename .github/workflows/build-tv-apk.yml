@@ -14,21 +14,22 @@ jobs:
     
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 22 # Updated from 20 to 22 as required by Capacitor CLI
+          node-version: 22
+          cache: npm
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
-          java-version: '17'
+          java-version: '21'
 
       - name: Install Dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build Web App (creates dist/)
         run: npm run build
