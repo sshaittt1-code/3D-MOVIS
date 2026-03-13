@@ -36,11 +36,16 @@ jobs:
       - name: Sync Capacitor (copies dist/ into Android assets)
         run: npx cap sync android
 
+      - name: Override local.properties with CI Android SDK path
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+          echo "Using SDK at: $ANDROID_SDK_ROOT"
+
       - name: Build APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
