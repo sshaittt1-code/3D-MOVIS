@@ -51,29 +51,24 @@ const fetchApiJson = async (path: string, init: RequestInit = {}) => {
 };
 
 // --- 3D Components ---
-const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, isAnyModalOpen, selectedMovie }: any) => {
+const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, setFocusedId, setFocusedHeartId, isAnyModalOpen, selectedMovie, lastPosterZ, onNearEnd }: any) => {
   const { camera } = useThree();
   const [targetPos, setTargetPos] = useState(new THREE.Vector3(0, 1.6, 2));
   const focusedMovieRef = useRef<any>(null);
+  const focusedHeartRef = useRef<string | null>(null);
+  const nearEndFired = useRef(false);
   const STEP_SIZE = 0.8;
-  const ROTATION_SPEED = 0.012; // slow down significantly
+  const ROTATION_SPEED = 0.012;
   
-  // Track key states for smooth camera movement
   const keys = useRef<{ left: boolean; right: boolean }>({ left: false, right: false });
-  // We explicitly control the target Y rotation
   const targetRotY = useRef(0);
-
-  // Setup raycaster for center of screen
   const raycaster = useRef(new THREE.Raycaster());
   const centerPointer = useRef(new THREE.Vector2(0, 0));
 
   useEffect(() => {
     const handleInput = (e: KeyboardEvent) => {
-      // Don't intercept global events if a modal or a movie popup is open.
       if (!isLocked || isAnyModalOpen || !!selectedMovie) return;
-      
       if (isTvNavigationKey(e)) stopTvEvent(e);
-      
       if (e.key === 'ArrowUp') {
         setTargetPos(p => new THREE.Vector3(p.x, p.y, p.z - STEP_SIZE));
         targetRotY.current = 0;
@@ -85,74 +80,79 @@ const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, 
       } else if (e.key === 'ArrowRight') {
         keys.current.right = true;
       } else if (isTvSelectKey(e)) {
-        if (focusedMovieRef.current) {
-          setSelectedMovie(focusedMovieRef.current);
+        if (focusedHeartRef.current) {
+          onHeartToggle(focusedHeartRef.current);
+        } else if (focusedMovieRef.current) {
+          onPosterSelect(focusedMovieRef.current);
         }
       }
     };
-
     const handleInputUp = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft') {
-        keys.current.left = false;
-      } else if (e.key === 'ArrowRight') {
-        keys.current.right = false;
-      }
+      if (e.key === 'ArrowLeft') keys.current.left = false;
+      else if (e.key === 'ArrowRight') keys.current.right = false;
       if (isLocked && !isAnyModalOpen && !selectedMovie && isTvNavigationKey(e)) stopTvEvent(e);
     };
-
     window.addEventListener('keydown', handleInput, true);
     window.addEventListener('keyup', handleInputUp, true);
     return () => {
       window.removeEventListener('keydown', handleInput, true);
+      window.removeEventListener('keyup', handleInputUp, true);
     };
-  }, [isLocked, setSelectedMovie, isAnyModalOpen, selectedMovie]);
+  }, [isLocked, onPosterSelect, onHeartToggle, isAnyModalOpen, selectedMovie]);
+
+  // Reset position when corridor changes (new navContext)
+  useEffect(() => {
+    setTargetPos(new THREE.Vector3(0, 1.6, 2));
+    targetRotY.current = 0;
+    nearEndFired.current = false;
+  }, [lastPosterZ]);
 
   useFrame((state) => {
     if (isLocked && !isAnyModalOpen && !selectedMovie) {
-      // Smoothly update camera rotation based on held keys
-      if (keys.current.left) {
-        targetRotY.current += ROTATION_SPEED;
-      }
-      if (keys.current.right) {
-        targetRotY.current -= ROTATION_SPEED;
-      }
-
-      // Clamp rotation to max +- 90 degrees (Math.PI / 2)
+      if (keys.current.left) targetRotY.current += ROTATION_SPEED;
+      if (keys.current.right) targetRotY.current -= ROTATION_SPEED;
       targetRotY.current = Math.max(-Math.PI / 1.8, Math.min(Math.PI / 1.8, targetRotY.current));
-
-      // Apply lerp to smooth the transition for position
       camera.position.lerp(targetPos, 0.1);
-      
-      // Slerp for rotation
       const targetQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, targetRotY.current, 0));
       camera.quaternion.slerp(targetQuat, 0.15);
 
-      // Raycast from the center of the camera to find the poster we're looking at
+      // Infinite scroll - trigger near end of corridor
+      if (lastPosterZ !== undefined && !nearEndFired.current && camera.position.z < lastPosterZ + 25) {
+        nearEndFired.current = true;
+        onNearEnd?.();
+      }
+      // Allow re-firing after load (if lastPosterZ updates, effect above resets)
+
       raycaster.current.setFromCamera(centerPointer.current, camera);
       const intersects = raycaster.current.intersectObjects(state.scene.children, true);
-      
-      let foundPoster = false;
-      if (intersects.length > 0) {
-        // Find the FIRST object in the intersection list that is a poster
-        const firstPosterIntersect = intersects.find(
-          (intersect) => intersect.object.name === 'poster_mesh' && intersect.object.userData.uniqueId
-        );
 
-        if (firstPosterIntersect) {
-          const movieId = firstPosterIntersect.object.userData.uniqueId;
-          const matchedPoster = posterLayout.find((p: any) => p.movie.uniqueId === movieId);
-          
-          if (matchedPoster) {
-            focusedMovieRef.current = matchedPoster.movie;
-            setFocusedId(movieId);
-            foundPoster = true;
-          }
+      // Detect hearts first (higher priority = smaller target = needs closer aim)
+      const heartHit = intersects.find(i => i.object.name === 'heart_mesh' && i.object.userData.uniqueId);
+      const posterHit = intersects.find(i => i.object.name === 'poster_mesh' && i.object.userData.uniqueId);
+
+      if (heartHit) {
+        const id = heartHit.object.userData.uniqueId;
+        const matched = posterLayout.find((p: any) => p.movie.uniqueId === id);
+        if (matched) {
+          focusedHeartRef.current = id;
+          focusedMovieRef.current = null;
+          setFocusedHeartId(id);
+          setFocusedId(null);
         }
-      }
-
-      if (!foundPoster) {
+      } else if (posterHit) {
+        const id = posterHit.object.userData.uniqueId;
+        const matched = posterLayout.find((p: any) => p.movie.uniqueId === id);
+        if (matched) {
+          focusedMovieRef.current = matched.movie;
+          focusedHeartRef.current = null;
+          setFocusedId(id);
+          setFocusedHeartId(null);
+        }
+      } else {
         focusedMovieRef.current = null;
+        focusedHeartRef.current = null;
         setFocusedId(null);
+        setFocusedHeartId(null);
       }
     }
   });
@@ -160,7 +160,7 @@ const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, 
   return null;
 };
 
-const Poster = ({ movie, position, rotation, isFocused }: any) => {
+const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocused }: any) => {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const [showText, setShowText] = useState(false);
   const groupRef = useRef<THREE.Group>(null!);
@@ -168,65 +168,110 @@ const Poster = ({ movie, position, rotation, isFocused }: any) => {
 
   useFrame((state) => { 
     if (!groupRef.current) return;
-    
-    // Scale animation
     const targetScale = isFocused ? 1.4 : 1; 
     groupRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, 1), 0.1); 
-
-    // Frustum Culling for Android TV Performance (Only render what's near the camera)
     const distZ = state.camera.position.z - groupRef.current.position.z;
     const isVisible = distZ > -15 && distZ < 35; 
-    // Further optimization: Text polygons are heavy, only render if relatively close!
     const isTextVisible = isVisible && distZ < 15;
-    
     groupRef.current.visible = isVisible;
     if (showText !== isTextVisible) setShowText(isTextVisible);
-
-    // Lazy load the texture off the main thread so Android TV doesn't hang!
     if (isVisible && !fetchAttempted.current) {
       fetchAttempted.current = true;
       textureManager.loadTexture(movie.poster)
         .then(tex => setTexture(tex))
-        .catch(err => console.error("Failed to load poster texture", err));
+        .catch(err => console.error('Failed to load poster texture', err));
     }
   });
+
+  const heartColor = isFavorited ? '#ff3355' : isHeartFocused ? '#ff8899' : '#555555';
+
   return (
     <group position={position} rotation={rotation} ref={groupRef}>
-      {/* Target both meshes for raycasting */}
+      {/* Poster image mesh */}
       <mesh name="poster_mesh" userData={{ uniqueId: movie.uniqueId }} position={[0, 0, 0.01]}>
         <planeGeometry args={[2.5, 3.75]} />
         <meshStandardMaterial map={texture} color={isFocused ? '#ffffff' : '#acacac'} />
       </mesh>
+      {/* Poster border mesh */}
       <mesh name="poster_mesh" userData={{ uniqueId: movie.uniqueId }} position={[0, 0, -0.02]}>
         <planeGeometry args={[2.6, 3.85]} />
         <meshBasicMaterial color={isFocused ? '#00ffcc' : '#111111'} />
       </mesh>
-      
-      {/* Title only renders when near the camera to save Polygon heavy load */}
+
+      {/* Heart — always-on raycasting target */}
+      <mesh name="heart_mesh" userData={{ uniqueId: movie.uniqueId }} position={[1.05, 2.05, 0.05]}>
+        <circleGeometry args={[0.38, 16]} />
+        <meshBasicMaterial color={heartColor} transparent opacity={0.85} />
+      </mesh>
       {showText && (
-        <Text position={[0, -2.4, 0.01]} fontSize={0.3} color={isFocused ? "#00ffcc" : "#ffffff"} anchorX="center" maxWidth={2.6} textAlign="center">
+        <Text position={[1.05, 2.05, 0.09]} fontSize={0.42} color={heartColor} anchorX="center" anchorY="middle">
+          {isFavorited ? '❤' : isHeartFocused ? '❤' : '♡'}
+        </Text>
+      )}
+
+      {/* Title */}
+      {showText && (
+        <Text position={[0, -2.4, 0.01]} fontSize={0.3} color={isFocused ? '#00ffcc' : '#ffffff'} anchorX="center" maxWidth={2.6} textAlign="center">
           {movie.title}
         </Text>
       )}
-      
+
       {isFocused && (
         <SpotLight position={[0, 2, 3]} intensity={5} color="#00ffcc" angle={0.6} penumbra={0.5} />
+      )}
+      {isHeartFocused && (
+        <SpotLight position={[1.05, 3, 2]} intensity={3} color="#ff3355" angle={0.5} penumbra={0.8} />
       )}
     </group>
   );
 };
 
+// --- Navigation context types ---
+type NavCtx =
+  | null
+  | { type: 'seasons'; seriesId: number; seriesTitle: string; seasons: any[] }
+  | { type: 'episodes'; seriesId: number; seasonNum: number; seriesTitle: string; seasonTitle: string; episodes: any[] };
+
 // --- Main App ---
 export default function App() {
   const [baseMovies, setBaseMovies] = useState<any[]>([]);
+  const [seriesItems, setSeriesItems] = useState<any[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<any>(null);
   const [isLocked, setIsLocked] = useState(false);
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [focusedHeartId, setFocusedHeartId] = useState<string | null>(null);
   const [genre, setGenre] = useState('הכל');
   const [showCinemaScreen, setShowCinemaScreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [tgSearchResults, setTgSearchResults] = useState<any[]>([]);
   const [isSearchingTg, setIsSearchingTg] = useState(false);
+  const [navContext, setNavContext] = useState<NavCtx>(null);
+
+  // Infinite scroll
+  const [contentPage, setContentPage] = useState(1);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+
+  // Favorites
+  const [favorites, setFavorites] = useState<any[]>(() => {
+    try { return JSON.parse(localStorage.getItem('favorites') || '[]'); } catch { return []; }
+  });
+  useEffect(() => { localStorage.setItem('favorites', JSON.stringify(favorites)); }, [favorites]);
+
+  const handleHeartToggle = (uniqueId: string) => {
+    setFavorites(prev => {
+      const allItems = [...baseMovies, ...seriesItems].map((m, i) => ({ ...m, uniqueId: `${m.id}-${i}` }));
+      const item = navContext?.type === 'seasons'
+        ? navContext.seasons.find((s: any) => s.uniqueId === uniqueId)
+        : navContext?.type === 'episodes'
+          ? navContext.episodes.find((e: any) => e.uniqueId === uniqueId)
+          : allItems.find(m => m.uniqueId === uniqueId);
+      if (!item) return prev;
+      const baseItem = { ...item, uniqueId: undefined };
+      const exists = prev.some(f => f.id === baseItem.id && f.mediaType === baseItem.mediaType);
+      return exists ? prev.filter(f => !(f.id === baseItem.id && f.mediaType === baseItem.mediaType)) : [...prev, baseItem];
+    });
+  };
 
   // Buffering States
   const [isBuffering, setIsBuffering] = useState(false);
@@ -245,7 +290,7 @@ export default function App() {
 
   const [loginId, setLoginId] = useState('');
 
-  const CURRENT_VERSION = '1.0.4';
+  const CURRENT_VERSION = '1.0.5';
   const [otaVersion, setOtaVersion] = useState<string | null>(null);
   const [otaMessage, setOtaMessage] = useState<string | null>(null);
   const [otaDate, setOtaDate] = useState<string | null>(null);
@@ -313,6 +358,24 @@ export default function App() {
     const handleGlobalBack = (e: KeyboardEvent) => {
       // Catch conventional keyboard ESC for Web compatibility
       if (e.key === 'Escape' || e.key === 'Backspace') {
+        if (navContext) {
+          stopTvEvent(e);
+          if (navContext.type === 'episodes') {
+            // go back to seasons
+            setNavContext(prev => prev && prev.type === 'episodes' ? { type: 'seasons', seriesId: prev.seriesId, seriesTitle: prev.seriesTitle, seasons: [] } : null);
+            // Re-fetch seasons
+            const base = apiBase.replace(/\/$/, '');
+            const ctx = navContext as any;
+            fetch(`${base}/api/series/${ctx.seriesId}`) .then(r => r.json())
+              .then(data => {
+                const seasons = (data.seasons || []).map((s: any, i: number) => ({ ...s, uniqueId: `season-${s.id}-${i}` }));
+                setNavContext({ type: 'seasons', seriesId: ctx.seriesId, seriesTitle: ctx.seriesTitle, seasons });
+              });
+          } else {
+            setNavContext(null);
+          }
+          return;
+        }
         if (tgStatus === 'phoneInput' || tgStatus === 'codeInput' || tgStatus === 'passwordInput') {
           stopTvEvent(e);
           setTgStatus('loggedOut');
@@ -371,31 +434,96 @@ export default function App() {
     }
   }, [isLocked]);
 
+  // Initial movie fetch
   useEffect(() => {
     const base = apiBase.replace(/\/$/, '');
-    fetch(`${base}/api/movies`)
-      .then(res => {
-        if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
-        return res.json();
-      })
+    fetch(`${base}/api/movies?page=1`)
+      .then(res => { if (!res.ok) throw new Error(`HTTP Error: ${res.status}`); return res.json(); })
       .then(data => {
         setFetchError(null);
         setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES);
+        setHasMore(data.hasMore ?? false);
       })
       .catch((err) => {
-        setFetchError(`שגיאת תקשורת: ${err.message}. מנסה להתחבר ל: ${base}/api/movies`);
+        setFetchError(`שגיאת תקשורת: ${err.message}`);
         setBaseMovies(BASE_MOVIES);
-        // Force the settings menu to open so Android TV users can easily fix the IP!
         setShowSettings(true);
       });
   }, [apiBase]);
 
+  // Load more movies when reaching the end
+  const handleNearEnd = () => {
+    if (isLoadingMore || !hasMore || navContext || genre === 'סדרות' || genre === 'מועדפים') return;
+    const base = apiBase.replace(/\/$/, '');
+    const nextPage = contentPage + 1;
+    setIsLoadingMore(true);
+    fetch(`${base}/api/movies?page=${nextPage}`)
+      .then(r => r.json())
+      .then(data => {
+        setBaseMovies(prev => [...prev, ...(data.movies || [])]);
+        setContentPage(nextPage);
+        setHasMore(data.hasMore ?? false);
+      })
+      .finally(() => setIsLoadingMore(false));
+  };
+
+  // Fetch series when genre switches to 'סדרות'
+  useEffect(() => {
+    if (genre !== 'סדרות') return;
+    const base = apiBase.replace(/\/$/, '');
+    fetch(`${base}/api/series?page=1`)
+      .then(r => r.json())
+      .then(data => setSeriesItems(data.series || []));
+  }, [genre, apiBase]);
+
+  // Navigate into series’ seasons
+  const enterSeries = async (series: any) => {
+    const base = apiBase.replace(/\/$/, '');
+    const data = await fetch(`${base}/api/series/${series.id}`).then(r => r.json());
+    const seasons = (data.seasons || []).map((s: any, i: number) => ({ ...s, uniqueId: `season-${s.id}-${i}` }));
+    setNavContext({ type: 'seasons', seriesId: series.id, seriesTitle: series.title, seasons });
+  };
+
+  // Navigate into a season’s episodes
+  const enterSeason = async (season: any) => {
+    const base = apiBase.replace(/\/$/, '');
+    const data = await fetch(`${base}/api/series/${season.seriesId}/season/${season.season_number}`).then(r => r.json());
+    const episodes = (data.episodes || []).map((e: any, i: number) => ({ ...e, uniqueId: `ep-${e.id}-${i}` }));
+    setNavContext(prev => ({
+      type: 'episodes',
+      seriesId: (prev as any).seriesId,
+      seriesTitle: (prev as any).seriesTitle,
+      seasonNum: season.season_number,
+      seasonTitle: season.title,
+      episodes
+    }));
+  };
+
+  // Smart poster select: route based on current context
+  const handlePosterSelect = (movie: any) => {
+    if (navContext?.type === 'seasons') { enterSeason(movie); return; }
+    if (navContext?.type === 'episodes') { setSelectedMovie(movie); return; }
+    if (genre === 'סדרות') { enterSeries(movie); return; }
+    setSelectedMovie(movie); // normal movie/favorite - open Telegram search
+  };
+
   const displayMovies = useMemo(() => {
+    if (navContext?.type === 'seasons') {
+      return navContext.seasons;
+    }
+    if (navContext?.type === 'episodes') {
+      return navContext.episodes;
+    }
+    if (genre === 'מועדפים') {
+      return favorites.map((m: any, i: number) => ({ ...m, uniqueId: `fav-${m.id}-${m.mediaType}-${i}` }));
+    }
+    if (genre === 'סדרות') {
+      return seriesItems.map((m: any, i: number) => ({ ...m, uniqueId: `ser-${m.id}-${i}` }));
+    }
     let filtered = baseMovies || [];
-    if (genre !== 'הכל') filtered = filtered.filter((m: any) => m.genre === genre);
-    // 100 movies are fetched from backend, so no need to artificially repeat them anymore.
+    if (genre !== 'הכל') filtered = filtered.filter((m: any) => m.genre === genre || m.title?.includes(genre));
     return filtered.map((m: any, i: number) => ({ ...m, uniqueId: `${m.id}-${i}` }));
-  }, [baseMovies, genre]);
+  }, [baseMovies, genre, seriesItems, navContext, favorites]);
 
   const posterLayout = useMemo(() => {
     return displayMovies.map((movie: any, index: number) => {
@@ -408,6 +536,10 @@ export default function App() {
       };
     });
   }, [displayMovies]);
+
+  const lastPosterZ = posterLayout.length > 0
+    ? posterLayout[posterLayout.length - 1].position[2] as number
+    : -2;
 
   const handlePlayVideo = async (peerId: string, messageId: number, title: string) => {
     setIsBuffering(true);
@@ -443,12 +575,48 @@ export default function App() {
              <mesh rotation={[-Math.PI/2, 0, 0]} position={[0,0,-100]}><planeGeometry args={[20, 300]} /><meshStandardMaterial color="#050505" /></mesh>
              <gridHelper args={[100, 50, '#00ffcc', '#001111']} position={[0, 0.01, -50]} />
               {posterLayout.map(({ movie, position, rotation }: any) => (
-                <Poster key={movie.uniqueId} movie={movie} isFocused={focusedId === movie.uniqueId} position={position} rotation={rotation} />
+                <Poster
+                  key={movie.uniqueId}
+                  movie={movie}
+                  isFocused={focusedId === movie.uniqueId}
+                  isFavorited={favorites.some(f => f.id === movie.id && f.mediaType === movie.mediaType)}
+                  isHeartFocused={focusedHeartId === movie.uniqueId}
+                  position={position}
+                  rotation={rotation}
+                />
              ))}
+             {isLoadingMore && (
+               <Text position={[0, 1.6, lastPosterZ - 8]} fontSize={0.5} color="#00ffcc" anchorX="center">
+                 טוען עוד תכנים...
+               </Text>
+             )}
           </group>
-          <TVController posterLayout={posterLayout} isLocked={isLocked} setSelectedMovie={setSelectedMovie} setFocusedId={setFocusedId} isAnyModalOpen={!!selectedMovie || showCinemaScreen} />
+          <TVController
+            posterLayout={posterLayout}
+            isLocked={isLocked}
+            onPosterSelect={handlePosterSelect}
+            onHeartToggle={handleHeartToggle}
+            setFocusedId={setFocusedId}
+            setFocusedHeartId={setFocusedHeartId}
+            isAnyModalOpen={!!selectedMovie || showCinemaScreen}
+            selectedMovie={selectedMovie}
+            lastPosterZ={lastPosterZ}
+            onNearEnd={handleNearEnd}
+          />
         </Suspense>
       </Canvas>
+
+      {/* Breadcrumb — shows where we are in the series hierarchy */}
+      {isLocked && navContext && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 pointer-events-none flex gap-2 items-center text-white/80 text-lg bg-black/50 px-6 py-2 rounded-full backdrop-blur">
+          <span className="cursor-pointer" onClick={() => { setNavContext(null); setGenre('סדרות'); }}>🏠 סדרות</span>
+          <span className="text-[#00ffcc]">&rsaquo;</span>
+          <span>{navContext.seriesTitle}</span>
+          {navContext.type === 'episodes' && (
+            <><span className="text-[#00ffcc]">&rsaquo;</span><span>{navContext.seasonTitle}</span></>
+          )}
+        </div>
+      )}
 
       {/* Red Dot Reticle */}
       {isLocked && !selectedMovie && !showCinemaScreen && (
@@ -536,8 +704,10 @@ export default function App() {
             <h1 className="text-3xl font-bold text-[#00ffcc] mb-10">HoloCinema</h1>
             <button onClick={() => setIsLocked(true)} className="py-5 bg-[#00ffcc] text-black font-bold rounded-2xl focus:ring-4 focus:ring-white">כניסה למסדרון</button>
             <div className="mt-10 flex flex-col gap-3">
-               {['הכל', 'ישראלי', 'פעולה'].map(g => (
-                 <button key={g} onClick={() => setGenre(g)} className={`p-4 rounded-xl text-right transition-all ${genre === g ? 'bg-[#00ffcc] text-black' : 'bg-white/5'}`}>{g}</button>
+               {['הכל', 'ישראלי', 'פעולה', 'סדרות', 'מועדפים'].map(g => (
+                 <button key={g} onClick={() => { setGenre(g); setNavContext(null); }} className={`p-4 rounded-xl text-right transition-all ${genre === g && !navContext ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>
+                   {g}{g === 'מועדפים' ? ` (${favorites.length})` : g === 'סדרות' ? ' 📺' : ''}
+                 </button>
                ))}
                <button onClick={() => setShowSettings(true)} className="p-4 rounded-xl text-right transition-all bg-white/5 mt-4 text-gray-300 hover:text-white border border-white/5">⚙️ הגדרות</button>
             </div>

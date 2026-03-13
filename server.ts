@@ -384,51 +384,120 @@ app.get('/api/tg/subtitle/:peerId/:messageId', async (req, res) => {
   }
 });
 
-// Fetch Movies (TMDB or Fallback)
+// Fetch Movies with pagination (page=1 → TMDB pages 1-5, page=2 → 6-10, etc.)
 app.get('/api/movies', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
+    const batchNum = Math.max(1, parseInt(req.query.page as string || '1', 10));
+    const startTmdbPage = (batchNum - 1) * 5 + 1;
+
     if (tmdbKey) {
-      // Fetch 5 pages to get 100 unique movies
-      const pages = [1, 2, 3, 4, 5];
-      const fetchPromises = pages.map(page => 
-        fetch(`https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=${page}`).then(res => res.json())
+      const pages = Array.from({ length: 5 }, (_, i) => startTmdbPage + i);
+      const fetchPromises = pages.map(page =>
+        fetch(`https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=${page}`).then(r => r.json())
       );
-      
       const results = await Promise.all(fetchPromises);
       const allMovies = results.flatMap(data => data.results || []);
 
-      const movies = allMovies.map((m: any) => ({
+      const movies = allMovies.filter((m: any) => m.poster_path).map((m: any) => ({
         id: m.id,
         title: m.title,
         genre: 'סרט',
         rating: m.vote_average,
         popularity: m.popularity,
         poster: `https://image.tmdb.org/t/p/w500${m.poster_path}`,
-        trailer: '', 
-        desc: m.overview || 'אין תיאור זמין בעברית.'
+        trailer: '',
+        desc: m.overview || 'אין תיאור זמין בעברית.',
+        mediaType: 'movie'
       }));
-      return res.json({ movies });
+      return res.json({ movies, hasMore: batchNum < 10 });
     }
-    
-    // Fallback Hebrew movies (High quality posters from TMDB)
+
+    // Fallback
     const fallback = [
-      { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: 'https://www.youtube.com/embed/YoHD9XEInc0', desc: 'גנב שגונב סודות תאגידיים באמצעות טכנולוגיית שיתוף חלומות מקבל משימה הפוכה של שתילת רעיון במוחו של מנכ"ל.' },
-      { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', trailer: 'https://www.youtube.com/embed/zSWdZVtXT7E', desc: 'צוות חוקרים נוסע דרך חור תולעת בחלל בניסיון להבטיח את הישרדותה של האנושות.' },
-      { id: 3, title: 'מטריקס (The Matrix)', genre: 'מדע בדיוני', rating: 8.7, popularity: 92, poster: 'https://image.tmdb.org/t/p/w500/f89U3ADr1oiB1s9GkdPOEpXUk5H.jpg', trailer: 'https://www.youtube.com/embed/vKQi3bBA1y8', desc: 'כאשר זרה יפהפייה מובילה את האקר המחשבים ניאו לעולם תחתון אסור, הוא מגלה את האמת המזעזעת - החיים שהוא מכיר הם הונאה מורכבת של אינטליגנציה קיברנטית מרושעת.' },
-      { id: 4, title: 'אווטאר (Avatar)', genre: 'פעולה', rating: 7.8, popularity: 85, poster: 'https://image.tmdb.org/t/p/w500/kyeqWdyKINLSywicWSXb390iEQO.jpg', trailer: 'https://www.youtube.com/embed/5PSNL1qE6VY', desc: 'נחת משותק שנשלח לירח פנדורה במשימה ייחודית נקרע בין מילוי פקודותיו לבין הגנה על העולם שהוא מרגיש שהוא ביתו.' },
-      { id: 5, title: 'חולית (Dune)', genre: 'מדע בדיוני', rating: 8.0, popularity: 88, poster: 'https://image.tmdb.org/t/p/w500/d5NXSklXo0qyIYkgV94XAgMIckC.jpg', trailer: 'https://www.youtube.com/embed/n9xhKvBWcl4', desc: 'משפחת אצולה מסתבכת במלחמה על השליטה בנכס היקר ביותר בגלקסיה.' },
-      { id: 6, title: 'בלייד ראנר 2049', genre: 'מדע בדיוני', rating: 8.0, popularity: 82, poster: 'https://image.tmdb.org/t/p/w500/gajva2L0rPYkEWjzgFlBXCAVBE5.jpg', trailer: 'https://www.youtube.com/embed/gCcx85zbxz4', desc: 'גילויו של סוד קבור זמן רב מוביל בלייד ראנר צעיר לאתר את ריק דקארד, שנעדר כבר שלושים שנה.' },
-      { id: 7, title: 'מקס הזועם: כביש הזעם', genre: 'פעולה', rating: 8.1, popularity: 89, poster: 'https://image.tmdb.org/t/p/w500/8tZYtuWezp8JbcsvHYO0O46tFbo.jpg', trailer: 'https://www.youtube.com/embed/hEJnMQG9lN8', desc: 'בשממה פוסט-אפוקליפטית, אישה מורדת בשליט עריץ בחיפוש אחר מולדתה.' },
-      { id: 8, title: 'ספיידרמן: ממד העכביש', genre: 'אנימציה', rating: 8.4, popularity: 91, poster: 'https://image.tmdb.org/t/p/w500/iiZZdoQBEYBv6id8su7ImL0oCbD.jpg', trailer: 'https://www.youtube.com/embed/tg52up16eq0', desc: 'מיילס מוראלס הופך לספיידרמן של היקום שלו, וחייב לחבור לאנשי עכביש מממדים אחרים כדי לעצור איום על כל המציאויות.' },
-      { id: 9, title: 'האביר האפל (The Dark Knight)', genre: 'פעולה', rating: 9.0, popularity: 98, poster: 'https://image.tmdb.org/t/p/w500/qJ2tW6WMUDux911r6m7haRef0WH.jpg', trailer: 'https://www.youtube.com/embed/EXeTwQWrcwY', desc: 'כאשר האיום המכונה הג\'וקר זורע הרס וכאוס על תושבי גותהאם, באטמן חייב לקבל על עצמו את אחד המבחנים הפסיכולוגיים והפיזיים הגדולים ביותר.' },
-      { id: 10, title: 'הנוקמים: סוף המשחק', genre: 'פעולה', rating: 8.4, popularity: 96, poster: 'https://image.tmdb.org/t/p/w500/or06FN3Dka5tukK1e9sl16pB3iy.jpg', trailer: 'https://www.youtube.com/embed/TcMBFSGVi1c', desc: 'לאחר האירועים ההרסניים של מלחמת האינסוף, היקום נמצא בהריסות. בעזרת בני ברית שנותרו, הנוקמים מתאספים פעם נוספת כדי להפוך את פעולותיו של תאנוס.' },
-      { id: 11, title: 'פרזיטים (Parasite)', genre: 'מותחן', rating: 8.5, popularity: 87, poster: 'https://image.tmdb.org/t/p/w500/7IiTTgloJzvGI1TAYymCfbfl3vT.jpg', trailer: 'https://www.youtube.com/embed/5xH0HfJHxYI', desc: 'חמדנות ואפליה מעמדית מאיימות על מערכת היחסים הסימביוטית שזה עתה נוצרה בין משפחת פארק העשירה לבין שבט קים חסר הכל.' },
-      { id: 12, title: 'המסע המופלא (Spirited Away)', genre: 'אנימציה', rating: 8.6, popularity: 84, poster: 'https://image.tmdb.org/t/p/w500/39wmItIWsg5sZMyRU84vUqXExBv.jpg', trailer: 'https://www.youtube.com/embed/ByXuk9QqQkk', desc: 'במהלך מעבר משפחתה לפרברים, ילדה זועפת בת 10 נודדת לעולם שנשלט על ידי אלים, מכשפות ורוחות, ושבו בני אדם הופכים לחיות.' },
-      { id: 13, title: 'פאודה (Fauda)', genre: 'ישראלי', rating: 8.3, popularity: 88, poster: 'https://image.tmdb.org/t/p/w500/8j12jctzB0XQGkE9B0n2PEnQk4.jpg', trailer: 'https://www.youtube.com/embed/3bOWJWQzMGE', desc: 'הסיפורים האנושיים משני צידי הסכסוך הישראלי-פלסטיני. סוכן ישראלי בכיר יוצא מפרישה כדי לצוד פעיל פלסטיני.' },
-      { id: 14, title: 'שטיסל (Shtisel)', genre: 'ישראלי', rating: 8.6, popularity: 82, poster: 'https://image.tmdb.org/t/p/w500/1W1hA12R1XQ.jpg', trailer: 'https://www.youtube.com/embed/1W1hA12R1XQ', desc: 'משפחה חרדית המתגוררת בשכונה חרדית בירושלים מתמודדת עם אהבה, אובדן ושגרת חיי היומיום.' },
+      { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: '', desc: 'גנב שגונב סודות תאגידיים.', mediaType: 'movie' },
+      { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', trailer: '', desc: 'צוות חוקרים נוסע דרך חור תולעת.', mediaType: 'movie' },
     ];
-    res.json({ movies: fallback });
+    res.json({ movies: fallback, hasMore: false });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Fetch TV Series (paginated)
+app.get('/api/series', async (req, res) => {
+  try {
+    const tmdbKey = process.env.TMDB_API_KEY;
+    if (!tmdbKey) return res.json({ series: [] });
+    const batchNum = Math.max(1, parseInt(req.query.page as string || '1', 10));
+    const startTmdbPage = (batchNum - 1) * 5 + 1;
+    const pages = Array.from({ length: 5 }, (_, i) => startTmdbPage + i);
+    const fetchPromises = pages.map(page =>
+      fetch(`https://api.themoviedb.org/3/discover/tv?sort_by=popularity.desc&api_key=${tmdbKey}&language=he-IL&page=${page}`).then(r => r.json())
+    );
+    const results = await Promise.all(fetchPromises);
+    const allShows = results.flatMap(d => d.results || []);
+    const series = allShows.filter((s: any) => s.poster_path).map((s: any) => ({
+      id: s.id,
+      title: s.name,
+      genre: 'סדרה',
+      rating: s.vote_average,
+      popularity: s.popularity,
+      poster: `https://image.tmdb.org/t/p/w500${s.poster_path}`,
+      desc: s.overview || '',
+      mediaType: 'tv'
+    }));
+    return res.json({ series, hasMore: batchNum < 10 });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Fetch Series Seasons
+app.get('/api/series/:id', async (req, res) => {
+  try {
+    const tmdbKey = process.env.TMDB_API_KEY;
+    if (!tmdbKey) return res.json({ seasons: [], seriesTitle: '' });
+    const data = await fetch(`https://api.themoviedb.org/3/tv/${req.params.id}?api_key=${tmdbKey}&language=he-IL`).then(r => r.json());
+    const seasons = (data.seasons || [])
+      .filter((s: any) => s.season_number > 0)
+      .map((s: any) => ({
+        id: s.id,
+        title: `עונה ${s.season_number}`,
+        season_number: s.season_number,
+        seriesId: parseInt(req.params.id),
+        poster: s.poster_path ? `https://image.tmdb.org/t/p/w500${s.poster_path}` : `https://image.tmdb.org/t/p/w500${data.poster_path}`,
+        episode_count: s.episode_count,
+        desc: `${s.episode_count} פרקים${s.overview ? ' — ' + s.overview : ''}`,
+        genre: 'עונה',
+        rating: data.vote_average,
+        mediaType: 'season'
+      }));
+    return res.json({ seasons, seriesTitle: data.name });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Fetch Season Episodes
+app.get('/api/series/:id/season/:num', async (req, res) => {
+  try {
+    const tmdbKey = process.env.TMDB_API_KEY;
+    if (!tmdbKey) return res.json({ episodes: [], seasonTitle: '' });
+    const data = await fetch(`https://api.themoviedb.org/3/tv/${req.params.id}/season/${req.params.num}?api_key=${tmdbKey}&language=he-IL`).then(r => r.json());
+    const episodes = (data.episodes || []).map((e: any) => ({
+      id: e.id,
+      title: `${e.episode_number}. ${e.name}`,
+      episode_number: e.episode_number,
+      seriesId: parseInt(req.params.id),
+      seasonNum: parseInt(req.params.num),
+      poster: e.still_path ? `https://image.tmdb.org/t/p/w500${e.still_path}` : 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg',
+      desc: e.overview || '',
+      genre: 'פרק',
+      rating: e.vote_average || 0,
+      mediaType: 'episode'
+    }));
+    return res.json({ episodes, seasonTitle: data.name });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
