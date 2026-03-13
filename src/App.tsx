@@ -42,7 +42,7 @@ const fetchApiJson = async (path: string, init?: RequestInit) => {
 };
 
 // --- 3D Components ---
-const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, isAnyModalOpen }: any) => {
+const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, isAnyModalOpen, selectedMovie }: any) => {
   const { camera } = useThree();
   const [targetPos, setTargetPos] = useState(new THREE.Vector3(0, 1.6, 2));
   const focusedMovieRef = useRef<any>(null);
@@ -60,8 +60,8 @@ const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, 
 
   useEffect(() => {
     const handleInput = (e: KeyboardEvent) => {
-      // Don't intercept global events if a modal is open, let the CSS dialog/focus handle it.
-      if (!isLocked || isAnyModalOpen) return;
+      // Don't intercept global events if a modal or a movie popup is open.
+      if (!isLocked || isAnyModalOpen || !!selectedMovie) return;
       
       if (isTvNavigationKey(e)) stopTvEvent(e);
       
@@ -88,19 +88,18 @@ const TVController = ({ posterLayout, isLocked, setSelectedMovie, setFocusedId, 
       } else if (e.key === 'ArrowRight') {
         keys.current.right = false;
       }
-      if (isLocked && !isAnyModalOpen && isTvNavigationKey(e)) stopTvEvent(e);
+      if (isLocked && !isAnyModalOpen && !selectedMovie && isTvNavigationKey(e)) stopTvEvent(e);
     };
 
     window.addEventListener('keydown', handleInput, true);
     window.addEventListener('keyup', handleInputUp, true);
     return () => {
       window.removeEventListener('keydown', handleInput, true);
-      window.removeEventListener('keyup', handleInputUp, true);
     };
-  }, [isLocked, setSelectedMovie, isAnyModalOpen]);
+  }, [isLocked, setSelectedMovie, isAnyModalOpen, selectedMovie]);
 
   useFrame((state) => {
-    if (isLocked && !isAnyModalOpen) {
+    if (isLocked && !isAnyModalOpen && !selectedMovie) {
       // Smoothly update camera rotation based on held keys
       if (keys.current.left) {
         targetRotY.current += ROTATION_SPEED;
@@ -329,33 +328,26 @@ export default function App() {
     const handleMenuInput = (e: KeyboardEvent) => {
       if (!isTvSelectKey(e)) return;
       
+      // Let standard HTML buttons/inputs handle the OK click native to Android Webview
+      const activeTag = document.activeElement?.tagName.toLowerCase();
+      const isInputFocused = activeTag === 'input' || activeTag === 'button' || activeTag === 'a';
+      if (isInputFocused) return;
+      
       // If we are showing the corridor and nothing selected yet, start playing
       if (!isLocked && !selectedMovie && !showCinemaScreen) {
         stopTvEvent(e);
         blurActiveElement();
         setIsLocked(true);
       }
-      // If we're already locked and looking at a movie (but no modal open), that's handled by TVController
-    };
-    
-    const suppressMenuKeyUp = (e: KeyboardEvent) => {
-      if (isTvSelectKey(e)) {
-        // VERY IMPORTANT: Prevent Android webview from firing synthetic "onClick" events across the DOM
-        // when the user releases the "OK/Enter" button on the TV remote.
-        e.preventDefault();
-        e.stopPropagation();
-      }
     };
 
     window.addEventListener('keydown', handleMenuInput, true);
     window.addEventListener('keydown', handleGlobalBack, true);
-    window.addEventListener('keyup', suppressMenuKeyUp, true);
     return () => {
       window.removeEventListener('keydown', handleMenuInput, true);
       window.removeEventListener('keydown', handleGlobalBack, true);
-      window.removeEventListener('keyup', suppressMenuKeyUp, true);
     };
-  }, [isLocked, selectedMovie, showCinemaScreen]);
+  }, [isLocked, selectedMovie, showCinemaScreen, showSettings, activeMedia, tgStatus]);
 
   useEffect(() => {
     if (isLocked) {
@@ -576,20 +568,6 @@ export default function App() {
                     חפש עדכונים ידנית
                   </button>
                 )}
-
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-gray-400 text-sm mb-1">סטטוס חיבור טלגרם</p>
-                    <p className="text-2xl font-bold">{tgStatus === 'loggedIn' ? 'מחובר ✔️' : 'מנותק ❌'}</p>
-                  </div>
-                  {tgStatus === 'loggedIn' && (
-                    <button onClick={() => {
-                       const base = apiBase.replace(/\/$/, '');
-                       fetchApiJson(`${base}/api/tg/logout`, { method: 'POST' })
-                         .then(() => setTgStatus('loggedOut'));
-                    }} className="px-6 py-3 bg-red-500/20 text-red-400 border border-red-500/50 rounded-xl hover:bg-red-500 hover:text-white transition-colors">התנתק</button>
-                  )}
-                </div>
               </div>
 
               <button onClick={() => setShowSettings(false)} className="px-10 py-4 bg-white/10 hover:bg-white/20 rounded-2xl transition-colors w-full text-xl font-bold">סגור</button>
