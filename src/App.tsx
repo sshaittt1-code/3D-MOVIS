@@ -278,7 +278,8 @@ export default function App() {
   const displayMovies = useMemo(() => {
     let filtered = baseMovies || [];
     if (genre !== 'הכל') filtered = filtered.filter((m: any) => m.genre === genre);
-    return Array(5).fill(filtered.length ? filtered : []).flat().map((m, i) => ({ ...m, uniqueId: `${m.id}-${i}` }));
+    // 100 movies are fetched from backend, so no need to artificially repeat them anymore.
+    return filtered.map((m: any, i: number) => ({ ...m, uniqueId: `${m.id}-${i}` }));
   }, [baseMovies, genre]);
 
   const posterLayout = useMemo(() => {

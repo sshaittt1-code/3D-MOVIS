@@ -191,7 +191,7 @@ app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
 
       const stream = client.iterDownload({
         file: message.media,
-        offset: BigInt(start),
+        offset: start as any,
         limit: chunksize,
         requestSize: 1024 * 1024, // 1MB chunks
       });
@@ -275,7 +275,7 @@ app.get('/api/tg/subtitle/:peerId/:messageId', async (req, res) => {
 
     if (!message.media) return res.status(404).send('No media found');
 
-    const buffer = await client.downloadMedia(message.media, { workers: 1 });
+    const buffer = await client.downloadMedia(message.media, { });
     if (!buffer) return res.status(500).send('Failed to download subtitle');
 
     // Convert SRT to VTT (HTML5 video requires VTT)
@@ -300,9 +300,16 @@ app.get('/api/movies', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
     if (tmdbKey) {
-      const response = await fetch(`https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=1`);
-      const data = await response.json();
-      const movies = data.results.map((m: any) => ({
+      // Fetch 5 pages to get 100 unique movies
+      const pages = [1, 2, 3, 4, 5];
+      const fetchPromises = pages.map(page => 
+        fetch(`https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=${page}`).then(res => res.json())
+      );
+      
+      const results = await Promise.all(fetchPromises);
+      const allMovies = results.flatMap(data => data.results || []);
+
+      const movies = allMovies.map((m: any) => ({
         id: m.id,
         title: m.title,
         genre: 'סרט',
