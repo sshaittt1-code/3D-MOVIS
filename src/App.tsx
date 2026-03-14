@@ -209,10 +209,15 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
         </Text>
       )}
 
-      {/* Title */}
+      {/* Title + Rating */}
       {showText && (
-        <Text position={[0, -2.4, 0.01]} fontSize={0.3} color={isFocused ? '#00ffcc' : '#ffffff'} anchorX="center" maxWidth={2.6} textAlign="center">
+        <Text position={[0, -2.4, 0.01]} fontSize={0.28} color={isFocused ? '#00ffcc' : '#ffffff'} anchorX="center" maxWidth={2.6} textAlign="center">
           {movie.title}
+        </Text>
+      )}
+      {showText && isFocused && movie.rating > 0 && (
+        <Text position={[0, -2.82, 0.01]} fontSize={0.26} color="#fbbf24" anchorX="center" anchorY="middle">
+          {'★'.repeat(Math.round(movie.rating / 2))}{'☆'.repeat(5 - Math.round(movie.rating / 2))} {movie.rating.toFixed(1)}
         </Text>
       )}
 
@@ -234,7 +239,7 @@ type NavCtx =
 
 // --- Main App ---
 export default function App() {
-  const [baseMovies, setBaseMovies] = useState<any[]>([]);
+  const [baseMovies, setBaseMovies] = useState<any[]>(BASE_MOVIES);
   const [seriesItems, setSeriesItems] = useState<any[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<any>(null);
   const [isLocked, setIsLocked] = useState(false);
@@ -296,6 +301,34 @@ export default function App() {
   const [otaDate, setOtaDate] = useState<string | null>(null);
   const [isDownloadingOta, setIsDownloadingOta] = useState(false);
   const [otaDownloadProgress, setOtaDownloadProgress] = useState(0);
+
+  // In-app search
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearchingTmdb, setIsSearchingTmdb] = useState(false);
+
+  // Watch history
+  const [watchHistory, setWatchHistory] = useState<any[]>(() => {
+    try { return JSON.parse(localStorage.getItem('watch_history') || '[]'); } catch { return []; }
+  });
+  useEffect(() => { localStorage.setItem('watch_history', JSON.stringify(watchHistory)); }, [watchHistory]);
+
+  const saveToHistory = (movie: any) => {
+    setWatchHistory(prev => {
+      const without = prev.filter(h => !(h.id === movie.id && h.mediaType === movie.mediaType));
+      return [{ ...movie, watchedAt: Date.now() }, ...without].slice(0, 50);
+    });
+  };
+
+  // Dynamic genres from /api/genres
+  const [genreList, setGenreList] = useState<any[]>([]);
+  const [activeGenreId, setActiveGenreId] = useState<number | null>(null);
+  useEffect(() => {
+    fetch(`${apiBase.replace(/\/$/, '')}/api/genres`)
+      .then(r => r.json())
+      .then(data => setGenreList(data.genres || []));
+  }, [apiBase]);
 
   useEffect(() => {
     const base = apiBase.replace(/\/$/, '');
@@ -434,13 +467,20 @@ export default function App() {
     }
   }, [isLocked]);
 
+  const isMovieCorridor = genre !== '׳¡׳“׳¨׳•׳×' && genre !== '׳׳•׳¢׳“׳₪׳™׳' && genre !== '׳¦׳₪׳™׳•׳× ׳׳—׳¨׳•׳ ׳•׳×' && !navContext;
+
   // Initial movie fetch
   useEffect(() => {
+    if (genre === 'סדרות' || genre === 'מועדפים' || genre === 'צפיות אחרונות') return;
     const base = apiBase.replace(/\/$/, '');
-    fetch(`${base}/api/movies?page=1`)
+    const genreParam = activeGenreId ? `&genre_id=${activeGenreId}` : '';
+    setContentPage(1);
+    setHasMore(true);
+    setIsLoadingMore(false);
+    setFetchError(null);
+    fetch(`${base}/api/movies?page=1${genreParam}`)
       .then(res => { if (!res.ok) throw new Error(`HTTP Error: ${res.status}`); return res.json(); })
       .then(data => {
-        setFetchError(null);
         setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES);
         setHasMore(data.hasMore ?? false);
       })
@@ -449,15 +489,17 @@ export default function App() {
         setBaseMovies(BASE_MOVIES);
         setShowSettings(true);
       });
-  }, [apiBase]);
+  }, [apiBase, activeGenreId, genre]);
 
   // Load more movies when reaching the end
   const handleNearEnd = () => {
-    if (isLoadingMore || !hasMore || navContext || genre === 'סדרות' || genre === 'מועדפים') return;
+    if (isMovieCorridor && baseMovies.length === 0) return;
+    if (isLoadingMore || !hasMore || navContext || genre === 'סדרות' || genre === 'מועדפים' || genre === 'צפיות אחרונות' || showSearch) return;
     const base = apiBase.replace(/\/$/, '');
     const nextPage = contentPage + 1;
+    const genreParam = activeGenreId ? `&genre_id=${activeGenreId}` : '';
     setIsLoadingMore(true);
-    fetch(`${base}/api/movies?page=${nextPage}`)
+    fetch(`${base}/api/movies?page=${nextPage}${genreParam}`)
       .then(r => r.json())
       .then(data => {
         setBaseMovies(prev => [...prev, ...(data.movies || [])]);
@@ -508,22 +550,21 @@ export default function App() {
   };
 
   const displayMovies = useMemo(() => {
-    if (navContext?.type === 'seasons') {
-      return navContext.seasons;
+    if (showSearch && searchResults.length > 0) {
+      return searchResults.map((m: any, i: number) => ({ ...m, uniqueId: `srch-${m.id}-${m.mediaType}-${i}` }));
     }
-    if (navContext?.type === 'episodes') {
-      return navContext.episodes;
-    }
+    if (navContext?.type === 'seasons') return navContext.seasons;
+    if (navContext?.type === 'episodes') return navContext.episodes;
     if (genre === 'מועדפים') {
       return favorites.map((m: any, i: number) => ({ ...m, uniqueId: `fav-${m.id}-${m.mediaType}-${i}` }));
     }
-    if (genre === 'סדרות') {
-      return seriesItems.map((m: any, i: number) => ({ ...m, uniqueId: `ser-${m.id}-${i}` }));
+    if (genre === 'צפיות אחרונות') {
+      return watchHistory.map((m: any, i: number) => ({ ...m, uniqueId: `hist-${m.id}-${m.mediaType}-${i}` }));
     }
-    let filtered = baseMovies || [];
-    if (genre !== 'הכל') filtered = filtered.filter((m: any) => m.genre === genre || m.title?.includes(genre));
+    if (genre === 'סדרות') return seriesItems.map((m: any, i: number) => ({ ...m, uniqueId: `ser-${m.id}-${i}` }));
+    const filtered = (baseMovies && baseMovies.length > 0 ? baseMovies : BASE_MOVIES) || [];
     return filtered.map((m: any, i: number) => ({ ...m, uniqueId: `${m.id}-${i}` }));
-  }, [baseMovies, genre, seriesItems, navContext, favorites]);
+  }, [baseMovies, genre, seriesItems, navContext, favorites, watchHistory, searchResults, showSearch]);
 
   const posterLayout = useMemo(() => {
     return displayMovies.map((movie: any, index: number) => {
@@ -540,6 +581,17 @@ export default function App() {
   const lastPosterZ = posterLayout.length > 0
     ? posterLayout[posterLayout.length - 1].position[2] as number
     : -2;
+
+  // Trigger TMDB search
+  const handleTmdbSearch = () => {
+    if (!searchQuery.trim()) return;
+    const base = apiBase.replace(/\/$/, '');
+    setIsSearchingTmdb(true);
+    fetch(`${base}/api/search?q=${encodeURIComponent(searchQuery)}&type=all`)
+      .then(r => r.json())
+      .then(data => { setSearchResults(data.results || []); setIsSearchingTmdb(false); })
+      .catch(() => setIsSearchingTmdb(false));
+  };
 
   const handlePlayVideo = async (peerId: string, messageId: number, title: string) => {
     setIsBuffering(true);
@@ -703,13 +755,24 @@ export default function App() {
           <div className="w-80 h-full bg-black/90 p-8 border-l border-[#00ffcc]/30 flex flex-col shadow-2xl">
             <h1 className="text-3xl font-bold text-[#00ffcc] mb-10">HoloCinema</h1>
             <button onClick={() => setIsLocked(true)} className="py-5 bg-[#00ffcc] text-black font-bold rounded-2xl focus:ring-4 focus:ring-white">כניסה למסדרון</button>
-            <div className="mt-10 flex flex-col gap-3">
-               {['הכל', 'ישראלי', 'פעולה', 'סדרות', 'מועדפים'].map(g => (
-                 <button key={g} onClick={() => { setGenre(g); setNavContext(null); }} className={`p-4 rounded-xl text-right transition-all ${genre === g && !navContext ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>
-                   {g}{g === 'מועדפים' ? ` (${favorites.length})` : g === 'סדרות' ? ' 📺' : ''}
-                 </button>
+            <button onClick={() => { setShowSearch(true); setSearchQuery(''); setSearchResults([]); setIsLocked(true); }} className="mt-3 py-4 bg-white/10 hover:bg-white/20 text-white font-bold rounded-2xl w-full text-lg transition-colors border border-white/10">🔍 חפש תוכן</button>
+            <div className="mt-6 flex flex-col gap-2 overflow-y-auto flex-1">
+               {/* Special categories */}
+               {['סדרות 📺', 'מועדפים ♥', 'צפיות אחרונות 🕓'].map(g => {
+                 const key = g.split(' ')[0];
+                 return (
+                   <button key={g} onClick={() => { setGenre(key === 'סדרות' ? 'סדרות' : key === 'מועדפים' ? 'מועדפים' : 'צפיות אחרונות'); setActiveGenreId(null); setNavContext(null); }} className={`p-3 rounded-xl text-right transition-all text-sm ${(genre === (key === 'סדרות' ? 'סדרות' : key === 'מועדפים' ? 'מועדפים' : 'צפיות אחרונות') && !navContext) ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>
+                     {g}{g.startsWith('מועדפים') ? ` (${favorites.length})` : g.startsWith('צפיות') ? ` (${watchHistory.length})` : ''}
+                   </button>
+                 );
+               })}
+               <div className="border-t border-white/10 my-2" />
+               <p className="text-xs text-gray-500 px-1">סגנות סרטים</p>
+               {/* Genre list from TMDB */}
+               {(genreList.length > 0 ? genreList : [{ id: 0, name: 'הכל', tmdbId: null }]).map((g: any) => (
+                 <button key={g.id} onClick={() => { setActiveGenreId(g.tmdbId); setGenre('הכל'); setNavContext(null); }} className={`p-3 rounded-xl text-right transition-all text-sm ${activeGenreId === g.tmdbId && !navContext && genre !== 'סדרות' && genre !== 'מועדפים' && genre !== 'צפיות אחרונות' ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>{g.name}</button>
                ))}
-               <button onClick={() => setShowSettings(true)} className="p-4 rounded-xl text-right transition-all bg-white/5 mt-4 text-gray-300 hover:text-white border border-white/5">⚙️ הגדרות</button>
+               <button onClick={() => setShowSettings(true)} className="p-3 rounded-xl text-right transition-all bg-white/5 mt-2 text-gray-400 hover:text-white border border-white/5 text-sm">⚙️ הגדרות</button>
             </div>
             {fetchError && (
               <div className="mt-auto p-4 bg-red-900/50 border border-red-500 rounded-xl text-red-200 text-sm">

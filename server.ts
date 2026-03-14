@@ -393,8 +393,12 @@ app.get('/api/movies', async (req, res) => {
 
     if (tmdbKey) {
       const pages = Array.from({ length: 5 }, (_, i) => startTmdbPage + i);
+      const genreParam = req.query.genre_id ? `&with_genres=${req.query.genre_id}` : '';
+      const endpoint = genreParam
+        ? `https://api.themoviedb.org/3/discover/movie?sort_by=popularity.desc&api_key=${tmdbKey}&language=he-IL${genreParam}&page=`
+        : `https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=`;
       const fetchPromises = pages.map(page =>
-        fetch(`https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=${page}`).then(r => r.json())
+        fetch(`${endpoint}${page}`).then(r => r.json())
       );
       const results = await Promise.all(fetchPromises);
       const allMovies = results.flatMap(data => data.results || []);
@@ -534,3 +538,57 @@ async function startServer() {
 }
 
 startServer();
+
+// TMDB Multi-Search
+app.get('/api/search', async (req, res) => {
+  try {
+    const tmdbKey = process.env.TMDB_API_KEY;
+    if (!tmdbKey) return res.json({ results: [] });
+    const q = encodeURIComponent((req.query.q as string) || '');
+    const type = req.query.type as string || 'all';
+    const [movieRes, tvRes] = await Promise.all([
+      type !== 'tv' ? fetch(`https://api.themoviedb.org/3/search/movie?api_key=${tmdbKey}&language=he-IL&query=${q}&page=1`).then(r => r.json()) : Promise.resolve({ results: [] }),
+      type !== 'movie' ? fetch(`https://api.themoviedb.org/3/search/tv?api_key=${tmdbKey}&language=he-IL&query=${q}&page=1`).then(r => r.json()) : Promise.resolve({ results: [] }),
+    ]);
+    const movies = (movieRes.results || []).filter((m: any) => m.poster_path).map((m: any) => ({
+      id: m.id, title: m.title, genre: 'סרט', rating: m.vote_average,
+      poster: `https://image.tmdb.org/t/p/w500${m.poster_path}`,
+      desc: m.overview || '', mediaType: 'movie', popularity: m.popularity
+    }));
+    const series = (tvRes.results || []).filter((s: any) => s.poster_path).map((s: any) => ({
+      id: s.id, title: s.name, genre: 'סדרה', rating: s.vote_average,
+      poster: `https://image.tmdb.org/t/p/w500${s.poster_path}`,
+      desc: s.overview || '', mediaType: 'tv', popularity: s.popularity
+    }));
+    // Interleave results for variety
+    const merged: any[] = [];
+    const max = Math.max(movies.length, series.length);
+    for (let i = 0; i < max; i++) {
+      if (movies[i]) merged.push(movies[i]);
+      if (series[i]) merged.push(series[i]);
+    }
+    res.json({ results: merged.slice(0, 40) });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// TMDB Genre list (Hebrew)
+app.get('/api/genres', (_req, res) => {
+  res.json({ genres: [
+    { id: 0,    name: 'הכל',           tmdbId: null },
+    { id: 28,   name: 'פעולה',          tmdbId: 28 },
+    { id: 35,   name: 'קומדיה',          tmdbId: 35 },
+    { id: 18,   name: 'דרמה',           tmdbId: 18 },
+    { id: 27,   name: 'אימה',           tmdbId: 27 },
+    { id: 878,  name: 'מדע בדיוני',   tmdbId: 878 },
+    { id: 10749,name: 'רומנטיקה',        tmdbId: 10749 },
+    { id: 53,   name: 'מותחן',          tmdbId: 53 },
+    { id: 16,   name: 'אנימציה',        tmdbId: 16 },
+    { id: 80,   name: 'פשע ומסתורין', tmdbId: 80 },
+    { id: 12,   name: 'הרפתקאות',       tmdbId: 12 },
+    { id: 10751,name: 'משפחתי',        tmdbId: 10751 },
+    { id: 14,   name: 'פנטזיה',         tmdbId: 14 },
+    { id: 36,   name: 'היסטוריה',        tmdbId: 36 },
+  ]});
+});
