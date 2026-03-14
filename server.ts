@@ -138,6 +138,8 @@ const fetchTvMazeFallbackBatch = async (
       .map((show: any) => ({
         id: show.id,
         title: show.name,
+        localizedTitle: show.name,
+        originalTitle: show.name,
         genre: (show.genres || []).join(', ') || 'TV',
         rating: show.rating?.average || 0,
         popularity: show.weight || 0,
@@ -161,6 +163,8 @@ const fetchTvMazeFallbackBatch = async (
 const mapTvMazeShow = (show: any) => ({
   id: show.id,
   title: show.name,
+  localizedTitle: show.name,
+  originalTitle: show.name,
   genre: (show.genres || []).join(', ') || 'TV',
   rating: show.rating?.average || 0,
   popularity: show.weight || 0,
@@ -655,7 +659,9 @@ app.get('/api/movies', async (req, res) => {
 
       const movies = allMovies.filter((m: any) => m.poster_path).map((m: any) => ({
         id: m.id,
-        title: m.title,
+        title: m.title || m.original_title,
+        localizedTitle: m.title || m.original_title,
+        originalTitle: m.original_title || m.title,
         genre: 'סרט',
         rating: m.vote_average,
         popularity: m.popularity,
@@ -720,7 +726,9 @@ app.get('/api/series', async (req, res) => {
     const allShows = sortLocalCatalog(results.flatMap(d => d.results || []), category);
     const series = allShows.filter((s: any) => s.poster_path).map((s: any) => ({
       id: s.id,
-      title: s.name,
+      title: s.name || s.original_name,
+      localizedTitle: s.name || s.original_name,
+      originalTitle: s.original_name || s.name,
       genre: 'סדרה',
       rating: s.vote_average,
       popularity: s.popularity,
@@ -883,12 +891,22 @@ app.get('/api/search', async (req, res) => {
       type !== 'movie' ? fetch(`https://api.themoviedb.org/3/search/tv?api_key=${tmdbKey}&language=he-IL&query=${q}&page=1`).then(r => r.json()) : Promise.resolve({ results: [] }),
     ]);
     const movies = (movieRes.results || []).filter((m: any) => m.poster_path).map((m: any) => ({
-      id: m.id, title: m.title, genre: 'סרט', rating: m.vote_average,
+      id: m.id,
+      title: m.title || m.original_title,
+      localizedTitle: m.title || m.original_title,
+      originalTitle: m.original_title || m.title,
+      genre: 'סרט',
+      rating: m.vote_average,
       poster: `https://image.tmdb.org/t/p/w500${m.poster_path}`,
       desc: m.overview || '', mediaType: 'movie', popularity: m.popularity
     }));
     const series = (tvRes.results || []).filter((s: any) => s.poster_path).map((s: any) => ({
-      id: s.id, title: s.name, genre: 'סדרה', rating: s.vote_average,
+      id: s.id,
+      title: s.name || s.original_name,
+      localizedTitle: s.name || s.original_name,
+      originalTitle: s.original_name || s.name,
+      genre: 'סדרה',
+      rating: s.vote_average,
       poster: `https://image.tmdb.org/t/p/w500${s.poster_path}`,
       desc: s.overview || '', mediaType: 'tv', popularity: s.popularity
     }));

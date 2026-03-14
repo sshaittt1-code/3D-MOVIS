@@ -119,13 +119,13 @@ export const SideMenu = ({ isOpen, groups, activeItemId, currentLabel, onActivat
     <AnimatePresence>
       {isOpen && (
         <div className="absolute inset-y-0 right-0 z-40 flex pointer-events-none" dir="rtl">
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-44 bg-gradient-to-l from-black/35 via-black/15 to-transparent" />
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-28 bg-gradient-to-l from-black/35 via-black/15 to-transparent" />
           <motion.aside
             initial={{ opacity: 0, x: 48 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 48 }}
             transition={{ type: 'spring', stiffness: 260, damping: 28 }}
-            className="pointer-events-auto h-full w-[28rem] border-l border-[#00ffcc]/20 bg-[linear-gradient(180deg,rgba(4,16,20,0.92),rgba(2,6,10,0.74))] shadow-[-24px_0_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl"
+            className="pointer-events-auto h-full w-[22rem] border-l border-[#00ffcc]/20 bg-[linear-gradient(180deg,rgba(4,16,20,0.92),rgba(2,6,10,0.74))] shadow-[-24px_0_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl"
             onKeyDown={handleKeyDown}
           >
             <div className="border-b border-white/10 px-6 pb-5 pt-8">
@@ -137,7 +137,7 @@ export const SideMenu = ({ isOpen, groups, activeItemId, currentLabel, onActivat
               </div>
             </div>
 
-            <div className="h-[calc(100%-10rem)] overflow-y-auto px-4 py-5">
+            <div className="h-[calc(100%-10rem)] overflow-y-auto px-3 py-5">
               {groups.map((group) => {
                 const isExpanded = !!expandedGroups[group.id];
                 return (

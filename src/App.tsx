@@ -22,6 +22,8 @@ import { getPrebufferTargetBytes, isPlayableFromCache, PLAYBACK_CACHE_STORAGE_KE
 import { buildCategoryCacheKey, getCategoryCacheEntry, writeCategoryCacheEntry } from './utils/categoryCache';
 import { DEFAULT_POSTER_BATCH_SIZE, POSTER_BATCH_SIZE_OPTIONS, readPosterBatchSize, writePosterBatchSize } from './utils/posterBatchSettings';
 import { LONG_PRESS_DURATION_MS, classifyPressDuration } from './utils/longPress';
+import { applyEditingKeyToInput, isEditableTextTarget } from './utils/keyboardActions';
+import { normalizeSearchText, rankSearchResults, shouldTriggerPredictiveSearch } from './utils/searchNormalize';
 
 const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
@@ -415,7 +417,6 @@ export default function App() {
   const [seriesCategory, setSeriesCategory] = useState<FeedCategory>('popular');
   const [isIsraeliOnly, setIsIsraeliOnly] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>('general');
-  const [activeMenuItemId, setActiveMenuItemId] = useState('quick-movies');
   const [shuffleSeed, setShuffleSeed] = useState(() => Date.now());
   const [cameraZ, setCameraZ] = useState(2);
   const [transitionLabel, setTransitionLabel] = useState<string | null>(null);
@@ -906,6 +907,8 @@ export default function App() {
   const playbackCacheMapRef = useRef<PlaybackCacheMap>(playbackCacheMap);
   const categoryRequestMapRef = useRef<Map<string, Promise<{ items: any[]; hasMore: boolean }>>>(new Map());
   const categoryPrefetchRef = useRef<Set<string>>(new Set());
+  const predictiveSearchCacheRef = useRef<Map<string, any[]>>(new Map());
+  const predictiveSearchRequestRef = useRef(0);
   const [posterContextMovie, setPosterContextMovie] = useState<any>(null);
 
   const saveToHistory = (movie: any) => {
@@ -1074,6 +1077,12 @@ export default function App() {
 
   useEffect(() => {
     const handleGlobalBack = (e: KeyboardEvent) => {
+      if ((e.key === 'Backspace' || e.key === 'Delete') && isEditableTextTarget(document.activeElement)) {
+        stopTvEvent(e);
+        applyEditingKeyToInput(document.activeElement, e.key === 'Delete' ? 'Delete' : 'Backspace');
+        return;
+      }
+
       // Catch conventional keyboard ESC for Web compatibility
       if (e.key === 'Escape' || e.key === 'Backspace') {
         if (posterContextMovie) {
@@ -1239,7 +1248,6 @@ export default function App() {
 
   // Initial movie fetch
   useEffect(() => {
-    if (genre === 'סדרות' || genre === 'מועדפים' || genre === 'צפיות אחרונות') return;
     if (!isMoviesSection) return;
     const cacheKey = buildCategoryCacheKey({
       target: 'movies',
@@ -1286,7 +1294,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeGenreId, buildMoviesFeedPath, fetchCategoryPage, genre, isIsraeliOnly, isMoviesSection, movieCategory, posterBatchSize, prefetchCategoryPage, yearFilter]);
+  }, [activeGenreId, buildMoviesFeedPath, fetchCategoryPage, isIsraeliOnly, isMoviesSection, movieCategory, posterBatchSize, prefetchCategoryPage, yearFilter]);
 
   // Load more movies when reaching the end
   const handleNearEnd = () => {
@@ -1468,20 +1476,13 @@ export default function App() {
         randomSeed: shuffleSeed
       }).map((m: any, i: number) => ({ ...m, uniqueId: `ser-${m.id}-${i}` }));
     }
-    if (genre === 'מועדפים') {
-      return favorites.map((m: any, i: number) => ({ ...m, uniqueId: `fav-${m.id}-${m.mediaType}-${i}` }));
-    }
-    if (genre === 'צפיות אחרונות') {
-      return watchHistory.map((m: any, i: number) => ({ ...m, uniqueId: `hist-${m.id}-${m.mediaType}-${i}` }));
-    }
-    if (genre === 'סדרות') return seriesItems.map((m: any, i: number) => ({ ...m, uniqueId: `ser-${m.id}-${i}` }));
     const filtered = applyCatalogFilters((baseMovies && baseMovies.length > 0 ? baseMovies : BASE_MOVIES) || [], {
       sortMode,
       yearFilter,
       randomSeed: shuffleSeed
     });
     return filtered.map((m: any, i: number) => ({ ...m, uniqueId: `${m.id}-${i}` }));
-  }, [baseMovies, favorites, genre, isFavoritesSection, isHistorySection, isSeriesSection, navContext, searchResults, seriesGenreFilter, seriesItems, showSearch, shuffleSeed, sortMode, watchHistory, yearFilter]);
+  }, [baseMovies, favorites, isFavoritesSection, isHistorySection, isSeriesSection, navContext, searchResults, seriesGenreFilter, seriesItems, showSearch, shuffleSeed, sortMode, watchHistory, yearFilter]);
 
   useEffect(() => {
     displayMoviesRef.current = displayMovies;
@@ -1548,33 +1549,105 @@ export default function App() {
     ? posterLayout[posterLayout.length - 1].position[2] as number
     : -2;
 
-  // Trigger TMDB search
-  const handleTmdbSearch = () => {
-    if (!searchQuery.trim()) return;
-    setIsSearchingTmdb(true);
-    fetchApiJson(buildApiUrl(normalizedApiBase, `/api/search?q=${encodeURIComponent(searchQuery)}&type=${isSeriesSection ? 'tv' : 'all'}`))
-      .then(data => { setSearchResults(data.results || []); setIsSearchingTmdb(false); })
-      .catch(() => setIsSearchingTmdb(false));
-  };
+  const getLocalPredictiveResults = useCallback((query: string) => {
+    return rankSearchResults([
+      ...baseMovies,
+      ...seriesItems,
+      ...favorites,
+      ...watchHistory
+    ], query).slice(0, 12);
+  }, [baseMovies, favorites, seriesItems, watchHistory]);
 
-  const sideMenuGroups = useMemo(() => buildSideMenuGroups({
-    movieGenres: genreList,
-    seriesGenres: getUniqueGenres(seriesItems),
-    favoritesCount: favorites.length
-  }), [favorites.length, genreList, seriesItems]);
+  const runPredictiveSearch = useCallback(async (query: string, force = false) => {
+    const normalizedQuery = normalizeSearchText(query);
+    if (!force && !shouldTriggerPredictiveSearch(normalizedQuery)) {
+      setIsSearchingTmdb(false);
+      setSearchResults([]);
+      return;
+    }
+
+    const localResults = getLocalPredictiveResults(query);
+    setSearchResults(localResults);
+
+    const cached = predictiveSearchCacheRef.current.get(normalizedQuery);
+    if (cached) {
+      setSearchResults(rankSearchResults([...localResults, ...cached], query).slice(0, 20));
+      return;
+    }
+
+    const requestId = predictiveSearchRequestRef.current + 1;
+    predictiveSearchRequestRef.current = requestId;
+    setIsSearchingTmdb(true);
+
+    try {
+      const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/search?q=${encodeURIComponent(query)}&type=all`));
+      if (predictiveSearchRequestRef.current !== requestId) return;
+      const remoteResults = Array.isArray(data.results) ? data.results : [];
+      predictiveSearchCacheRef.current.set(normalizedQuery, remoteResults);
+      setSearchResults(rankSearchResults([...localResults, ...remoteResults], query).slice(0, 20));
+    } catch {
+      if (predictiveSearchRequestRef.current === requestId) {
+        setSearchResults(localResults);
+      }
+    } finally {
+      if (predictiveSearchRequestRef.current === requestId) {
+        setIsSearchingTmdb(false);
+      }
+    }
+  }, [getLocalPredictiveResults, normalizedApiBase]);
 
   useEffect(() => {
-    setActiveMenuItemId(getActiveMenuItemId({
-      librarySection,
-      activeGenreId,
-      seriesGenreFilter,
-      yearFilter,
-      movieCategory,
-      seriesCategory,
-      isIsraeliOnly,
-      showSearch
-    }));
-  }, [librarySection, activeGenreId, seriesGenreFilter, yearFilter, movieCategory, seriesCategory, isIsraeliOnly, showSearch]);
+    if (!showSearch) return;
+    const trimmedQuery = searchQuery.trim();
+    if (!trimmedQuery) {
+      setSearchResults([]);
+      setIsSearchingTmdb(false);
+      return;
+    }
+    if (!shouldTriggerPredictiveSearch(trimmedQuery)) {
+      setSearchResults([]);
+      setIsSearchingTmdb(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void runPredictiveSearch(trimmedQuery);
+    }, 280);
+    return () => window.clearTimeout(timer);
+  }, [runPredictiveSearch, searchQuery, showSearch]);
+
+  const handleTmdbSearch = () => {
+    if (!searchQuery.trim()) return;
+    void runPredictiveSearch(searchQuery, true);
+  };
+
+  const sideMenuGroups = useMemo(() => {
+    const groups = buildSideMenuGroups({
+      movieGenres: genreList,
+      seriesGenres: getUniqueGenres(seriesItems),
+      favoritesCount: favorites.length
+    });
+
+    return groups.map((group) => {
+      if (group.id !== 'quick') return group;
+      const searchItem = group.items.find((item) => item.id === 'quick-search');
+      if (!searchItem) return group;
+      return {
+        ...group,
+        items: [searchItem, ...group.items.filter((item) => item.id !== 'quick-search')]
+      };
+    });
+  }, [favorites.length, genreList, seriesItems]);
+
+  const activeMenuItemId = useMemo(() => getActiveMenuItemId({
+    librarySection,
+    activeGenreId,
+    seriesGenreFilter,
+    yearFilter,
+    movieCategory,
+    seriesCategory,
+    isIsraeliOnly,
+    showSearch
+  }), [librarySection, activeGenreId, seriesGenreFilter, yearFilter, movieCategory, seriesCategory, isIsraeliOnly, showSearch]);
 
   const currentCorridorLabel = useMemo(() => {
     if (showSearch) return 'חיפוש חי';
@@ -1623,7 +1696,6 @@ export default function App() {
     }
 
     const route = item.route;
-    setActiveMenuItemId(item.id);
     setNavContext(null);
     setSelectedMovie(null);
     setPosterContextMovie(null);
@@ -1960,7 +2032,7 @@ export default function App() {
 
       <AnimatePresence>
         {showSearch && isLocked && !selectedMovie && !showCinemaScreen && (
-          <motion.div initial={{ opacity: 0, y: -16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }} className="absolute top-6 right-1/2 z-30 w-[42rem] translate-x-1/2">
+          <motion.div initial={{ opacity: 0, y: -16, x: 12 }} animate={{ opacity: 1, y: 0, x: 0 }} exit={{ opacity: 0, y: -16, x: 12 }} className="absolute top-6 right-8 z-30 w-[30rem]">
             <div className="rounded-[30px] border border-[#00ffcc]/20 bg-[linear-gradient(180deg,rgba(5,12,16,0.95),rgba(4,8,12,0.78))] p-5 shadow-[0_0_50px_rgba(0,255,204,0.12)] backdrop-blur-2xl">
               <div className="flex items-center gap-3">
                 <div className="rounded-full bg-[#00ffcc]/12 p-3 text-[#7debd6]">
@@ -1984,9 +2056,14 @@ export default function App() {
                 </button>
               </div>
               <div className="mt-3 flex items-center justify-between text-sm text-white/45">
-                <span>התוצאות מחליפות את המסדרון בזמן אמת</span>
+                <span>הקלד 3 תווים ומעלה כדי לקבל חיזוי מיידי בעברית ובאנגלית.</span>
                 {isSearchingTmdb && <span className="text-[#7debd6]">טוען...</span>}
               </div>
+              {shouldTriggerPredictiveSearch(searchQuery) && !isSearchingTmdb && searchResults.length === 0 && (
+                <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/60">
+                  עדיין אין התאמה. נסה לכתוב עוד אות או שם חלופי.
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -2016,6 +2093,18 @@ export default function App() {
         <div className="absolute left-8 top-8 z-20 max-w-md rounded-[28px] border border-[#00ffcc]/12 bg-black/25 px-5 py-4 text-white/80 shadow-[0_0_30px_rgba(0,255,204,0.06)] backdrop-blur-md">
           <p className="text-xs uppercase tracking-[0.3em] text-[#7debd6]">Root Corridor</p>
           <p className="mt-2 text-lg leading-8">בחירה בתפריט הימני מחליפה מיד את המסדרון. חזרה תסגור את המגירה ותשאיר אותך בתוך ה־3D.</p>
+          <button
+            onClick={() => {
+              setShowSearch(true);
+              setSearchQuery('');
+              setSearchResults([]);
+              setIsLocked(true);
+            }}
+            className="mt-4 inline-flex items-center gap-2 rounded-full border border-[#00ffcc]/25 bg-[#00ffcc]/10 px-4 py-2 text-sm font-semibold text-[#7debd6] transition hover:bg-[#00ffcc]/20"
+          >
+            <Search size={16} />
+            <span>פתח חיפוש</span>
+          </button>
           {fetchError && <p className="mt-3 text-sm text-red-300">{fetchError}</p>}
         </div>
       )}
