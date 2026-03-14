@@ -1,8 +1,9 @@
 export type LibrarySection = 'all' | 'series' | 'favorites' | 'history';
-export type SortMode = 'popular' | 'rating' | 'recent' | 'random';
-export type YearFilter = 'all' | '2024_plus' | '2020s' | '2010s' | '2000s';
+export type SortMode = 'feed' | 'popular' | 'rating' | 'recent' | 'random';
+export type YearFilter = 'all' | '2024_plus' | '2020s' | '2010s' | '2000s' | `${number}`;
 
 export const SORT_OPTIONS: Array<{ id: SortMode; label: string }> = [
+  { id: 'feed', label: 'Feed' },
   { id: 'popular', label: 'Popular' },
   { id: 'rating', label: 'Top Rated' },
   { id: 'recent', label: 'Recent' },
@@ -23,8 +24,16 @@ export const getItemYear = (item: any): number | null => {
   return match ? Number.parseInt(match[0], 10) : null;
 };
 
+export const isExactYearFilter = (yearFilter: YearFilter): yearFilter is `${number}` =>
+  /^\d{4}$/.test(String(yearFilter));
+
+export const getApiYearFilter = (yearFilter: YearFilter) =>
+  isExactYearFilter(yearFilter) ? yearFilter : null;
+
 const passesYearFilter = (year: number | null, yearFilter: YearFilter) => {
-  if (!year || yearFilter === 'all') return true;
+  if (yearFilter === 'all') return true;
+  if (!year) return false;
+  if (isExactYearFilter(yearFilter)) return year === Number(yearFilter);
   if (yearFilter === '2024_plus') return year >= 2024;
   if (yearFilter === '2020s') return year >= 2020 && year <= 2029;
   if (yearFilter === '2010s') return year >= 2010 && year <= 2019;
@@ -78,6 +87,8 @@ export const applyCatalogFilters = (
     filtered = [...filtered].sort((left, right) => (getItemYear(right) || 0) - (getItemYear(left) || 0));
   } else if (sortMode === 'random') {
     filtered = shuffleItems(filtered, randomSeed);
+  } else if (sortMode === 'feed') {
+    filtered = [...filtered];
   } else {
     filtered = [...filtered].sort((left, right) => (right?.popularity || 0) - (left?.popularity || 0));
   }

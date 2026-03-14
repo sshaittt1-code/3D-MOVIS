@@ -5,7 +5,6 @@ import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import cors from 'cors';
 import path from 'node:path';
-import fs from 'node:fs';
 
 const app = express();
 app.use(cors());
@@ -16,13 +15,12 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 // Use crypto for simple ids
 import crypto from 'crypto';
 
-const SESSION_FILE = path.join(process.cwd(), 'tg_session.txt');
-
 // Serve Latest Built APK for OTA Updates
 app.use('/apk', express.static(path.join(process.cwd(), 'android', 'app', 'build', 'outputs', 'apk', 'debug')));
 
 // Active Connected Clients
 const activeClients = new Map<string, TelegramClient>();
+const telegramAccessTokens = new Map<string, { sessionStr: string; peerId: string; messageId: number; expiresAt: number }>();
 
 // Login Sessions
 interface LoginSession {
@@ -40,6 +38,7 @@ const FALLBACK_SOURCE_PAGES_PER_BATCH = 3;
 const DEFAULT_PAGE_SIZE = 20;
 const MIN_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 40;
+const TELEGRAM_ACCESS_TOKEN_TTL_MS = 1000 * 60 * 60 * 8;
 const TVMAZE_GENRE_MAP: Record<number, string[]> = {
   28: ['Action'],
   35: ['Comedy'],
@@ -65,6 +64,15 @@ const getErrorMessage = (error: unknown) =>
 const readStringValue = (value: unknown) =>
   typeof value === 'string' ? value.trim() : '';
 
+const getTelegramApiConfig = () => {
+  const apiId = readPositiveInt(process.env.TELEGRAM_API_ID || process.env.TG_API_ID);
+  const apiHash = readStringValue(process.env.TELEGRAM_API_HASH || process.env.TG_API_HASH);
+  if (!apiId || !apiHash) {
+    throw new Error('Telegram API credentials are not configured on the server.');
+  }
+  return { apiId, apiHash };
+};
+
 const readPositiveInt = (value: unknown) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
@@ -79,6 +87,46 @@ const readBoundedInt = (value: unknown, min: number, max: number, fallback: numb
   const parsed = readPositiveInt(value);
   if (!parsed) return fallback;
   return Math.max(min, Math.min(max, parsed));
+};
+
+const cleanupExpiredAccessTokens = (now = Date.now()) => {
+  for (const [token, entry] of telegramAccessTokens.entries()) {
+    if (entry.expiresAt <= now) {
+      telegramAccessTokens.delete(token);
+    }
+  }
+};
+
+const issueTelegramAccessToken = (sessionStr: string, peerId: string, messageId: number) => {
+  cleanupExpiredAccessTokens();
+  const token = crypto.randomUUID().replace(/-/g, '');
+  telegramAccessTokens.set(token, {
+    sessionStr,
+    peerId,
+    messageId,
+    expiresAt: Date.now() + TELEGRAM_ACCESS_TOKEN_TTL_MS
+  });
+  return token;
+};
+
+const resolveTelegramSession = (req: express.Request, peerId: string, messageId: number) => {
+  const headerSession = readStringValue(req.headers['x-tg-session']);
+  if (headerSession) return headerSession;
+
+  const querySession = readStringValue(req.query.session);
+  if (querySession) return querySession;
+
+  const accessToken = readStringValue(req.query.token);
+  if (!accessToken) throw new Error('Missing Telegram session');
+
+  cleanupExpiredAccessTokens();
+  const tokenEntry = telegramAccessTokens.get(accessToken);
+  if (!tokenEntry) throw new Error('Telegram access token expired');
+  if (tokenEntry.peerId !== peerId || tokenEntry.messageId !== messageId) {
+    throw new Error('Telegram access token does not match the requested media');
+  }
+
+  return tokenEntry.sessionStr;
 };
 
 const extractTelegramDocumentInfo = (message: any) => {
@@ -105,6 +153,19 @@ const extractTelegramDocumentInfo = (message: any) => {
     durationSeconds,
     sourceKey
   };
+};
+
+const shuffleWithSeed = <T,>(items: T[], seed: number) => {
+  const output = [...items];
+  let state = seed || 1;
+
+  for (let index = output.length - 1; index > 0; index -= 1) {
+    state = (state * 1664525 + 1013904223) % 4294967296;
+    const swapIndex = state % (index + 1);
+    [output[index], output[swapIndex]] = [output[swapIndex], output[index]];
+  }
+
+  return output;
 };
 
 const matchesTvMazeGenre = (genres: string[], genreId?: number) => {
@@ -183,7 +244,7 @@ const fetchTvMazeSeriesBatch = async (batchNum: number, genreId?: number, batchS
   };
 };
 
-const sortLocalCatalog = (items: any[], category: string, year?: number, israeliOnly = false) => {
+const sortLocalCatalog = (items: any[], category: string, year?: number, israeliOnly = false, randomSeed = 1) => {
   let filtered = [...items];
   const resolveYear = (item: any) => item.year
     || (item.release_date ? Number.parseInt(String(item.release_date).slice(0, 4), 10) : null)
@@ -204,7 +265,7 @@ const sortLocalCatalog = (items: any[], category: string, year?: number, israeli
   if (category === 'top_rated') {
     filtered.sort((left, right) => resolveRating(right) - resolveRating(left));
   } else if (category === 'random') {
-    filtered.sort(() => Math.random() - 0.5);
+    filtered = shuffleWithSeed(filtered, randomSeed);
   } else if (category === 'new_releases' || category === 'recently_active') {
     filtered.sort((left, right) => (resolveYear(right) || 0) - (resolveYear(left) || 0));
   } else {
@@ -232,9 +293,7 @@ const fetchTvMazeShowContext = async (showId: number) => {
 const getClientParam = async (sessionStr: string) => {
   if (!sessionStr) throw new Error("Missing Telegram Session! Please login on your TV.");
   if (activeClients.has(sessionStr)) return activeClients.get(sessionStr)!;
-  
-  const apiId = 30431141;
-  const apiHash = 'f702b44f4c8d695e4116b17df4408221';
+  const { apiId, apiHash } = getTelegramApiConfig();
 
   const client = new TelegramClient(new StringSession(sessionStr), apiId, apiHash, {
     connectionRetries: 5,
@@ -247,10 +306,12 @@ const getClientParam = async (sessionStr: string) => {
 // Start Login Flow
 app.post('/api/tg/startLogin', async (req, res) => {
   try {
-    const { phone } = req.body;
+    const phone = readStringValue(req.body?.phone);
+    if (!phone) return res.status(400).json({ error: 'Phone number is required' });
     const loginId = crypto.randomUUID();
+    const { apiId, apiHash } = getTelegramApiConfig();
     
-    const client = new TelegramClient(new StringSession(''), 30431141, 'f702b44f4c8d695e4116b17df4408221', { connectionRetries: 5 });
+    const client = new TelegramClient(new StringSession(''), apiId, apiHash, { connectionRetries: 5 });
     await client.connect();
     
     const sessionObj: LoginSession = {
@@ -265,7 +326,7 @@ app.post('/api/tg/startLogin', async (req, res) => {
 
     // We don't await this completely here because it blocks waiting for code
     client.signInUser(
-      { apiId: 30431141, apiHash: 'f702b44f4c8d695e4116b17df4408221' },
+      { apiId, apiHash },
       {
         phoneNumber: phone,
         phoneCode: async () => {
@@ -292,13 +353,16 @@ app.post('/api/tg/startLogin', async (req, res) => {
 
     res.json({ success: true, loginId });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    const message = getErrorMessage(e);
+    res.status(message.includes('not configured') ? 503 : 500).json({ error: message });
   }
 });
 
 // Submit Code
 app.post('/api/tg/submitCode', async (req, res) => {
-  const { loginId, code } = req.body;
+  const loginId = readStringValue(req.body?.loginId);
+  const code = readStringValue(req.body?.code);
+  if (!loginId || !code) return res.status(400).json({ error: 'Login id and code are required.' });
   const sessionObj = loginSessions.get(loginId);
   if (!sessionObj) return res.status(404).json({ error: 'Login session expired or not found.' });
 
@@ -329,7 +393,9 @@ app.post('/api/tg/submitCode', async (req, res) => {
 
 // Submit Password (2FA)
 app.post('/api/tg/submitPassword', async (req, res) => {
-  const { loginId, password } = req.body;
+  const loginId = readStringValue(req.body?.loginId);
+  const password = readStringValue(req.body?.password);
+  if (!loginId || !password) return res.status(400).json({ error: 'Login id and password are required.' });
   const sessionObj = loginSessions.get(loginId);
   if (!sessionObj) return res.status(404).json({ error: 'Login session expired or not found.' });
 
@@ -381,7 +447,7 @@ app.get('/api/tg/status', async (req, res) => {
     const isAuth = await client.checkAuthorization();
     res.json({ loggedIn: isAuth });
   } catch (e) {
-    res.json({ loggedIn: false });
+    res.json({ loggedIn: false, configured: !getErrorMessage(e).includes('not configured') });
   }
 });
 
@@ -448,11 +514,11 @@ app.get('/api/tg/search', async (req, res) => {
 // Stream Video with Range Support (Buffering)
 app.get('/api/tg/source/:peerId/:messageId', async (req, res) => {
   try {
-    const sessionStr = readStringValue(req.query.session) || readStringValue(req.headers['x-tg-session']);
-    const client = await getClientParam(sessionStr);
     const peerId = readStringValue(req.params.peerId);
     const messageId = readPositiveInt(req.params.messageId);
     if (!peerId || !messageId) return res.status(400).json({ error: 'Invalid source request' });
+    const sessionStr = resolveTelegramSession(req, peerId, messageId);
+    const client = await getClientParam(sessionStr);
 
     const messages = await client.getMessages(peerId, { ids: [messageId] });
     if (!messages || messages.length === 0) return res.status(404).json({ error: 'Message not found' });
@@ -460,15 +526,15 @@ app.get('/api/tg/source/:peerId/:messageId', async (req, res) => {
     if (!message.media || !('document' in message.media)) return res.status(404).json({ error: 'No video media found' });
 
     const info = extractTelegramDocumentInfo(message);
-    const sessionQuery = `session=${encodeURIComponent(sessionStr)}`;
+    const accessToken = issueTelegramAccessToken(sessionStr, peerId, messageId);
     res.json({
       sourceKey: info.sourceKey,
       fileName: info.fileName,
       fileSizeBytes: info.fileSizeBytes,
       mimeType: info.mimeType,
       durationSeconds: info.durationSeconds,
-      streamUrl: `/api/tg/stream/${peerId}/${messageId}?${sessionQuery}`,
-      downloadUrl: `/api/tg/stream/${peerId}/${messageId}?${sessionQuery}`
+      streamUrl: `/api/tg/stream/${peerId}/${messageId}?token=${accessToken}`,
+      downloadUrl: `/api/tg/stream/${peerId}/${messageId}?token=${accessToken}`
     });
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });
@@ -477,11 +543,11 @@ app.get('/api/tg/source/:peerId/:messageId', async (req, res) => {
 
 app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
   try {
-    const sessionStr = readStringValue(req.query.session) || readStringValue(req.headers['x-tg-session']);
-    const client = await getClientParam(sessionStr);
     const peerId = readStringValue(req.params.peerId);
     const messageId = readPositiveInt(req.params.messageId);
     if (!peerId || !messageId) return res.status(400).send('Invalid stream request');
+    const sessionStr = resolveTelegramSession(req, peerId, messageId);
+    const client = await getClientParam(sessionStr);
 
     const messages = await client.getMessages(peerId, { ids: [messageId] });
     if (!messages || messages.length === 0) return res.status(404).send('Message not found');
@@ -571,6 +637,7 @@ app.get('/api/tg/search-subtitles', async (req, res) => {
     const messages = (result as Api.messages.Messages).messages;
     const formattedResults = messages.map((m: any) => {
       const peerId = m.peerId?.channelId || m.peerId?.chatId || m.peerId?.userId;
+      const accessToken = issueTelegramAccessToken(sessionStr, String(peerId), m.id);
       let title = 'Subtitle File';
       if (m.media && m.media.document) {
         const attr = m.media.document.attributes.find((a: any) => a.className === 'DocumentAttributeFilename');
@@ -580,6 +647,7 @@ app.get('/api/tg/search-subtitles', async (req, res) => {
         id: m.id,
         peerId: peerId?.toString(),
         title,
+        subtitleUrl: `/api/tg/subtitle/${peerId}/${m.id}?token=${accessToken}`
       };
     }).filter(r => r.title.toLowerCase().includes('.srt'));
 
@@ -592,11 +660,11 @@ app.get('/api/tg/search-subtitles', async (req, res) => {
 // Stream and Convert Subtitle (SRT to VTT)
 app.get('/api/tg/subtitle/:peerId/:messageId', async (req, res) => {
   try {
-    const sessionStr = readStringValue(req.query.session) || readStringValue(req.headers['x-tg-session']);
-    const client = await getClientParam(sessionStr);
     const peerId = readStringValue(req.params.peerId);
     const messageId = readPositiveInt(req.params.messageId);
     if (!peerId || !messageId) return res.status(400).send('Invalid subtitle request');
+    const sessionStr = resolveTelegramSession(req, peerId, messageId);
+    const client = await getClientParam(sessionStr);
 
     const messages = await client.getMessages(peerId, { ids: [messageId] });
     if (!messages || messages.length === 0) return res.status(404).send('Message not found');
@@ -636,6 +704,7 @@ app.get('/api/movies', async (req, res) => {
     const category = readStringValue(req.query.category) || 'popular';
     const year = readOptionalInt(req.query.year);
     const israeliOnly = req.query.israeli === '1';
+    const randomSeed = readPositiveInt(req.query.seed) ?? Date.now();
 
     if (tmdbKey) {
       try {
@@ -655,7 +724,7 @@ app.get('/api/movies', async (req, res) => {
           ? `https://api.themoviedb.org/3/discover/movie?sort_by=${sortBy}&api_key=${tmdbKey}&language=he-IL${genreParam}${yearParam}${israeliParam}&page=`
           : `https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=`;
       const results = await Promise.all(pages.map(page => fetch(`${endpoint}${page}`).then(r => r.json())));
-      const allMovies = sortLocalCatalog(results.flatMap(data => data.results || []), category);
+      const allMovies = sortLocalCatalog(results.flatMap(data => data.results || []), category, year, israeliOnly, randomSeed);
 
       const movies = allMovies.filter((m: any) => m.poster_path).map((m: any) => ({
         id: m.id,
@@ -682,7 +751,7 @@ app.get('/api/movies', async (req, res) => {
 
     // Fallback
     const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId, pageSize, getSourcePagesPerBatch(pageSize));
-    fallback.movies = sortLocalCatalog(fallback.movies, category, year, israeliOnly);
+    fallback.movies = sortLocalCatalog(fallback.movies, category, year, israeliOnly, randomSeed);
     /*
       { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: '', desc: 'גנב שגונב סודות תאגידיים.', mediaType: 'movie' },
       { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', trailer: '', desc: 'צוות חוקרים נוסע דרך חור תולעת.', mediaType: 'movie' },
@@ -703,9 +772,10 @@ app.get('/api/series', async (req, res) => {
     const genreId = readOptionalInt(req.query.genre_id);
     const category = readStringValue(req.query.category) || 'popular';
     const year = readOptionalInt(req.query.year);
+    const randomSeed = readPositiveInt(req.query.seed) ?? Date.now();
     if (!tmdbKey) {
       const fallback = await fetchTvMazeSeriesBatch(batchNum, genreId, pageSize);
-      return res.json({ ...fallback, series: sortLocalCatalog(fallback.series, category, year) });
+      return res.json({ ...fallback, series: sortLocalCatalog(fallback.series, category, year, false, randomSeed) });
     }
     const sourcePagesPerBatch = getSourcePagesPerBatch(pageSize);
     const startTmdbPage = (batchNum - 1) * sourcePagesPerBatch + 1;
@@ -723,7 +793,7 @@ app.get('/api/series', async (req, res) => {
     const results = await Promise.all(pages.map(page =>
       fetch(`${endpoint}${page}`).then(r => r.json())
     ));
-    const allShows = sortLocalCatalog(results.flatMap(d => d.results || []), category);
+    const allShows = sortLocalCatalog(results.flatMap(d => d.results || []), category, year, false, randomSeed);
     const series = allShows.filter((s: any) => s.poster_path).map((s: any) => ({
       id: s.id,
       title: s.name || s.original_name,

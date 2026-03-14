@@ -27,8 +27,11 @@ test('category cache key distinguishes category pages and filters', () => {
   const left = buildCategoryCacheKey({ target: 'movies', category: 'popular', page: 1, batchSize: 20, genreId: 28 });
   const right = buildCategoryCacheKey({ target: 'movies', category: 'popular', page: 2, batchSize: 20, genreId: 28 });
   const other = buildCategoryCacheKey({ target: 'series', category: 'popular', page: 1, batchSize: 20, genreLabel: 'Comedy' });
+  const randomSeed = buildCategoryCacheKey({ target: 'movies', category: 'random', page: 1, batchSize: 20, seed: 123 });
+  const randomSeedOther = buildCategoryCacheKey({ target: 'movies', category: 'random', page: 1, batchSize: 20, seed: 456 });
   assert.notEqual(left, right);
   assert.notEqual(left, other);
+  assert.notEqual(randomSeed, randomSeedOther);
 });
 
 test('category cache respects ttl expiry', () => {

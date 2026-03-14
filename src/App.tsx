@@ -8,7 +8,7 @@ import { App as CapApp } from '@capacitor/app';
 import { textureManager } from './utils/TextureManager';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { applyCatalogFilters, getUniqueGenres, SORT_OPTIONS, YEAR_OPTIONS, type LibrarySection, type SortMode, type YearFilter } from './utils/catalog';
+import { applyCatalogFilters, getApiYearFilter, getUniqueGenres, type LibrarySection, type SortMode, type YearFilter } from './utils/catalog';
 import { isRemoteVersionNewer } from './utils/version';
 import { buildMediaKey, createDefaultMediaStateEntry, MEDIA_STATE_STORAGE_KEY, migrateLegacyMediaState, type MediaStateEntry, type WatchStatus, updateProgressState } from './utils/mediaState';
 import { findNextEpisodeInSeason, findNextSeason, shouldPrepareNextEpisode } from './utils/nextEpisode';
@@ -34,6 +34,8 @@ const isTvSelectKey = (e: KeyboardEvent) =>
 
 const isTvNavigationKey = (e: KeyboardEvent) =>
   ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || isTvSelectKey(e) || e.key === 'Escape' || e.key === 'Backspace';
+
+const getFeedSortMode = (_category?: FeedCategory): SortMode => 'feed';
 
 const blurActiveElement = () => {
   const activeElement = document.activeElement as HTMLElement | null;
@@ -62,16 +64,21 @@ const SPECIAL_LIBRARY_SECTIONS: Array<{ id: LibrarySection; label: string; icon:
 
 const fetchApiJson = async <T = any>(path: string, init: RequestInit = {}): Promise<T> => {
   const sessionStr = safeGetString(localStorage, 'tg_session');
-  init.headers = {
-    ...init.headers,
-    'x-tg-session': sessionStr
-  };
-  const response = await fetch(path, init);
-  const bodyText = await response.text();
-  if (!response.ok) {
-    throw new Error(bodyText || `Request failed with ${response.status}`);
+  const headers = new Headers(init.headers ?? {});
+  if (sessionStr && !headers.has('x-tg-session')) {
+    headers.set('x-tg-session', sessionStr);
   }
-  if (bodyText.trim().startsWith('<')) throw new Error('API returned HTML. Check API Base URL.');
+  const response = await fetch(path, { ...init, headers });
+  const bodyText = await response.text();
+  const trimmedBody = bodyText.trim();
+  const parsedBody = trimmedBody && !trimmedBody.startsWith('<')
+    ? safeParseJson<Record<string, unknown>>(bodyText, {})
+    : {};
+  if (!response.ok) {
+    throw new Error(typeof parsedBody.error === 'string' ? parsedBody.error : bodyText || `Request failed with ${response.status}`);
+  }
+  if (!trimmedBody) return {} as T;
+  if (trimmedBody.startsWith('<')) throw new Error('API returned HTML. Check API Base URL.');
   return safeParseJson<T>(bodyText, {} as T);
 };
 
@@ -403,14 +410,13 @@ export default function App() {
   const [isLocked, setIsLocked] = useState(false);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [focusedHeartId, setFocusedHeartId] = useState<string | null>(null);
-  const [genre, setGenre] = useState('הכל');
   const [showCinemaScreen, setShowCinemaScreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [tgSearchResults, setTgSearchResults] = useState<any[]>([]);
   const [isSearchingTg, setIsSearchingTg] = useState(false);
   const [navContext, setNavContext] = useState<NavCtx>(null);
   const [librarySection, setLibrarySection] = useState<LibrarySection>('all');
-  const [sortMode, setSortMode] = useState<SortMode>('popular');
+  const [sortMode, setSortMode] = useState<SortMode>('feed');
   const [yearFilter, setYearFilter] = useState<YearFilter>('all');
   const [seriesGenreFilter, setSeriesGenreFilter] = useState<string | null>(null);
   const [movieCategory, setMovieCategory] = useState<FeedCategory>('popular');
@@ -574,8 +580,9 @@ export default function App() {
       fileSizeBytes: sourceInfo.fileSizeBytes || telegramResult.sizeBytes,
       mimeType: sourceInfo.mimeType
     });
-    const streamUrl = buildApiUrl(normalizedApiBase, sourceInfo.streamUrl || `/api/tg/stream/${telegramResult.peerId}/${telegramResult.id}?session=${sessionStr}`);
-    const downloadUrl = buildApiUrl(normalizedApiBase, sourceInfo.downloadUrl || sourceInfo.streamUrl || `/api/tg/stream/${telegramResult.peerId}/${telegramResult.id}?session=${sessionStr}`);
+    const fallbackStreamPath = `/api/tg/stream/${telegramResult.peerId}/${telegramResult.id}`;
+    const streamUrl = buildApiUrl(normalizedApiBase, sourceInfo.streamUrl || fallbackStreamPath);
+    const downloadUrl = buildApiUrl(normalizedApiBase, sourceInfo.downloadUrl || sourceInfo.streamUrl || fallbackStreamPath);
     const cachePath = `playback-cache/${sourceKey}.mp4`;
     const existingEntry = getPlaybackCacheEntry(sourceKey);
     let cacheUri = existingEntry?.cacheUri;
@@ -591,9 +598,11 @@ export default function App() {
 
     try {
       const subData = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/tg/search-subtitles?query=${encodeURIComponent(mediaItem.title || telegramResult.title)}`));
-      subtitleUrl = subData.results?.[0]
-        ? buildApiUrl(normalizedApiBase, `/api/tg/subtitle/${subData.results[0].peerId}/${subData.results[0].id}`)
-        : undefined;
+      subtitleUrl = subData.results?.[0]?.subtitleUrl
+        ? buildApiUrl(normalizedApiBase, subData.results[0].subtitleUrl)
+        : subData.results?.[0]
+          ? buildApiUrl(normalizedApiBase, `/api/tg/subtitle/${subData.results[0].peerId}/${subData.results[0].id}`)
+          : undefined;
     } catch {
       subtitleUrl = undefined;
     }
@@ -907,6 +916,7 @@ export default function App() {
   const playbackCacheMapRef = useRef<PlaybackCacheMap>(playbackCacheMap);
   const categoryRequestMapRef = useRef<Map<string, Promise<{ items: any[]; hasMore: boolean }>>>(new Map());
   const categoryPrefetchRef = useRef<Set<string>>(new Set());
+  const currentBrowseRequestKeyRef = useRef('');
   const predictiveSearchCacheRef = useRef<Map<string, any[]>>(new Map());
   const predictiveSearchRequestRef = useRef(0);
   const [posterContextMovie, setPosterContextMovie] = useState<any>(null);
@@ -1051,7 +1061,7 @@ export default function App() {
       if (posterContextMovie) { closePosterContextMenu(); return; }
       if (selectedMovie) { setSelectedMovie(null); return; }
       if (showCinemaScreen) { closeTelegramSourceScreen(); return; }
-      if (showSearch) { setShowSearch(false); setSearchQuery(''); setSearchResults([]); return; }
+      if (showSearch) { resetSearchState(true); return; }
       if (navContext) {
         if (navContext.type === 'episodes') {
           const ctx = navContext;
@@ -1085,6 +1095,11 @@ export default function App() {
 
       // Catch conventional keyboard ESC for Web compatibility
       if (e.key === 'Escape' || e.key === 'Backspace') {
+        if (activeMedia) {
+          stopTvEvent(e);
+          void closePlayer();
+          return;
+        }
         if (posterContextMovie) {
           stopTvEvent(e);
           closePosterContextMenu();
@@ -1117,9 +1132,7 @@ export default function App() {
         }
         if (showSearch) {
           stopTvEvent(e);
-          setShowSearch(false);
-          setSearchQuery('');
-          setSearchResults([]);
+          resetSearchState(true);
           return;
         }
         if (showCinemaScreen) {
@@ -1168,7 +1181,6 @@ export default function App() {
     }
   }, [isLocked]);
 
-  const isMovieCorridor = genre !== '׳¡׳“׳¨׳•׳×' && genre !== '׳׳•׳¢׳“׳₪׳™׳' && genre !== '׳¦׳₪׳™׳•׳× ׳׳—׳¨׳•׳ ׳•׳×' && !navContext;
 
   const isMoviesSection = librarySection === 'all';
   const isSeriesSection = librarySection === 'series';
@@ -1176,6 +1188,22 @@ export default function App() {
   const isHistorySection = librarySection === 'history';
   const isBrowseSection = isMoviesSection || isSeriesSection;
   const isRootCorridor = !navContext && !selectedMovie && !showCinemaScreen && !activeMedia && !showSettings && tgStatus !== 'phoneInput' && tgStatus !== 'codeInput' && tgStatus !== 'passwordInput';
+  const activeRandomSeed = (isSeriesSection ? seriesCategory : movieCategory) === 'random' ? shuffleSeed : null;
+  const activeBrowseRequestKey = useMemo(() => JSON.stringify({
+    librarySection,
+    movieCategory,
+    seriesCategory,
+    activeGenreId,
+    seriesGenreFilter,
+    yearFilter,
+    isIsraeliOnly,
+    posterBatchSize,
+    activeRandomSeed
+  }), [activeGenreId, activeRandomSeed, isIsraeliOnly, librarySection, movieCategory, posterBatchSize, seriesCategory, seriesGenreFilter, yearFilter]);
+
+  useEffect(() => {
+    currentBrowseRequestKeyRef.current = activeBrowseRequestKey;
+  }, [activeBrowseRequestKey]);
 
   const buildMoviesFeedPath = useCallback((page: number) => {
     const params = new URLSearchParams({
@@ -1183,11 +1211,13 @@ export default function App() {
       page_size: String(posterBatchSize),
       category: movieCategory
     });
+    const apiYear = getApiYearFilter(yearFilter);
     if (activeGenreId) params.set('genre_id', String(activeGenreId));
-    if (yearFilter !== 'all') params.set('year', String(yearFilter));
+    if (apiYear) params.set('year', apiYear);
     if (isIsraeliOnly) params.set('israeli', '1');
+    if (movieCategory === 'random') params.set('seed', String(shuffleSeed));
     return buildApiUrl(normalizedApiBase, `/api/movies?${params.toString()}`);
-  }, [activeGenreId, isIsraeliOnly, movieCategory, normalizedApiBase, posterBatchSize, yearFilter]);
+  }, [activeGenreId, isIsraeliOnly, movieCategory, normalizedApiBase, posterBatchSize, shuffleSeed, yearFilter]);
 
   const buildSeriesFeedPath = useCallback((page: number) => {
     const params = new URLSearchParams({
@@ -1195,9 +1225,32 @@ export default function App() {
       page_size: String(posterBatchSize),
       category: seriesCategory
     });
-    if (yearFilter !== 'all') params.set('year', String(yearFilter));
+    const apiYear = getApiYearFilter(yearFilter);
+    if (apiYear) params.set('year', apiYear);
+    if (seriesCategory === 'random') params.set('seed', String(shuffleSeed));
     return buildApiUrl(normalizedApiBase, `/api/series?${params.toString()}`);
-  }, [normalizedApiBase, posterBatchSize, seriesCategory, yearFilter]);
+  }, [normalizedApiBase, posterBatchSize, seriesCategory, shuffleSeed, yearFilter]);
+
+  const buildMovieCacheKey = useCallback((page: number) => buildCategoryCacheKey({
+    target: 'movies',
+    category: movieCategory,
+    genreId: activeGenreId,
+    year: String(yearFilter),
+    israeliOnly: isIsraeliOnly,
+    page,
+    batchSize: posterBatchSize,
+    seed: movieCategory === 'random' ? shuffleSeed : undefined
+  }), [activeGenreId, isIsraeliOnly, movieCategory, posterBatchSize, shuffleSeed, yearFilter]);
+
+  const buildSeriesCacheKey = useCallback((page: number) => buildCategoryCacheKey({
+    target: 'series',
+    category: seriesCategory,
+    genreLabel: seriesGenreFilter,
+    year: String(yearFilter),
+    page,
+    batchSize: posterBatchSize,
+    seed: seriesCategory === 'random' ? shuffleSeed : undefined
+  }), [posterBatchSize, seriesCategory, seriesGenreFilter, shuffleSeed, yearFilter]);
 
   const fetchCategoryPage = useCallback(async ({
     cacheKey,
@@ -1246,18 +1299,21 @@ export default function App() {
     setPosterContextMovie(null);
   }
 
+  function resetSearchState(shouldHide = false) {
+    predictiveSearchRequestRef.current += 1;
+    if (shouldHide) {
+      setShowSearch(false);
+    }
+    setSearchQuery('');
+    setSearchResults([]);
+    setIsSearchingTmdb(false);
+  }
+
   // Initial movie fetch
   useEffect(() => {
     if (!isMoviesSection) return;
-    const cacheKey = buildCategoryCacheKey({
-      target: 'movies',
-      category: movieCategory,
-      genreId: activeGenreId,
-      year: String(yearFilter),
-      israeliOnly: isIsraeliOnly,
-      page: 1,
-      batchSize: posterBatchSize
-    });
+    const requestKey = activeBrowseRequestKey;
+    const cacheKey = buildMovieCacheKey(1);
     setContentPage(1);
     setHasMore(true);
     setIsLoadingMore(false);
@@ -1266,35 +1322,27 @@ export default function App() {
     let cancelled = false;
     fetchCategoryPage({ cacheKey, path: buildMoviesFeedPath(1), field: 'movies' })
       .then((data) => {
-        if (cancelled) return;
+        if (cancelled || currentBrowseRequestKeyRef.current !== requestKey) return;
         setBaseMovies(data.items.length > 0 ? data.items : BASE_MOVIES);
         setHasMore(data.hasMore ?? false);
+        setFetchError(null);
         if (data.hasMore) {
           prefetchCategoryPage({
-            cacheKey: buildCategoryCacheKey({
-              target: 'movies',
-              category: movieCategory,
-              genreId: activeGenreId,
-              year: String(yearFilter),
-              israeliOnly: isIsraeliOnly,
-              page: 2,
-              batchSize: posterBatchSize
-            }),
+            cacheKey: buildMovieCacheKey(2),
             path: buildMoviesFeedPath(2),
             field: 'movies'
           });
         }
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (cancelled || currentBrowseRequestKeyRef.current !== requestKey) return;
         setFetchError(`Network error: ${err.message}`);
         setBaseMovies(BASE_MOVIES);
-        setShowSettings(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [activeGenreId, buildMoviesFeedPath, fetchCategoryPage, isIsraeliOnly, isMoviesSection, movieCategory, posterBatchSize, prefetchCategoryPage, yearFilter]);
+  }, [activeBrowseRequestKey, buildMovieCacheKey, buildMoviesFeedPath, fetchCategoryPage, isMoviesSection, prefetchCategoryPage]);
 
   // Load more movies when reaching the end
   const handleNearEnd = () => {
@@ -1302,24 +1350,8 @@ export default function App() {
     if (!isBrowseSection) return;
     if (isLoadingMore || !hasMore || navContext || showSearch) return;
     const nextPage = contentPage + 1;
-    const cacheKey = buildCategoryCacheKey(isSeriesSection
-      ? {
-          target: 'series',
-          category: seriesCategory,
-          genreLabel: seriesGenreFilter,
-          year: String(yearFilter),
-          page: nextPage,
-          batchSize: posterBatchSize
-        }
-      : {
-          target: 'movies',
-          category: movieCategory,
-          genreId: activeGenreId,
-          year: String(yearFilter),
-          israeliOnly: isIsraeliOnly,
-          page: nextPage,
-          batchSize: posterBatchSize
-        });
+    const requestKey = currentBrowseRequestKeyRef.current;
+    const cacheKey = isSeriesSection ? buildSeriesCacheKey(nextPage) : buildMovieCacheKey(nextPage);
     setIsLoadingMore(true);
     fetchCategoryPage({
       cacheKey,
@@ -1327,6 +1359,7 @@ export default function App() {
       field: isSeriesSection ? 'series' : 'movies'
     })
       .then((data) => {
+        if (currentBrowseRequestKeyRef.current !== requestKey) return;
         if (isSeriesSection) {
           setSeriesItems((prev) => [...prev, ...data.items]);
         } else {
@@ -1336,79 +1369,58 @@ export default function App() {
         setHasMore(data.hasMore ?? false);
         if (data.hasMore) {
           prefetchCategoryPage({
-            cacheKey: buildCategoryCacheKey(isSeriesSection
-              ? {
-                  target: 'series',
-                  category: seriesCategory,
-                  genreLabel: seriesGenreFilter,
-                  year: String(yearFilter),
-                  page: nextPage + 1,
-                  batchSize: posterBatchSize
-                }
-              : {
-                  target: 'movies',
-                  category: movieCategory,
-                  genreId: activeGenreId,
-                  year: String(yearFilter),
-                  israeliOnly: isIsraeliOnly,
-                  page: nextPage + 1,
-                  batchSize: posterBatchSize
-                }),
+            cacheKey: isSeriesSection ? buildSeriesCacheKey(nextPage + 1) : buildMovieCacheKey(nextPage + 1),
             path: isSeriesSection ? buildSeriesFeedPath(nextPage + 1) : buildMoviesFeedPath(nextPage + 1),
             field: isSeriesSection ? 'series' : 'movies'
           });
         }
       })
       .catch((err) => {
-        setFetchError(err instanceof Error ? err.message : 'Failed to load more content.');
+        if (currentBrowseRequestKeyRef.current === requestKey) {
+          setFetchError(err instanceof Error ? err.message : 'Failed to load more content.');
+        }
       })
-      .finally(() => setIsLoadingMore(false));
+      .finally(() => {
+        if (currentBrowseRequestKeyRef.current === requestKey) {
+          setIsLoadingMore(false);
+        }
+      });
   };
 
   // Fetch series when genre switches to 'סדרות'
   useEffect(() => {
     if (!isSeriesSection) return;
-    const cacheKey = buildCategoryCacheKey({
-      target: 'series',
-      category: seriesCategory,
-      genreLabel: seriesGenreFilter,
-      year: String(yearFilter),
-      page: 1,
-      batchSize: posterBatchSize
-    });
+    const requestKey = activeBrowseRequestKey;
+    const cacheKey = buildSeriesCacheKey(1);
     setContentPage(1);
     setHasMore(true);
     setIsLoadingMore(false);
+    setFetchError(null);
     setPosterContextMovie(null);
     let cancelled = false;
     fetchCategoryPage({ cacheKey, path: buildSeriesFeedPath(1), field: 'series' })
       .then((data) => {
-        if (cancelled) return;
+        if (cancelled || currentBrowseRequestKeyRef.current !== requestKey) return;
         setSeriesItems(data.items || []);
         setHasMore(data.hasMore ?? false);
         setFetchError(data.items?.length ? null : 'No series were found to load.');
         if (data.hasMore) {
           prefetchCategoryPage({
-            cacheKey: buildCategoryCacheKey({
-              target: 'series',
-              category: seriesCategory,
-              genreLabel: seriesGenreFilter,
-              year: String(yearFilter),
-              page: 2,
-              batchSize: posterBatchSize
-            }),
+            cacheKey: buildSeriesCacheKey(2),
             path: buildSeriesFeedPath(2),
             field: 'series'
           });
         }
       })
       .catch((err) => {
-        if (!cancelled) setFetchError(`Series error: ${err.message}`);
+        if (!cancelled && currentBrowseRequestKeyRef.current === requestKey) {
+          setFetchError(`Series error: ${err.message}`);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [buildSeriesFeedPath, fetchCategoryPage, isSeriesSection, posterBatchSize, prefetchCategoryPage, seriesCategory, seriesGenreFilter, yearFilter]);
+  }, [activeBrowseRequestKey, buildSeriesCacheKey, buildSeriesFeedPath, fetchCategoryPage, isSeriesSection, prefetchCategoryPage]);
 
   // Navigate into series’ seasons
   const runCorridorTransition = async (label: string, action: () => Promise<void>) => {
@@ -1558,9 +1570,23 @@ export default function App() {
     ], query).slice(0, 12);
   }, [baseMovies, favorites, seriesItems, watchHistory]);
 
+  const cachePredictiveResults = useCallback((query: string, results: any[]) => {
+    const cache = predictiveSearchCacheRef.current;
+    if (cache.has(query)) {
+      cache.delete(query);
+    }
+    cache.set(query, results);
+    while (cache.size > 12) {
+      const oldestKey = cache.keys().next().value;
+      if (!oldestKey) break;
+      cache.delete(oldestKey);
+    }
+  }, []);
+
   const runPredictiveSearch = useCallback(async (query: string, force = false) => {
     const normalizedQuery = normalizeSearchText(query);
     if (!force && !shouldTriggerPredictiveSearch(normalizedQuery)) {
+      predictiveSearchRequestRef.current += 1;
       setIsSearchingTmdb(false);
       setSearchResults([]);
       return;
@@ -1583,7 +1609,7 @@ export default function App() {
       const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/search?q=${encodeURIComponent(query)}&type=all`));
       if (predictiveSearchRequestRef.current !== requestId) return;
       const remoteResults = Array.isArray(data.results) ? data.results : [];
-      predictiveSearchCacheRef.current.set(normalizedQuery, remoteResults);
+      cachePredictiveResults(normalizedQuery, remoteResults);
       setSearchResults(rankSearchResults([...localResults, ...remoteResults], query).slice(0, 20));
     } catch {
       if (predictiveSearchRequestRef.current === requestId) {
@@ -1594,17 +1620,19 @@ export default function App() {
         setIsSearchingTmdb(false);
       }
     }
-  }, [getLocalPredictiveResults, normalizedApiBase]);
+  }, [cachePredictiveResults, getLocalPredictiveResults, normalizedApiBase]);
 
   useEffect(() => {
     if (!showSearch) return;
     const trimmedQuery = searchQuery.trim();
     if (!trimmedQuery) {
+      predictiveSearchRequestRef.current += 1;
       setSearchResults([]);
       setIsSearchingTmdb(false);
       return;
     }
     if (!shouldTriggerPredictiveSearch(trimmedQuery)) {
+      predictiveSearchRequestRef.current += 1;
       setSearchResults([]);
       setIsSearchingTmdb(false);
       return;
@@ -1703,15 +1731,15 @@ export default function App() {
     setSeriesGenreFilter(null);
     setActiveGenreId(null);
     setYearFilter(route.target === 'favorites' || route.target === 'search' ? 'all' : route.year ?? 'all');
-    setShowSearch(route.target === 'search');
-    if (route.target !== 'search') {
-      setSearchQuery('');
-      setSearchResults([]);
+    if (route.target === 'search') {
+      resetSearchState();
+      setShowSearch(true);
+    } else {
+      resetSearchState(true);
     }
 
     if (route.target === 'favorites') {
       setLibrarySection('favorites');
-      setGenre('מועדפים');
       setIsIsraeliOnly(false);
       setIsLocked(true);
       return;
@@ -1719,8 +1747,8 @@ export default function App() {
 
     if (route.target === 'search') {
       setLibrarySection('all');
-      setGenre('הכל');
       setMovieCategory('popular');
+      setSortMode(getFeedSortMode('popular'));
       setIsIsraeliOnly(false);
       setIsLocked(true);
       return;
@@ -1728,9 +1756,8 @@ export default function App() {
 
     if (route.target === 'series') {
       setLibrarySection('series');
-      setGenre('סדרות');
       setSeriesCategory(route.category ?? 'popular');
-      setSortMode(route.category === 'top_rated' ? 'rating' : route.category === 'random' ? 'random' : 'popular');
+      setSortMode(getFeedSortMode(route.category));
       setSeriesGenreFilter(route.genreLabel ?? null);
       setIsIsraeliOnly(false);
       if (route.category === 'random') setShuffleSeed(Date.now());
@@ -1739,9 +1766,8 @@ export default function App() {
     }
 
     setLibrarySection('all');
-    setGenre(route.israeliOnly ? 'ישראלי' : 'הכל');
     setMovieCategory(route.category ?? 'popular');
-    setSortMode(route.category === 'top_rated' ? 'rating' : route.category === 'random' ? 'random' : 'popular');
+    setSortMode(getFeedSortMode(route.category));
     setActiveGenreId(route.genreId ?? null);
     setIsIsraeliOnly(!!route.israeliOnly);
     if (route.category === 'random') setShuffleSeed(Date.now());
@@ -1884,6 +1910,16 @@ export default function App() {
   const posterContextEntry = posterContextMovie ? getMediaEntry(posterContextMovie) : null;
   const bufferingEntry = bufferingSourceKey ? playbackCacheMap[bufferingSourceKey] ?? null : null;
   const bufferTargetBytes = getPrebufferTargetBytes(bufferingEntry?.fileSizeBytes);
+  const isCorridorInteractionBlocked =
+    !!selectedMovie
+    || showCinemaScreen
+    || !!posterContextMovie
+    || showSearch
+    || showSettings
+    || !!activeMedia
+    || tgStatus === 'phoneInput'
+    || tgStatus === 'codeInput'
+    || tgStatus === 'passwordInput';
 
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative text-white font-sans" dir="rtl">
@@ -1919,7 +1955,7 @@ export default function App() {
               onHeartToggle={handleHeartToggle}
               setFocusedId={setFocusedId}
               setFocusedHeartId={setFocusedHeartId}
-            isAnyModalOpen={!!selectedMovie || showCinemaScreen || !!posterContextMovie}
+            isAnyModalOpen={isCorridorInteractionBlocked}
              selectedMovie={selectedMovie}
              lastPosterZ={lastPosterZ}
              onNearEnd={handleNearEnd}
@@ -1931,7 +1967,7 @@ export default function App() {
       {/* Breadcrumb — shows where we are in the series hierarchy */}
       {isLocked && navContext && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 pointer-events-none flex gap-2 items-center text-white/80 text-lg bg-black/50 px-6 py-2 rounded-full backdrop-blur">
-          <span className="cursor-pointer" onClick={() => { setNavContext(null); setLibrarySection('series'); setGenre('סדרות'); }}>🏠 סדרות</span>
+          <span className="cursor-pointer" onClick={() => { setNavContext(null); setLibrarySection('series'); }}>🏠 סדרות</span>
           <span className="text-[#00ffcc]">&rsaquo;</span>
           <span>{navContext.seriesTitle}</span>
           {navContext.type === 'episodes' && (
@@ -2051,7 +2087,7 @@ export default function App() {
                 <button onClick={handleTmdbSearch} className="rounded-2xl bg-[#00ffcc] px-5 py-3 text-base font-bold text-black transition hover:bg-[#7debd6]">
                   חפש
                 </button>
-                <button onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/80 transition hover:bg-white/10">
+                <button onClick={() => resetSearchState(true)} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/80 transition hover:bg-white/10">
                   סגור
                 </button>
               </div>
@@ -2096,8 +2132,7 @@ export default function App() {
           <button
             onClick={() => {
               setShowSearch(true);
-              setSearchQuery('');
-              setSearchResults([]);
+              resetSearchState();
               setIsLocked(true);
             }}
             className="mt-4 inline-flex items-center gap-2 rounded-full border border-[#00ffcc]/25 bg-[#00ffcc]/10 px-4 py-2 text-sm font-semibold text-[#7debd6] transition hover:bg-[#00ffcc]/20"

@@ -22,7 +22,8 @@ export const buildCategoryCacheKey = ({
   year,
   israeliOnly,
   page,
-  batchSize
+  batchSize,
+  seed
 }: {
   target: 'movies' | 'series';
   category: string;
@@ -32,6 +33,7 @@ export const buildCategoryCacheKey = ({
   israeliOnly?: boolean;
   page: number;
   batchSize: number;
+  seed?: number | null;
 }) =>
   [
     target,
@@ -41,7 +43,8 @@ export const buildCategoryCacheKey = ({
     year ?? 'all',
     israeliOnly ? 'he' : 'world',
     `page:${page}`,
-    `batch:${batchSize}`
+    `batch:${batchSize}`,
+    `seed:${seed ?? 'default'}`
   ].join('|');
 
 export const readCategoryCacheMap = <T>(storage: StorageLike) =>
