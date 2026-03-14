@@ -4,12 +4,29 @@ class TextureManager {
   private loader: THREE.TextureLoader;
   private cache: Map<string, THREE.Texture>;
   private pending: Map<string, Promise<THREE.Texture>>;
+  private readonly maxCacheSize: number;
 
   constructor() {
     this.loader = new THREE.TextureLoader();
     this.loader.setCrossOrigin('anonymous');
     this.cache = new Map();
     this.pending = new Map();
+    this.maxCacheSize = 140;
+  }
+
+  private rememberTexture(url: string, texture: THREE.Texture) {
+    if (this.cache.has(url)) {
+      this.cache.delete(url);
+    }
+    this.cache.set(url, texture);
+
+    while (this.cache.size > this.maxCacheSize) {
+      const oldestKey = this.cache.keys().next().value;
+      if (!oldestKey) break;
+      const oldestTexture = this.cache.get(oldestKey);
+      oldestTexture?.dispose();
+      this.cache.delete(oldestKey);
+    }
   }
 
   loadTexture(url: string): Promise<THREE.Texture> {
@@ -31,17 +48,17 @@ class TextureManager {
           
           if (texture.image && typeof texture.image.decode === 'function') {
             texture.image.decode().then(() => {
-              this.cache.set(url, texture);
+              this.rememberTexture(url, texture);
               this.pending.delete(url);
               resolve(texture);
             }).catch((err) => {
               console.warn("TextureManager: async decode failed, fallback to sync", err);
-              this.cache.set(url, texture);
+              this.rememberTexture(url, texture);
               this.pending.delete(url);
               resolve(texture);
             });
           } else {
-            this.cache.set(url, texture);
+            this.rememberTexture(url, texture);
             this.pending.delete(url);
             resolve(texture);
           }

@@ -15,6 +15,7 @@ import { findNextEpisodeInSeason, findNextSeason, shouldPrepareNextEpisode } fro
 import { readAutoPlayNextEpisode, writeAutoPlayNextEpisode } from './utils/playerSettings';
 import { SideMenu } from './components/SideMenu';
 import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
+import { safeGetJson, safeGetString, safeParseJson, safeRemove, safeSetJson, safeSetString } from './utils/safeStorage';
 
 const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
@@ -51,16 +52,19 @@ const SPECIAL_LIBRARY_SECTIONS: Array<{ id: LibrarySection; label: string; icon:
   { id: 'history', label: 'צפיות אחרונות', icon: '🕓' }
 ];
 
-const fetchApiJson = async (path: string, init: RequestInit = {}) => {
-  const sessionStr = localStorage.getItem('tg_session') || '';
+const fetchApiJson = async <T = any>(path: string, init: RequestInit = {}): Promise<T> => {
+  const sessionStr = safeGetString(localStorage, 'tg_session');
   init.headers = {
     ...init.headers,
     'x-tg-session': sessionStr
   };
   const response = await fetch(path, init);
   const bodyText = await response.text();
+  if (!response.ok) {
+    throw new Error(bodyText || `Request failed with ${response.status}`);
+  }
   if (bodyText.trim().startsWith('<')) throw new Error('API returned HTML. Check API Base URL.');
-  return JSON.parse(bodyText);
+  return safeParseJson<T>(bodyText, {} as T);
 };
 
 const buildApiUrl = (base: string, path: string) => `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
@@ -336,25 +340,19 @@ export default function App() {
   const [hasMore, setHasMore] = useState(true);
 
   const [mediaStateMap, setMediaStateMap] = useState<Record<string, MediaStateEntry>>(() => {
-    try {
-      const savedState = JSON.parse(localStorage.getItem(MEDIA_STATE_STORAGE_KEY) || '{}');
-      if (savedState && Object.keys(savedState).length > 0) return savedState;
-    } catch {}
+    const savedState = safeGetJson<Record<string, MediaStateEntry>>(localStorage, MEDIA_STATE_STORAGE_KEY, {});
+    if (savedState && Object.keys(savedState).length > 0) return savedState;
 
-    try {
-      const legacyFavorites = JSON.parse(localStorage.getItem('favorites') || '[]');
-      const legacyHistory = JSON.parse(localStorage.getItem('watch_history') || '[]');
-      return migrateLegacyMediaState(legacyFavorites, legacyHistory);
-    } catch {
-      return {};
-    }
+    const legacyFavorites = safeGetJson<any[]>(localStorage, 'favorites', []);
+    const legacyHistory = safeGetJson<any[]>(localStorage, 'watch_history', []);
+    return migrateLegacyMediaState(legacyFavorites, legacyHistory);
   });
   const [autoPlayNextEpisode, setAutoPlayNextEpisode] = useState<boolean>(() => {
     return readAutoPlayNextEpisode(localStorage, true);
   });
 
   useEffect(() => {
-    localStorage.setItem(MEDIA_STATE_STORAGE_KEY, JSON.stringify(mediaStateMap));
+    safeSetJson(localStorage, MEDIA_STATE_STORAGE_KEY, mediaStateMap);
   }, [mediaStateMap]);
 
   useEffect(() => {
@@ -412,12 +410,12 @@ export default function App() {
   };
 
   const buildPreparedPlayback = async (telegramResult: any, mediaItem: any): Promise<PreparedPlayback> => {
-    const sessionStr = localStorage.getItem('tg_session') || '';
+    const sessionStr = safeGetString(localStorage, 'tg_session');
     const videoUrl = buildApiUrl(normalizedApiBase, `/api/tg/stream/${telegramResult.peerId}/${telegramResult.id}?session=${sessionStr}`);
     let subtitleUrl: string | undefined;
 
     try {
-      const subData = await fetch(buildApiUrl(normalizedApiBase, `/api/tg/search-subtitles?query=${encodeURIComponent(mediaItem.title || telegramResult.title)}`)).then(res => res.json());
+      const subData = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/tg/search-subtitles?query=${encodeURIComponent(mediaItem.title || telegramResult.title)}`));
       subtitleUrl = subData.results?.[0]
         ? buildApiUrl(normalizedApiBase, `/api/tg/subtitle/${subData.results[0].peerId}/${subData.results[0].id}`)
         : undefined;
@@ -445,12 +443,12 @@ export default function App() {
     const inSeasonNext = currentEpisodes.length > 0 ? findNextEpisodeInSeason(episode, currentEpisodes) : null;
     if (inSeasonNext) return { ...inSeasonNext, seriesTitle: episode.seriesTitle || navContext?.seriesTitle };
 
-    const seasonsData = await fetch(buildApiUrl(normalizedApiBase, `/api/series/${episode.seriesId}`)).then((response) => response.json());
+    const seasonsData = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/series/${episode.seriesId}`));
     const seasons = seasonsData.seasons || [];
     const nextSeason = findNextSeason(currentSeasonNumber, seasons);
     if (!nextSeason) return null;
 
-    const nextSeasonData = await fetch(buildApiUrl(normalizedApiBase, `/api/series/${episode.seriesId}/season/${nextSeason.season_number}`)).then((response) => response.json());
+    const nextSeasonData = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/series/${episode.seriesId}/season/${nextSeason.season_number}`));
     const nextEpisodes = nextSeasonData.episodes || [];
     if (nextEpisodes.length === 0) return null;
 
@@ -478,6 +476,10 @@ export default function App() {
   };
 
   const closePlayer = () => {
+    if (bufferIntervalRef.current !== null) {
+      window.clearInterval(bufferIntervalRef.current);
+      bufferIntervalRef.current = null;
+    }
     if (activeMedia?.mediaItem && videoRef.current) {
       const currentTime = videoRef.current.currentTime || 0;
       const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : 0;
@@ -486,13 +488,15 @@ export default function App() {
     setActiveMedia(null);
     setPreparedNextMedia(null);
     setNextEpisodeOverlay(null);
+    setIsBuffering(false);
+    setBufferProgress(0);
   };
 
   // Buffering States
   const [isBuffering, setIsBuffering] = useState(false);
   const [bufferProgress, setBufferProgress] = useState(0);
 
-  const [apiBase, setApiBase] = useState(() => localStorage.getItem('api_base') || API_BASE);
+  const [apiBase, setApiBase] = useState(() => safeGetString(localStorage, 'api_base', API_BASE));
   const normalizedApiBase = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase]);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -526,6 +530,7 @@ export default function App() {
   const preloadAttemptKeyRef = useRef<string | null>(null);
   const dismissedAutoPlayRef = useRef<string | null>(null);
   const displayMoviesRef = useRef<any[]>([]);
+  const bufferIntervalRef = useRef<number | null>(null);
 
   const saveToHistory = (movie: any) => {
     upsertMediaState(movie, (entry) => ({
@@ -539,15 +544,24 @@ export default function App() {
   const [genreList, setGenreList] = useState<any[]>([]);
   const [activeGenreId, setActiveGenreId] = useState<number | null>(null);
   useEffect(() => {
-    fetch(buildApiUrl(normalizedApiBase, '/api/genres'))
-      .then(r => r.json())
-      .then(data => setGenreList(data.genres || []));
+    let cancelled = false;
+    fetchApiJson(buildApiUrl(normalizedApiBase, '/api/genres'))
+      .then(data => {
+        if (!cancelled) setGenreList(Array.isArray(data.genres) ? data.genres : []);
+      })
+      .catch(() => {
+        if (!cancelled) setGenreList([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [normalizedApiBase]);
 
   useEffect(() => {
-    fetch(buildApiUrl(normalizedApiBase, '/api/version'))
-      .then(res => res.json())
+    let cancelled = false;
+    fetchApiJson(buildApiUrl(normalizedApiBase, '/api/version'))
       .then(data => {
+        if (cancelled) return;
         if (isRemoteVersionNewer(CURRENT_VERSION, data.version)) {
           setOtaVersion(data.version);
           setOtaMessage(data.message);
@@ -558,15 +572,31 @@ export default function App() {
           setOtaDate(null);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) {
+          setOtaVersion(null);
+          setOtaMessage(null);
+          setOtaDate(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [CURRENT_VERSION, normalizedApiBase]);
 
   useEffect(() => {
-    const sessionStr = localStorage.getItem('tg_session') || '';
-    fetch(buildApiUrl(normalizedApiBase, '/api/tg/status'), { headers: { 'x-tg-session': sessionStr } })
-      .then(res => res.json())
-      .then(data => setTgStatus(data.loggedIn ? 'loggedIn' : 'loggedOut'))
-      .catch(() => setTgStatus('loggedOut'));
+    const sessionStr = safeGetString(localStorage, 'tg_session');
+    let cancelled = false;
+    fetchApiJson(buildApiUrl(normalizedApiBase, '/api/tg/status'), { headers: { 'x-tg-session': sessionStr } })
+      .then(data => {
+        if (!cancelled) setTgStatus(data.loggedIn ? 'loggedIn' : 'loggedOut');
+      })
+      .catch(() => {
+        if (!cancelled) setTgStatus('loggedOut');
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [normalizedApiBase]);
 
   useEffect(() => {
@@ -576,6 +606,22 @@ export default function App() {
     setPreparedNextMedia(null);
     setNextEpisodeOverlay(null);
   }, [activeMedia?.mediaItem?.id, activeMedia?.mediaItem?.season_number, activeMedia?.mediaItem?.episode_number]);
+
+  useEffect(() => () => {
+    if (bufferIntervalRef.current !== null) {
+      window.clearInterval(bufferIntervalRef.current);
+      bufferIntervalRef.current = null;
+    }
+  }, []);
+
+  const loadSeriesSeasons = async (seriesId: number, seriesTitle: string) => {
+    const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/series/${seriesId}`));
+    const seasons = (Array.isArray(data.seasons) ? data.seasons : []).map((season: any, index: number) => ({
+      ...season,
+      uniqueId: `season-${season.id}-${index}`
+    }));
+    setNavContext({ type: 'seasons', seriesId, seriesTitle: data.seriesTitle || seriesTitle, seasons });
+  };
 
   // Hardware Back Button Interceptor for Android TV (so remote 'Back' doesn't kill the app)
   useEffect(() => {
@@ -587,12 +633,7 @@ export default function App() {
       if (navContext) {
         if (navContext.type === 'episodes') {
           const ctx = navContext;
-          fetch(buildApiUrl(normalizedApiBase, `/api/series/${ctx.seriesId}`))
-            .then(r => r.json())
-            .then(data => {
-              const seasons = (data.seasons || []).map((s: any, i: number) => ({ ...s, uniqueId: `season-${s.id}-${i}` }));
-              setNavContext({ type: 'seasons', seriesId: ctx.seriesId, seriesTitle: ctx.seriesTitle, seasons });
-            });
+          void loadSeriesSeasons(ctx.seriesId, ctx.seriesTitle);
         } else {
           setNavContext(null);
         }
@@ -624,16 +665,8 @@ export default function App() {
         if (navContext) {
           stopTvEvent(e);
           if (navContext.type === 'episodes') {
-            // go back to seasons
-            setNavContext(prev => prev && prev.type === 'episodes' ? { type: 'seasons', seriesId: prev.seriesId, seriesTitle: prev.seriesTitle, seasons: [] } : null);
-            // Re-fetch seasons
-            const base = apiBase.replace(/\/$/, '');
             const ctx = navContext as any;
-            fetch(`${base}/api/series/${ctx.seriesId}`) .then(r => r.json())
-              .then(data => {
-                const seasons = (data.seasons || []).map((s: any, i: number) => ({ ...s, uniqueId: `season-${s.id}-${i}` }));
-                setNavContext({ type: 'seasons', seriesId: ctx.seriesId, seriesTitle: ctx.seriesTitle, seasons });
-              });
+            void loadSeriesSeasons(ctx.seriesId, ctx.seriesTitle);
           } else {
             setNavContext(null);
           }
@@ -723,17 +756,22 @@ export default function App() {
     setHasMore(true);
     setIsLoadingMore(false);
     setFetchError(null);
-    fetch(buildApiUrl(normalizedApiBase, `/api/movies?page=1${genreParam}${yearParam}${categoryParam}${israeliParam}`))
-      .then(res => { if (!res.ok) throw new Error(`HTTP Error: ${res.status}`); return res.json(); })
+    let cancelled = false;
+    fetchApiJson(buildApiUrl(normalizedApiBase, `/api/movies?page=1${genreParam}${yearParam}${categoryParam}${israeliParam}`))
       .then(data => {
+        if (cancelled) return;
         setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES);
         setHasMore(data.hasMore ?? false);
       })
       .catch((err) => {
-        setFetchError(`שגיאת תקשורת: ${err.message}`);
+        if (cancelled) return;
+        setFetchError(`Network error: ${err.message}`);
         setBaseMovies(BASE_MOVIES);
         setShowSettings(true);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [activeGenreId, isIsraeliOnly, isMoviesSection, movieCategory, normalizedApiBase, yearFilter]);
 
   useEffect(() => {
@@ -764,15 +802,14 @@ export default function App() {
   const handleNearEnd = () => {
     if (isMoviesSection && baseMovies.length === 0) return;
     if (!isMoviesSection) return;
-    if (isLoadingMore || !hasMore || navContext || genre === 'סדרות' || genre === 'מועדפים' || genre === 'צפיות אחרונות' || showSearch) return;
+    if (isLoadingMore || !hasMore || navContext || showSearch) return;
     const nextPage = contentPage + 1;
     const genreParam = activeGenreId ? `&genre_id=${activeGenreId}` : '';
     const yearParam = yearFilter !== 'all' ? `&year=${yearFilter}` : '';
     const categoryParam = `&category=${movieCategory}`;
     const israeliParam = isIsraeliOnly ? '&israeli=1' : '';
     setIsLoadingMore(true);
-    fetch(buildApiUrl(normalizedApiBase, `/api/movies?page=${nextPage}${genreParam}${yearParam}${categoryParam}${israeliParam}`))
-      .then(r => r.json())
+    fetchApiJson(buildApiUrl(normalizedApiBase, `/api/movies?page=${nextPage}${genreParam}${yearParam}${categoryParam}${israeliParam}`))
       .then(data => {
         setBaseMovies(prev => [...prev, ...(data.movies || [])]);
         setContentPage(nextPage);
@@ -783,18 +820,23 @@ export default function App() {
 
   // Fetch series when genre switches to 'סדרות'
   useEffect(() => {
-    if (genre !== 'סדרות') return;
     if (!isSeriesSection) return;
     const yearParam = yearFilter !== 'all' ? `&year=${yearFilter}` : '';
     const categoryParam = `&category=${seriesCategory}`;
-    fetch(buildApiUrl(normalizedApiBase, `/api/series?page=1${yearParam}${categoryParam}`))
-      .then(r => r.json())
+    let cancelled = false;
+    fetchApiJson(buildApiUrl(normalizedApiBase, `/api/series?page=1${yearParam}${categoryParam}`))
       .then(data => {
+        if (cancelled) return;
         setSeriesItems(data.series || []);
-        setFetchError(data.series?.length ? null : 'לא נמצאו סדרות לטעינה.');
+        setFetchError(data.series?.length ? null : 'No series were found to load.');
       })
-      .catch((err) => setFetchError(`שגיאת סדרות: ${err.message}`));
-  }, [genre, isSeriesSection, normalizedApiBase, seriesCategory, yearFilter]);
+      .catch((err) => {
+        if (!cancelled) setFetchError(`Series error: ${err.message}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSeriesSection, normalizedApiBase, seriesCategory, yearFilter]);
 
   // Navigate into series’ seasons
   const runCorridorTransition = async (label: string, action: () => Promise<void>) => {
@@ -809,16 +851,14 @@ export default function App() {
 
   const enterSeries = async (series: any) => {
     await runCorridorTransition(`Opening ${series.title}`, async () => {
-      const data = await fetch(buildApiUrl(normalizedApiBase, `/api/series/${series.id}`)).then(r => r.json());
-      const seasons = (data.seasons || []).map((s: any, i: number) => ({ ...s, uniqueId: `season-${s.id}-${i}` }));
-      setNavContext({ type: 'seasons', seriesId: series.id, seriesTitle: series.title, seasons });
+      await loadSeriesSeasons(series.id, series.title);
     });
   };
 
   // Navigate into a season’s episodes
   const enterSeason = async (season: any) => {
     await runCorridorTransition(`Entering ${season.title}`, async () => {
-      const data = await fetch(buildApiUrl(normalizedApiBase, `/api/series/${season.seriesId}/season/${season.season_number}`)).then(r => r.json());
+      const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/series/${season.seriesId}/season/${season.season_number}`));
       const episodes = (data.episodes || []).map((e: any, i: number) => ({ ...e, seriesTitle: (navContext as any)?.seriesTitle, uniqueId: `ep-${e.id}-${i}` }));
       setNavContext(prev => ({
         type: 'episodes',
@@ -836,7 +876,6 @@ export default function App() {
     if (navContext?.type === 'seasons') { enterSeason(movie); return; }
     if (navContext?.type === 'episodes') { setSelectedMovie(movie); return; }
     if (isSeriesSection) { enterSeries(movie); return; }
-    if (genre === 'סדרות') { enterSeries(movie); return; }
     setSelectedMovie(movie); // normal movie/favorite - open Telegram search
   };
 
@@ -906,8 +945,7 @@ export default function App() {
   const handleTmdbSearch = () => {
     if (!searchQuery.trim()) return;
     setIsSearchingTmdb(true);
-    fetch(buildApiUrl(normalizedApiBase, `/api/search?q=${encodeURIComponent(searchQuery)}&type=${isSeriesSection ? 'tv' : 'all'}`))
-      .then(r => r.json())
+    fetchApiJson(buildApiUrl(normalizedApiBase, `/api/search?q=${encodeURIComponent(searchQuery)}&type=${isSeriesSection ? 'tv' : 'all'}`))
       .then(data => { setSearchResults(data.results || []); setIsSearchingTmdb(false); })
       .catch(() => setIsSearchingTmdb(false));
   };
@@ -1043,16 +1081,23 @@ export default function App() {
 
   const handlePlayVideo = async (telegramResult: any, mediaItem: any = selectedMovie) => {
     if (!mediaItem) return;
+    if (bufferIntervalRef.current !== null) {
+      window.clearInterval(bufferIntervalRef.current);
+      bufferIntervalRef.current = null;
+    }
     setIsBuffering(true);
     setBufferProgress(0);
     saveToHistory(mediaItem);
-    
+
     let progress = 0;
-    const interval = setInterval(() => {
+    bufferIntervalRef.current = window.setInterval(() => {
       progress += 5;
       setBufferProgress(progress);
       if (progress >= 100) {
-        clearInterval(interval);
+        if (bufferIntervalRef.current !== null) {
+          window.clearInterval(bufferIntervalRef.current);
+          bufferIntervalRef.current = null;
+        }
         setIsBuffering(false);
         buildPreparedPlayback(telegramResult, mediaItem)
           .then((prepared) => {
@@ -1224,7 +1269,7 @@ export default function App() {
                        .then((res) => {
                           if (res.requiresPassword) setTgStatus('passwordInput');
                           else {
-                            localStorage.setItem('tg_session', res.sessionString);
+                            safeSetString(localStorage, 'tg_session', res.sessionString);
                             setTgStatus('loggedIn');
                           }
                           setIsLoggingIn(false);
@@ -1248,7 +1293,7 @@ export default function App() {
                      const base = apiBase.replace(/\/$/, '');
                      fetchApiJson(`${base}/api/tg/submitPassword`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ loginId, password }) })
                        .then((res) => {
-                          localStorage.setItem('tg_session', res.sessionString);
+                          safeSetString(localStorage, 'tg_session', res.sessionString);
                           setTgStatus('loggedIn');
                           setIsLoggingIn(false);
                        })
@@ -1389,8 +1434,7 @@ export default function App() {
               <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex flex-col gap-6">
                 {!otaVersion && (
                   <button onClick={() => {
-                    fetch(buildApiUrl(normalizedApiBase, '/api/version'))
-                      .then(res => res.json())
+                    fetchApiJson(buildApiUrl(normalizedApiBase, '/api/version'))
                       .then(data => {
                         if (isRemoteVersionNewer(CURRENT_VERSION, data.version)) {
                           setOtaVersion(data.version);
@@ -1421,9 +1465,9 @@ export default function App() {
                   {tgStatus === 'loggedIn' ? (
                     <button onClick={() => {
                        const base = apiBase.replace(/\/$/, '');
-                       const sessionStr = localStorage.getItem('tg_session') || '';
+                       const sessionStr = safeGetString(localStorage, 'tg_session');
                        fetchApiJson(`${base}/api/tg/logout`, { method: 'POST', headers: { 'x-tg-session': sessionStr } })
-                         .then(() => { localStorage.removeItem('tg_session'); setTgStatus('loggedOut'); });
+                         .then(() => { safeRemove(localStorage, 'tg_session'); setTgStatus('loggedOut'); });
                     }} className="px-6 py-3 bg-red-500/20 text-red-400 border border-red-500/50 rounded-xl hover:bg-red-500 hover:text-white transition-colors">התנתק מהמכשיר</button>
                   ) : (
                     <button onClick={() => { setShowSettings(false); setTgStatus('phoneInput'); }} className="px-6 py-3 bg-[#2AABEE]/20 text-[#2AABEE] border border-[#2AABEE]/50 rounded-xl hover:bg-[#2AABEE] hover:text-white transition-colors">התחבר עכשיו</button>

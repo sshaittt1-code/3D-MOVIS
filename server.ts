@@ -56,6 +56,22 @@ const TVMAZE_GENRE_MAP: Record<number, string[]> = {
 const stripHtml = (value: string | null | undefined) =>
   (value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 
+const getErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : 'Unknown error';
+
+const readStringValue = (value: unknown) =>
+  typeof value === 'string' ? value.trim() : '';
+
+const readPositiveInt = (value: unknown) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const readOptionalInt = (value: unknown) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  return readPositiveInt(value);
+};
+
 const matchesTvMazeGenre = (genres: string[], genreId?: number) => {
   if (!genreId) return true;
   const allowedGenres = TVMAZE_GENRE_MAP[genreId];
@@ -325,15 +341,15 @@ app.get('/api/tg/status', async (req, res) => {
 // Search for Movie
 app.get('/api/tg/search', async (req, res) => {
   try {
-    const { query } = req.query;
+    const query = readStringValue(req.query.query);
     if (!query) return res.status(400).json({ error: 'Missing query' });
     
-    const sessionStr = req.headers['x-tg-session'] as string;
+    const sessionStr = readStringValue(req.headers['x-tg-session']);
     const client = await getClientParam(sessionStr);
     
     // Search globally across all dialogs for video files matching the query
     const result = await client.invoke(new Api.messages.SearchGlobal({
-      q: query as string,
+      q: query,
       filter: new Api.InputMessagesFilterVideo(),
       limit: 10,
       offsetRate: 0,
@@ -373,17 +389,18 @@ app.get('/api/tg/search', async (req, res) => {
 
     res.json({ results: formattedResults });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: getErrorMessage(e) });
   }
 });
 
 // Stream Video with Range Support (Buffering)
 app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
   try {
-    const sessionStr = req.query.session as string || req.headers['x-tg-session'] as string;
+    const sessionStr = readStringValue(req.query.session) || readStringValue(req.headers['x-tg-session']);
     const client = await getClientParam(sessionStr);
-    const peerId = req.params.peerId;
-    const messageId = parseInt(req.params.messageId);
+    const peerId = readStringValue(req.params.peerId);
+    const messageId = readPositiveInt(req.params.messageId);
+    if (!peerId || !messageId) return res.status(400).send('Invalid stream request');
 
     const messages = await client.getMessages(peerId, { ids: [messageId] });
     if (!messages || messages.length === 0) return res.status(404).send('Message not found');
@@ -396,8 +413,11 @@ app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
 
     if (range) {
       const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const start = Number.parseInt(parts[0], 10);
+      const end = parts[1] ? Number.parseInt(parts[1], 10) : fileSize - 1;
+      if (!Number.isFinite(start) || start < 0 || !Number.isFinite(end) || end < start || end >= fileSize) {
+        return res.status(416).send('Invalid range');
+      }
       const chunksize = (end - start) + 1;
 
       res.writeHead(206, {
@@ -437,17 +457,17 @@ app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
     }
   } catch (e: any) {
     console.error('Streaming error:', e);
-    if (!res.headersSent) res.status(500).send(e.message);
+    if (!res.headersSent) res.status(500).send(getErrorMessage(e));
   }
 });
 
 // Search for Subtitles
 app.get('/api/tg/search-subtitles', async (req, res) => {
   try {
-    const { query } = req.query;
+    const query = readStringValue(req.query.query);
     if (!query) return res.status(400).json({ error: 'Missing query' });
     
-    const sessionStr = req.headers['x-tg-session'] as string;
+    const sessionStr = readStringValue(req.headers['x-tg-session']);
     const client = await getClientParam(sessionStr);
     
     // Search globally for Hebrew .srt files matching the movie
@@ -477,17 +497,18 @@ app.get('/api/tg/search-subtitles', async (req, res) => {
 
     res.json({ results: formattedResults });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: getErrorMessage(e) });
   }
 });
 
 // Stream and Convert Subtitle (SRT to VTT)
 app.get('/api/tg/subtitle/:peerId/:messageId', async (req, res) => {
   try {
-    const sessionStr = req.query.session as string || req.headers['x-tg-session'] as string;
+    const sessionStr = readStringValue(req.query.session) || readStringValue(req.headers['x-tg-session']);
     const client = await getClientParam(sessionStr);
-    const peerId = req.params.peerId;
-    const messageId = parseInt(req.params.messageId);
+    const peerId = readStringValue(req.params.peerId);
+    const messageId = readPositiveInt(req.params.messageId);
+    if (!peerId || !messageId) return res.status(400).send('Invalid subtitle request');
 
     const messages = await client.getMessages(peerId, { ids: [messageId] });
     if (!messages || messages.length === 0) return res.status(404).send('Message not found');
@@ -511,7 +532,7 @@ app.get('/api/tg/subtitle/:peerId/:messageId', async (req, res) => {
     res.send(vttText);
   } catch (e: any) {
     console.error('Subtitle error:', e);
-    res.status(500).send(e.message);
+    res.status(500).send(getErrorMessage(e));
   }
 });
 
@@ -519,11 +540,11 @@ app.get('/api/tg/subtitle/:peerId/:messageId', async (req, res) => {
 app.get('/api/movies', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
-    const batchNum = Math.max(1, parseInt(req.query.page as string || '1', 10));
+    const batchNum = readPositiveInt(req.query.page) ?? 1;
     const startTmdbPage = (batchNum - 1) * 5 + 1;
-    const genreId = req.query.genre_id ? parseInt(req.query.genre_id as string, 10) : undefined;
-    const category = String(req.query.category || 'popular');
-    const year = req.query.year ? parseInt(req.query.year as string, 10) : undefined;
+    const genreId = readOptionalInt(req.query.genre_id);
+    const category = readStringValue(req.query.category) || 'popular';
+    const year = readOptionalInt(req.query.year);
     const israeliOnly = req.query.israeli === '1';
 
     if (tmdbKey) {
@@ -577,7 +598,7 @@ app.get('/api/movies', async (req, res) => {
     */
     res.json(fallback);
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: getErrorMessage(e) });
   }
 });
 
@@ -585,10 +606,10 @@ app.get('/api/movies', async (req, res) => {
 app.get('/api/series', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
-    const batchNum = Math.max(1, parseInt(req.query.page as string || '1', 10));
-    const genreId = req.query.genre_id ? parseInt(req.query.genre_id as string, 10) : undefined;
-    const category = String(req.query.category || 'popular');
-    const year = req.query.year ? parseInt(req.query.year as string, 10) : undefined;
+    const batchNum = readPositiveInt(req.query.page) ?? 1;
+    const genreId = readOptionalInt(req.query.genre_id);
+    const category = readStringValue(req.query.category) || 'popular';
+    const year = readOptionalInt(req.query.year);
     if (!tmdbKey) {
       const fallback = await fetchTvMazeSeriesBatch(batchNum, genreId);
       return res.json({ ...fallback, series: sortLocalCatalog(fallback.series, category, year) });
@@ -623,7 +644,7 @@ app.get('/api/series', async (req, res) => {
     }));
     return res.json({ series, hasMore: batchNum < 10 });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: getErrorMessage(e) });
   }
 });
 
@@ -631,8 +652,10 @@ app.get('/api/series', async (req, res) => {
 app.get('/api/series/:id', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
+    const seriesId = readPositiveInt(req.params.id);
+    if (!seriesId) return res.status(400).json({ error: 'Invalid series id' });
     if (!tmdbKey) {
-      const { show, episodes } = await fetchTvMazeShowContext(parseInt(req.params.id, 10));
+      const { show, episodes } = await fetchTvMazeShowContext(seriesId);
       const seasons = Array.from(new Set(episodes.map((episode: any) => episode.season)))
         .sort((left, right) => left - right)
         .map((seasonNumber, index) => {
@@ -652,14 +675,14 @@ app.get('/api/series/:id', async (req, res) => {
         });
       return res.json({ seasons, seriesTitle: show.name });
     }
-    const data = await fetch(`https://api.themoviedb.org/3/tv/${req.params.id}?api_key=${tmdbKey}&language=he-IL`).then(r => r.json());
+    const data = await fetch(`https://api.themoviedb.org/3/tv/${seriesId}?api_key=${tmdbKey}&language=he-IL`).then(r => r.json());
     const seasons = (data.seasons || [])
       .filter((s: any) => s.season_number > 0)
       .map((s: any) => ({
         id: s.id,
         title: `עונה ${s.season_number}`,
         season_number: s.season_number,
-        seriesId: parseInt(req.params.id),
+        seriesId,
         poster: s.poster_path ? `https://image.tmdb.org/t/p/w500${s.poster_path}` : `https://image.tmdb.org/t/p/w500${data.poster_path}`,
         episode_count: s.episode_count,
         desc: `${s.episode_count} פרקים${s.overview ? ' — ' + s.overview : ''}`,
@@ -669,7 +692,7 @@ app.get('/api/series/:id', async (req, res) => {
       }));
     return res.json({ seasons, seriesTitle: data.name });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: getErrorMessage(e) });
   }
 });
 
@@ -677,9 +700,10 @@ app.get('/api/series/:id', async (req, res) => {
 app.get('/api/series/:id/season/:num', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
+    const showId = readPositiveInt(req.params.id);
+    const seasonNum = readPositiveInt(req.params.num);
+    if (!showId || !seasonNum) return res.status(400).json({ error: 'Invalid season request' });
     if (!tmdbKey) {
-      const showId = parseInt(req.params.id, 10);
-      const seasonNum = parseInt(req.params.num, 10);
       const { show, episodes: allEpisodes } = await fetchTvMazeShowContext(showId);
       const episodes = allEpisodes
         .filter((episode: any) => episode.season === seasonNum)
@@ -698,13 +722,13 @@ app.get('/api/series/:id/season/:num', async (req, res) => {
         }));
       return res.json({ episodes, seasonTitle: `Season ${seasonNum}` });
     }
-    const data = await fetch(`https://api.themoviedb.org/3/tv/${req.params.id}/season/${req.params.num}?api_key=${tmdbKey}&language=he-IL`).then(r => r.json());
+    const data = await fetch(`https://api.themoviedb.org/3/tv/${showId}/season/${seasonNum}?api_key=${tmdbKey}&language=he-IL`).then(r => r.json());
     const episodes = (data.episodes || []).map((e: any) => ({
       id: e.id,
       title: `${e.episode_number}. ${e.name}`,
       episode_number: e.episode_number,
-      seriesId: parseInt(req.params.id),
-      seasonNum: parseInt(req.params.num),
+      seriesId: showId,
+      seasonNum,
       poster: e.still_path ? `https://image.tmdb.org/t/p/w500${e.still_path}` : 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg',
       desc: e.overview || '',
       genre: 'פרק',
@@ -713,7 +737,7 @@ app.get('/api/series/:id/season/:num', async (req, res) => {
     }));
     return res.json({ episodes, seasonTitle: data.name });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: getErrorMessage(e) });
   }
 });
 
@@ -753,8 +777,10 @@ startServer();
 app.get('/api/search', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
-    const q = encodeURIComponent((req.query.q as string) || '');
-    const type = req.query.type as string || 'all';
+    const query = readStringValue(req.query.q);
+    if (!query) return res.json({ results: [] });
+    const q = encodeURIComponent(query);
+    const type = readStringValue(req.query.type) || 'all';
     if (!tmdbKey) {
       const tvMazeResults = await fetch(`https://api.tvmaze.com/search/shows?q=${q}`).then((response) => response.json());
       const results = (Array.isArray(tvMazeResults) ? tvMazeResults : [])
@@ -787,7 +813,7 @@ app.get('/api/search', async (req, res) => {
     }
     res.json({ results: merged.slice(0, 40) });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: getErrorMessage(e) });
   }
 });
 
