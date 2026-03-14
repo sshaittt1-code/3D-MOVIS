@@ -29,8 +29,20 @@ class TextureManager {
     }
   }
 
+  hasTexture(url: string) {
+    return this.cache.has(url);
+  }
+
+  private touchTexture(url: string) {
+    if (!this.cache.has(url)) return;
+    const texture = this.cache.get(url)!;
+    this.cache.delete(url);
+    this.cache.set(url, texture);
+  }
+
   loadTexture(url: string): Promise<THREE.Texture> {
     if (this.cache.has(url)) {
+      this.touchTexture(url);
       return Promise.resolve(this.cache.get(url)!);
     }
     
@@ -74,6 +86,16 @@ class TextureManager {
 
     this.pending.set(url, promise);
     return promise;
+  }
+
+  async prefetch(urls: string[], concurrency = 4) {
+    const queue = [...new Set(urls.filter(Boolean))].filter((url) => !this.cache.has(url));
+    if (queue.length === 0) return;
+
+    for (let index = 0; index < queue.length; index += concurrency) {
+      const batch = queue.slice(index, index + concurrency);
+      await Promise.all(batch.map((url) => this.loadTexture(url).catch(() => null)));
+    }
   }
   
   // Optional: clear cache if memory gets too high

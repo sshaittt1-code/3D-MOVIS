@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
+import React, { useState, useEffect, useRef, Suspense, useMemo, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Text, SpotLight } from '@react-three/drei';
 import * as THREE from 'three';
@@ -14,10 +14,14 @@ import { buildMediaKey, createDefaultMediaStateEntry, MEDIA_STATE_STORAGE_KEY, m
 import { findNextEpisodeInSeason, findNextSeason, shouldPrepareNextEpisode } from './utils/nextEpisode';
 import { readAutoPlayNextEpisode, writeAutoPlayNextEpisode } from './utils/playerSettings';
 import { SideMenu } from './components/SideMenu';
+import { PosterContextMenu } from './components/PosterContextMenu';
 import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
 import { safeGetJson, safeGetString, safeParseJson, safeRemove, safeSetJson, safeSetString } from './utils/safeStorage';
 import { buildPlaybackSourceKey } from './utils/sourceKey';
 import { getPrebufferTargetBytes, isPlayableFromCache, PLAYBACK_CACHE_STORAGE_KEY, readPlaybackCacheMap, removePlaybackCacheEntry, shouldDeleteCompletedCache, type PlaybackCacheEntry, type PlaybackCacheMap, upsertPlaybackCacheEntry, writePlaybackCacheMap } from './utils/playbackCache';
+import { buildCategoryCacheKey, getCategoryCacheEntry, writeCategoryCacheEntry } from './utils/categoryCache';
+import { DEFAULT_POSTER_BATCH_SIZE, POSTER_BATCH_SIZE_OPTIONS, readPosterBatchSize, writePosterBatchSize } from './utils/posterBatchSettings';
+import { LONG_PRESS_DURATION_MS, classifyPressDuration } from './utils/longPress';
 
 const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
@@ -149,7 +153,7 @@ const toBase64 = (buffer: ArrayBuffer) => {
 };
 
 // --- 3D Components ---
-const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, setFocusedId, setFocusedHeartId, isAnyModalOpen, selectedMovie, lastPosterZ, onNearEnd, onCameraMove }: any) => {
+const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPress, onHeartToggle, setFocusedId, setFocusedHeartId, isAnyModalOpen, selectedMovie, lastPosterZ, onNearEnd, onCameraMove }: any) => {
   const { camera } = useThree();
   const [targetPos, setTargetPos] = useState(new THREE.Vector3(0, 1.6, 2));
   const focusedMovieRef = useRef<any>(null);
@@ -163,8 +167,20 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, s
   const targetRotY = useRef(0);
   const raycaster = useRef(new THREE.Raycaster());
   const centerPointer = useRef(new THREE.Vector2(0, 0));
+  const selectKeyDownAtRef = useRef<number | null>(null);
+  const longPressTriggeredRef = useRef(false);
+  const longPressTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
+    const clearLongPress = () => {
+      if (longPressTimeoutRef.current) {
+        window.clearTimeout(longPressTimeoutRef.current);
+        longPressTimeoutRef.current = null;
+      }
+      selectKeyDownAtRef.current = null;
+      longPressTriggeredRef.current = false;
+    };
+
     const handleInput = (e: KeyboardEvent) => {
       if (!isLocked || isAnyModalOpen || !!selectedMovie) return;
       if (isTvNavigationKey(e)) stopTvEvent(e);
@@ -179,25 +195,44 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, s
       } else if (e.key === 'ArrowRight') {
         keys.current.right = true;
       } else if (isTvSelectKey(e)) {
-        if (focusedHeartRef.current) {
-          onHeartToggle(focusedHeartRef.current);
-        } else if (focusedMovieRef.current) {
-          onPosterSelect(focusedMovieRef.current);
+        if (e.repeat || selectKeyDownAtRef.current !== null) return;
+        selectKeyDownAtRef.current = Date.now();
+        longPressTriggeredRef.current = false;
+        if (!focusedHeartRef.current && focusedMovieRef.current) {
+          longPressTimeoutRef.current = window.setTimeout(() => {
+            if (!focusedMovieRef.current) return;
+            longPressTriggeredRef.current = true;
+            onPosterLongPress(focusedMovieRef.current);
+          }, LONG_PRESS_DURATION_MS);
         }
       }
     };
     const handleInputUp = (e: KeyboardEvent) => {
       if (e.key === 'ArrowLeft') keys.current.left = false;
       else if (e.key === 'ArrowRight') keys.current.right = false;
+      else if (isTvSelectKey(e)) {
+        const duration = selectKeyDownAtRef.current ? Date.now() - selectKeyDownAtRef.current : 0;
+        const pressKind = classifyPressDuration(duration);
+        const didLongPress = longPressTriggeredRef.current || pressKind === 'long';
+        if (!didLongPress) {
+          if (focusedHeartRef.current) {
+            onHeartToggle(focusedHeartRef.current);
+          } else if (focusedMovieRef.current) {
+            onPosterSelect(focusedMovieRef.current);
+          }
+        }
+        clearLongPress();
+      }
       if (isLocked && !isAnyModalOpen && !selectedMovie && isTvNavigationKey(e)) stopTvEvent(e);
     };
     window.addEventListener('keydown', handleInput, true);
     window.addEventListener('keyup', handleInputUp, true);
     return () => {
+      clearLongPress();
       window.removeEventListener('keydown', handleInput, true);
       window.removeEventListener('keyup', handleInputUp, true);
     };
-  }, [isLocked, onPosterSelect, onHeartToggle, isAnyModalOpen, selectedMovie]);
+  }, [isLocked, onPosterLongPress, onPosterSelect, onHeartToggle, isAnyModalOpen, selectedMovie]);
 
   // Reset position when corridor changes (new navContext)
   useEffect(() => {
@@ -269,6 +304,11 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
   const groupRef = useRef<THREE.Group>(null!);
   const fetchAttempted = useRef(false);
 
+  useEffect(() => {
+    fetchAttempted.current = false;
+    setTexture((current) => (movie.poster && textureManager.hasTexture(movie.poster) ? current : null));
+  }, [movie.poster]);
+
   useFrame((state) => { 
     if (!groupRef.current) return;
     const targetScale = isFocused ? 1.4 : 1; 
@@ -295,7 +335,7 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
       {/* Poster image mesh */}
       <mesh name="poster_mesh" userData={{ uniqueId: movie.uniqueId }} position={[0, 0, 0.01]}>
         <planeGeometry args={[2.5, 3.75]} />
-        <meshStandardMaterial map={texture} color={isFocused ? '#ffffff' : '#acacac'} />
+        <meshStandardMaterial map={texture} color={texture ? (isFocused ? '#ffffff' : '#acacac') : '#1c2730'} />
       </mesh>
       {/* Poster border mesh */}
       <mesh name="poster_mesh" userData={{ uniqueId: movie.uniqueId }} position={[0, 0, -0.02]}>
@@ -396,6 +436,9 @@ export default function App() {
   const [autoPlayNextEpisode, setAutoPlayNextEpisode] = useState<boolean>(() => {
     return readAutoPlayNextEpisode(localStorage, true);
   });
+  const [posterBatchSize, setPosterBatchSize] = useState<number>(() => {
+    return readPosterBatchSize(localStorage, DEFAULT_POSTER_BATCH_SIZE);
+  });
   const [playbackCacheMap, setPlaybackCacheMap] = useState<PlaybackCacheMap>(() =>
     readPlaybackCacheMap(localStorage)
   );
@@ -407,6 +450,10 @@ export default function App() {
   useEffect(() => {
     writeAutoPlayNextEpisode(localStorage, autoPlayNextEpisode);
   }, [autoPlayNextEpisode]);
+
+  useEffect(() => {
+    writePosterBatchSize(localStorage, posterBatchSize);
+  }, [posterBatchSize]);
 
   useEffect(() => {
     writePlaybackCacheMap(localStorage, playbackCacheMap);
@@ -457,6 +504,14 @@ export default function App() {
     });
   };
 
+  const toggleFavoriteForItem = useCallback((item: any, nextFavorite?: boolean) => {
+    upsertMediaState(item, (entry) => ({
+      ...entry,
+      snapshot: { ...entry.snapshot, ...item },
+      favorite: typeof nextFavorite === 'boolean' ? nextFavorite : !entry.favorite
+    }));
+  }, []);
+
   const handleHeartToggle = (uniqueId: string) => {
     const allItems = displayMoviesRef.current;
     const item = navContext?.type === 'seasons'
@@ -465,12 +520,7 @@ export default function App() {
         ? navContext.episodes.find((e: any) => e.uniqueId === uniqueId)
         : allItems.find(m => m.uniqueId === uniqueId);
     if (!item) return;
-
-    upsertMediaState(item, (entry) => ({
-      ...entry,
-      snapshot: { ...entry.snapshot, ...item },
-      favorite: !entry.favorite
-    }));
+    toggleFavoriteForItem(item);
   };
 
   const searchTelegramForItem = async (item: any) => {
@@ -854,6 +904,9 @@ export default function App() {
   const downloadAbortRef = useRef<AbortController | null>(null);
   const prebufferResolverRef = useRef<(() => void) | null>(null);
   const playbackCacheMapRef = useRef<PlaybackCacheMap>(playbackCacheMap);
+  const categoryRequestMapRef = useRef<Map<string, Promise<{ items: any[]; hasMore: boolean }>>>(new Map());
+  const categoryPrefetchRef = useRef<Set<string>>(new Set());
+  const [posterContextMovie, setPosterContextMovie] = useState<any>(null);
 
   const saveToHistory = (movie: any) => {
     upsertMediaState(movie, (entry) => ({
@@ -992,6 +1045,7 @@ export default function App() {
   useEffect(() => {
     const handleBackEvent = () => {
       if (activeMedia) { void closePlayer(); return; }
+      if (posterContextMovie) { closePosterContextMenu(); return; }
       if (selectedMovie) { setSelectedMovie(null); return; }
       if (showCinemaScreen) { closeTelegramSourceScreen(); return; }
       if (showSearch) { setShowSearch(false); setSearchQuery(''); setSearchResults([]); return; }
@@ -1016,12 +1070,17 @@ export default function App() {
     let backListener: any;
     CapApp.addListener('backButton', handleBackEvent).then(l => backListener = l);
     return () => { if (backListener) backListener.remove(); };
-  }, [activeMedia, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings, normalizedApiBase, tgStatus]);
+  }, [activeMedia, closePosterContextMenu, normalizedApiBase, navContext, posterContextMovie, selectedMovie, showCinemaScreen, showSearch, showSettings, tgStatus]);
 
   useEffect(() => {
     const handleGlobalBack = (e: KeyboardEvent) => {
       // Catch conventional keyboard ESC for Web compatibility
       if (e.key === 'Escape' || e.key === 'Backspace') {
+        if (posterContextMovie) {
+          stopTvEvent(e);
+          closePosterContextMenu();
+          return;
+        }
         if (selectedMovie) {
           stopTvEvent(e);
           setSelectedMovie(null);
@@ -1092,7 +1151,7 @@ export default function App() {
       window.removeEventListener('keydown', handleMenuInput, true);
       window.removeEventListener('keydown', handleGlobalBack, true);
     };
-  }, [isLocked, selectedMovie, navContext, showCinemaScreen, showSearch, showSettings, activeMedia, tgStatus, isSearchingTg, apiBase]);
+  }, [activeMedia, apiBase, closePosterContextMenu, isLocked, isSearchingTg, navContext, posterContextMovie, selectedMovie, showCinemaScreen, showSearch, showSettings, tgStatus]);
 
   useEffect(() => {
     if (isLocked) {
@@ -1109,24 +1168,114 @@ export default function App() {
   const isBrowseSection = isMoviesSection || isSeriesSection;
   const isRootCorridor = !navContext && !selectedMovie && !showCinemaScreen && !activeMedia && !showSettings && tgStatus !== 'phoneInput' && tgStatus !== 'codeInput' && tgStatus !== 'passwordInput';
 
+  const buildMoviesFeedPath = useCallback((page: number) => {
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(posterBatchSize),
+      category: movieCategory
+    });
+    if (activeGenreId) params.set('genre_id', String(activeGenreId));
+    if (yearFilter !== 'all') params.set('year', String(yearFilter));
+    if (isIsraeliOnly) params.set('israeli', '1');
+    return buildApiUrl(normalizedApiBase, `/api/movies?${params.toString()}`);
+  }, [activeGenreId, isIsraeliOnly, movieCategory, normalizedApiBase, posterBatchSize, yearFilter]);
+
+  const buildSeriesFeedPath = useCallback((page: number) => {
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(posterBatchSize),
+      category: seriesCategory
+    });
+    if (yearFilter !== 'all') params.set('year', String(yearFilter));
+    return buildApiUrl(normalizedApiBase, `/api/series?${params.toString()}`);
+  }, [normalizedApiBase, posterBatchSize, seriesCategory, yearFilter]);
+
+  const fetchCategoryPage = useCallback(async ({
+    cacheKey,
+    path,
+    field
+  }: {
+    cacheKey: string;
+    path: string;
+    field: 'movies' | 'series';
+  }) => {
+    const cached = getCategoryCacheEntry(localStorage, cacheKey);
+    if (cached) return { items: cached.items, hasMore: cached.hasMore };
+
+    const pending = categoryRequestMapRef.current.get(cacheKey);
+    if (pending) return pending;
+
+    const request = fetchApiJson(path)
+      .then((data: any) => {
+        const items = Array.isArray(data[field]) ? data[field] : [];
+        const payload = { items, hasMore: Boolean(data.hasMore) };
+        writeCategoryCacheEntry(localStorage, cacheKey, payload);
+        return payload;
+      })
+      .finally(() => {
+        categoryRequestMapRef.current.delete(cacheKey);
+      });
+
+    categoryRequestMapRef.current.set(cacheKey, request);
+    return request;
+  }, []);
+
+  const prefetchCategoryPage = useCallback((options: { cacheKey: string; path: string; field: 'movies' | 'series' }) => {
+    if (categoryPrefetchRef.current.has(options.cacheKey)) return;
+    if (getCategoryCacheEntry(localStorage, options.cacheKey)) return;
+    categoryPrefetchRef.current.add(options.cacheKey);
+    void fetchCategoryPage(options).finally(() => {
+      categoryPrefetchRef.current.delete(options.cacheKey);
+    });
+  }, [fetchCategoryPage]);
+
+  function openPosterContextMenu(movie: any) {
+    setPosterContextMovie(movie);
+  }
+
+  function closePosterContextMenu() {
+    setPosterContextMovie(null);
+  }
+
   // Initial movie fetch
   useEffect(() => {
     if (genre === 'סדרות' || genre === 'מועדפים' || genre === 'צפיות אחרונות') return;
     if (!isMoviesSection) return;
-    const genreParam = activeGenreId ? `&genre_id=${activeGenreId}` : '';
-    const yearParam = yearFilter !== 'all' ? `&year=${yearFilter}` : '';
-    const categoryParam = `&category=${movieCategory}`;
-    const israeliParam = isIsraeliOnly ? '&israeli=1' : '';
+    const cacheKey = buildCategoryCacheKey({
+      target: 'movies',
+      category: movieCategory,
+      genreId: activeGenreId,
+      year: String(yearFilter),
+      israeliOnly: isIsraeliOnly,
+      page: 1,
+      batchSize: posterBatchSize
+    });
     setContentPage(1);
     setHasMore(true);
     setIsLoadingMore(false);
     setFetchError(null);
+    setPosterContextMovie(null);
     let cancelled = false;
-    fetchApiJson(buildApiUrl(normalizedApiBase, `/api/movies?page=1${genreParam}${yearParam}${categoryParam}${israeliParam}`))
-      .then(data => {
+    fetchCategoryPage({ cacheKey, path: buildMoviesFeedPath(1), field: 'movies' })
+      .then((data) => {
         if (cancelled) return;
-        setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES);
+        setBaseMovies(data.items.length > 0 ? data.items : BASE_MOVIES);
         setHasMore(data.hasMore ?? false);
+        if (data.hasMore) {
+          prefetchCategoryPage({
+            cacheKey: buildCategoryCacheKey({
+              target: 'movies',
+              category: movieCategory,
+              genreId: activeGenreId,
+              year: String(yearFilter),
+              israeliOnly: isIsraeliOnly,
+              page: 2,
+              batchSize: posterBatchSize
+            }),
+            path: buildMoviesFeedPath(2),
+            field: 'movies'
+          });
+        }
       })
       .catch((err) => {
         if (cancelled) return;
@@ -1137,48 +1286,73 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeGenreId, isIsraeliOnly, isMoviesSection, movieCategory, normalizedApiBase, yearFilter]);
-
-  useEffect(() => {
-    if (!isMoviesSection || baseMovies.length === 0) return;
-
-    let cancelled = false;
-    const posterUrls = baseMovies
-      .slice(0, 100)
-      .map((movie: any) => movie.poster)
-      .filter(Boolean);
-
-    const preloadInitialBatch = async () => {
-      const batchSize = 6;
-      for (let i = 0; i < posterUrls.length && !cancelled; i += batchSize) {
-        const batch = posterUrls.slice(i, i + batchSize);
-        await Promise.all(batch.map((url: string) => textureManager.loadTexture(url).catch(() => null)));
-      }
-    };
-
-    preloadInitialBatch();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [baseMovies, isMoviesSection]);
+  }, [activeGenreId, buildMoviesFeedPath, fetchCategoryPage, genre, isIsraeliOnly, isMoviesSection, movieCategory, posterBatchSize, prefetchCategoryPage, yearFilter]);
 
   // Load more movies when reaching the end
   const handleNearEnd = () => {
-    if (isMoviesSection && baseMovies.length === 0) return;
-    if (!isMoviesSection) return;
+    if (isBrowseSection && displayMovies.length === 0) return;
+    if (!isBrowseSection) return;
     if (isLoadingMore || !hasMore || navContext || showSearch) return;
     const nextPage = contentPage + 1;
-    const genreParam = activeGenreId ? `&genre_id=${activeGenreId}` : '';
-    const yearParam = yearFilter !== 'all' ? `&year=${yearFilter}` : '';
-    const categoryParam = `&category=${movieCategory}`;
-    const israeliParam = isIsraeliOnly ? '&israeli=1' : '';
+    const cacheKey = buildCategoryCacheKey(isSeriesSection
+      ? {
+          target: 'series',
+          category: seriesCategory,
+          genreLabel: seriesGenreFilter,
+          year: String(yearFilter),
+          page: nextPage,
+          batchSize: posterBatchSize
+        }
+      : {
+          target: 'movies',
+          category: movieCategory,
+          genreId: activeGenreId,
+          year: String(yearFilter),
+          israeliOnly: isIsraeliOnly,
+          page: nextPage,
+          batchSize: posterBatchSize
+        });
     setIsLoadingMore(true);
-    fetchApiJson(buildApiUrl(normalizedApiBase, `/api/movies?page=${nextPage}${genreParam}${yearParam}${categoryParam}${israeliParam}`))
-      .then(data => {
-        setBaseMovies(prev => [...prev, ...(data.movies || [])]);
+    fetchCategoryPage({
+      cacheKey,
+      path: isSeriesSection ? buildSeriesFeedPath(nextPage) : buildMoviesFeedPath(nextPage),
+      field: isSeriesSection ? 'series' : 'movies'
+    })
+      .then((data) => {
+        if (isSeriesSection) {
+          setSeriesItems((prev) => [...prev, ...data.items]);
+        } else {
+          setBaseMovies((prev) => [...prev, ...data.items]);
+        }
         setContentPage(nextPage);
         setHasMore(data.hasMore ?? false);
+        if (data.hasMore) {
+          prefetchCategoryPage({
+            cacheKey: buildCategoryCacheKey(isSeriesSection
+              ? {
+                  target: 'series',
+                  category: seriesCategory,
+                  genreLabel: seriesGenreFilter,
+                  year: String(yearFilter),
+                  page: nextPage + 1,
+                  batchSize: posterBatchSize
+                }
+              : {
+                  target: 'movies',
+                  category: movieCategory,
+                  genreId: activeGenreId,
+                  year: String(yearFilter),
+                  israeliOnly: isIsraeliOnly,
+                  page: nextPage + 1,
+                  batchSize: posterBatchSize
+                }),
+            path: isSeriesSection ? buildSeriesFeedPath(nextPage + 1) : buildMoviesFeedPath(nextPage + 1),
+            field: isSeriesSection ? 'series' : 'movies'
+          });
+        }
+      })
+      .catch((err) => {
+        setFetchError(err instanceof Error ? err.message : 'Failed to load more content.');
       })
       .finally(() => setIsLoadingMore(false));
   };
@@ -1186,14 +1360,39 @@ export default function App() {
   // Fetch series when genre switches to 'סדרות'
   useEffect(() => {
     if (!isSeriesSection) return;
-    const yearParam = yearFilter !== 'all' ? `&year=${yearFilter}` : '';
-    const categoryParam = `&category=${seriesCategory}`;
+    const cacheKey = buildCategoryCacheKey({
+      target: 'series',
+      category: seriesCategory,
+      genreLabel: seriesGenreFilter,
+      year: String(yearFilter),
+      page: 1,
+      batchSize: posterBatchSize
+    });
+    setContentPage(1);
+    setHasMore(true);
+    setIsLoadingMore(false);
+    setPosterContextMovie(null);
     let cancelled = false;
-    fetchApiJson(buildApiUrl(normalizedApiBase, `/api/series?page=1${yearParam}${categoryParam}`))
-      .then(data => {
+    fetchCategoryPage({ cacheKey, path: buildSeriesFeedPath(1), field: 'series' })
+      .then((data) => {
         if (cancelled) return;
-        setSeriesItems(data.series || []);
-        setFetchError(data.series?.length ? null : 'No series were found to load.');
+        setSeriesItems(data.items || []);
+        setHasMore(data.hasMore ?? false);
+        setFetchError(data.items?.length ? null : 'No series were found to load.');
+        if (data.hasMore) {
+          prefetchCategoryPage({
+            cacheKey: buildCategoryCacheKey({
+              target: 'series',
+              category: seriesCategory,
+              genreLabel: seriesGenreFilter,
+              year: String(yearFilter),
+              page: 2,
+              batchSize: posterBatchSize
+            }),
+            path: buildSeriesFeedPath(2),
+            field: 'series'
+          });
+        }
       })
       .catch((err) => {
         if (!cancelled) setFetchError(`Series error: ${err.message}`);
@@ -1201,7 +1400,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [isSeriesSection, normalizedApiBase, seriesCategory, yearFilter]);
+  }, [buildSeriesFeedPath, fetchCategoryPage, isSeriesSection, posterBatchSize, prefetchCategoryPage, seriesCategory, seriesGenreFilter, yearFilter]);
 
   // Navigate into series’ seasons
   const runCorridorTransition = async (label: string, action: () => Promise<void>) => {
@@ -1244,6 +1443,11 @@ export default function App() {
     setSelectedMovie(movie); // normal movie/favorite - open Telegram search
   };
 
+  const handlePosterLongPress = (movie: any) => {
+    if (!movie) return;
+    openPosterContextMenu(movie);
+  };
+
   const displayMovies = useMemo(() => {
     if (showSearch && searchResults.length > 0) {
       return searchResults.map((m: any, i: number) => ({ ...m, uniqueId: `srch-${m.id}-${m.mediaType}-${i}` }));
@@ -1283,6 +1487,41 @@ export default function App() {
     displayMoviesRef.current = displayMovies;
   }, [displayMovies]);
 
+  useEffect(() => {
+    if (!isBrowseSection || displayMovies.length === 0) return;
+
+    let cancelled = false;
+    const currentPosterIndex = Math.max(0, Math.floor((2 - cameraZ) / 5) * 2);
+    const posterUrls = displayMovies
+      .slice(currentPosterIndex, currentPosterIndex + posterBatchSize)
+      .map((movie: any) => movie.poster)
+      .filter(Boolean);
+    const nextPosterUrls = displayMovies
+      .slice(currentPosterIndex + posterBatchSize, currentPosterIndex + posterBatchSize * 2)
+      .map((movie: any) => movie.poster)
+      .filter(Boolean);
+
+    const preloadInitialBatch = async () => {
+      await textureManager.prefetch(posterUrls, 4);
+      if (cancelled) return;
+      await textureManager.prefetch(nextPosterUrls, 2);
+    };
+
+    void preloadInitialBatch();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cameraZ, displayMovies, isBrowseSection, posterBatchSize]);
+
+  useEffect(() => {
+    if (!posterContextMovie) return;
+    const exists = displayMovies.some((movie: any) => movie.uniqueId === posterContextMovie.uniqueId);
+    if (!exists) {
+      setPosterContextMovie(null);
+    }
+  }, [displayMovies, posterContextMovie]);
+
   const posterLayout = useMemo(() => {
     return displayMovies.map((movie: any, index: number) => {
       const zIndex = Math.floor(index / 2);
@@ -1295,12 +1534,15 @@ export default function App() {
     });
   }, [displayMovies]);
 
-  const renderedPosterLayout = useMemo(() => (
-    posterLayout.filter(({ position }) => {
+  const renderedPosterLayout = useMemo(() => {
+    const currentPosterIndex = Math.max(0, Math.floor((2 - cameraZ) / 5) * 2);
+    const renderStart = Math.max(0, currentPosterIndex - 8);
+    const renderCount = Math.max(posterBatchSize + 12, 18);
+    return posterLayout.slice(renderStart, renderStart + renderCount).filter(({ position }) => {
       const z = position[2] as number;
       return z < cameraZ + 28 && z > cameraZ - 90;
-    })
-  ), [cameraZ, posterLayout]);
+    });
+  }, [cameraZ, posterBatchSize, posterLayout]);
 
   const lastPosterZ = posterLayout.length > 0
     ? posterLayout[posterLayout.length - 1].position[2] as number
@@ -1384,6 +1626,7 @@ export default function App() {
     setActiveMenuItemId(item.id);
     setNavContext(null);
     setSelectedMovie(null);
+    setPosterContextMovie(null);
     closeTelegramSourceScreen();
     setSeriesGenreFilter(null);
     setActiveGenreId(null);
@@ -1450,6 +1693,7 @@ export default function App() {
     setIsBuffering(false);
     setBufferProgress(0);
     setBufferingSourceKey(null);
+    setPosterContextMovie(null);
   };
 
   const handlePlayVideo = async (telegramResult: any, mediaItem: any = selectedMovie) => {
@@ -1565,6 +1809,7 @@ export default function App() {
   };
 
   const selectedMediaEntry = selectedMovie ? getMediaEntry(selectedMovie) : null;
+  const posterContextEntry = posterContextMovie ? getMediaEntry(posterContextMovie) : null;
   const bufferingEntry = bufferingSourceKey ? playbackCacheMap[bufferingSourceKey] ?? null : null;
   const bufferTargetBytes = getPrebufferTargetBytes(bufferingEntry?.fileSizeBytes);
 
@@ -1594,14 +1839,15 @@ export default function App() {
                </Text>
              )}
           </group>
-          <TVController
-            posterLayout={posterLayout}
-            isLocked={isLocked}
-            onPosterSelect={handlePosterSelect}
-            onHeartToggle={handleHeartToggle}
-            setFocusedId={setFocusedId}
-            setFocusedHeartId={setFocusedHeartId}
-            isAnyModalOpen={!!selectedMovie || showCinemaScreen}
+            <TVController
+              posterLayout={posterLayout}
+              isLocked={isLocked}
+              onPosterSelect={handlePosterSelect}
+              onPosterLongPress={handlePosterLongPress}
+              onHeartToggle={handleHeartToggle}
+              setFocusedId={setFocusedId}
+              setFocusedHeartId={setFocusedHeartId}
+            isAnyModalOpen={!!selectedMovie || showCinemaScreen || !!posterContextMovie}
              selectedMovie={selectedMovie}
              lastPosterZ={lastPosterZ}
              onNearEnd={handleNearEnd}
@@ -1623,7 +1869,7 @@ export default function App() {
       )}
 
       {/* Red Dot Reticle */}
-      {isLocked && !selectedMovie && !showCinemaScreen && (
+      {isLocked && !selectedMovie && !showCinemaScreen && !posterContextMovie && (
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none flex items-center justify-center">
           <div className="w-2 h-2 bg-red-600 rounded-full shadow-[0_0_8px_4px_rgba(220,38,38,0.8)]"></div>
         </div>
@@ -1746,6 +1992,17 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      <PosterContextMenu
+        item={posterContextMovie}
+        isFavorite={!!posterContextEntry?.favorite}
+        onToggleFavorite={() => {
+          if (!posterContextMovie) return;
+          toggleFavoriteForItem(posterContextMovie, !posterContextEntry?.favorite);
+          closePosterContextMenu();
+        }}
+        onClose={closePosterContextMenu}
+      />
+
       <SideMenu
         isOpen={!isLocked && isRootCorridor}
         groups={sideMenuGroups}
@@ -1819,17 +2076,36 @@ export default function App() {
               )}
 
               {settingsPanel === 'general' && (
-              <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex items-center justify-between gap-4">
-                <div className="text-right">
-                  <h3 className="text-xl font-bold text-white">ניגון אוטומטי לפרק הבא</h3>
-                  <p className="mt-1 text-sm text-gray-400">הנגן מכין את הפרק הבא כ-6 שניות לפני הסיום ונותן אפשרות לבטל.</p>
+              <div className="mb-8 flex w-full flex-col gap-4">
+                <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 flex items-center justify-between gap-4">
+                  <div className="text-right">
+                    <h3 className="text-xl font-bold text-white">ניגון אוטומטי לפרק הבא</h3>
+                    <p className="mt-1 text-sm text-gray-400">הנגן מכין את הפרק הבא כ-6 שניות לפני הסיום ונותן אפשרות לבטל.</p>
+                  </div>
+                  <button
+                    onClick={() => setAutoPlayNextEpisode((value) => !value)}
+                    className={`min-w-32 rounded-full px-5 py-3 text-sm font-bold transition-colors ${autoPlayNextEpisode ? 'bg-[#00ffcc] text-black' : 'bg-white/10 text-white border border-white/10'}`}
+                  >
+                    {autoPlayNextEpisode ? 'פעיל' : 'כבוי'}
+                  </button>
                 </div>
-                <button
-                  onClick={() => setAutoPlayNextEpisode((value) => !value)}
-                  className={`min-w-32 rounded-full px-5 py-3 text-sm font-bold transition-colors ${autoPlayNextEpisode ? 'bg-[#00ffcc] text-black' : 'bg-white/10 text-white border border-white/10'}`}
-                >
-                  {autoPlayNextEpisode ? 'פעיל' : 'כבוי'}
-                </button>
+                <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6">
+                  <div className="text-right">
+                    <h3 className="text-xl font-bold text-white">Poster batch size</h3>
+                    <p className="mt-1 text-sm text-gray-400">Start each corridor with a fast first batch, then quietly prefetch the next posters behind the scenes.</p>
+                  </div>
+                  <div className="mt-5 grid grid-cols-4 gap-3">
+                    {POSTER_BATCH_SIZE_OPTIONS.map((size) => (
+                      <button
+                        key={size}
+                        onClick={() => setPosterBatchSize(size)}
+                        className={`rounded-2xl border px-4 py-4 text-base font-bold transition-colors ${posterBatchSize === size ? 'border-[#00ffcc]/40 bg-[#00ffcc] text-black' : 'border-white/10 bg-black/20 text-white/75 hover:bg-white/10 hover:text-white'}`}
+                      >
+                        {size}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
               )}
 
@@ -1979,8 +2255,8 @@ export default function App() {
                    <div>
                      <div className="mb-4 flex flex-wrap items-center gap-3">
                        {selectedMediaEntry && <WatchStatusChip status={selectedMediaEntry.watchStatus} />}
-                       <button
-                         onClick={() => upsertMediaState(selectedMovie, (entry) => ({ ...entry, snapshot: { ...entry.snapshot, ...selectedMovie }, favorite: !entry.favorite }))}
+                        <button
+                         onClick={() => toggleFavoriteForItem(selectedMovie)}
                          className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${selectedMediaEntry?.favorite ? 'border-pink-400/40 bg-pink-500/15 text-pink-100' : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'}`}
                        >
                          {selectedMediaEntry?.favorite ? <HeartOff size={16} /> : <Heart size={16} />}

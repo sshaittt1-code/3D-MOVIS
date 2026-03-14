@@ -37,6 +37,9 @@ const loginSessions = new Map<string, LoginSession>();
 
 const FALLBACK_BATCH_SIZE = 100;
 const FALLBACK_SOURCE_PAGES_PER_BATCH = 3;
+const DEFAULT_PAGE_SIZE = 20;
+const MIN_PAGE_SIZE = 10;
+const MAX_PAGE_SIZE = 40;
 const TVMAZE_GENRE_MAP: Record<number, string[]> = {
   28: ['Action'],
   35: ['Comedy'],
@@ -72,6 +75,12 @@ const readOptionalInt = (value: unknown) => {
   return readPositiveInt(value);
 };
 
+const readBoundedInt = (value: unknown, min: number, max: number, fallback: number) => {
+  const parsed = readPositiveInt(value);
+  if (!parsed) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+};
+
 const extractTelegramDocumentInfo = (message: any) => {
   const document = message?.media?.document;
   const attributes = Array.isArray(document?.attributes) ? document.attributes : [];
@@ -105,11 +114,19 @@ const matchesTvMazeGenre = (genres: string[], genreId?: number) => {
   return genres.some((genre) => allowedGenres.includes(genre));
 };
 
-const fetchTvMazeFallbackBatch = async (batchNum: number, genreId?: number) => {
-  const collected: any[] = [];
-  const startPage = Math.max(0, (batchNum - 1) * FALLBACK_SOURCE_PAGES_PER_BATCH);
+const getSourcePagesPerBatch = (pageSize: number) =>
+  Math.max(1, Math.min(5, Math.ceil(pageSize / 20) + 1));
 
-  for (let pageOffset = 0; pageOffset < FALLBACK_SOURCE_PAGES_PER_BATCH && collected.length < FALLBACK_BATCH_SIZE; pageOffset += 1) {
+const fetchTvMazeFallbackBatch = async (
+  batchNum: number,
+  genreId?: number,
+  batchSize = FALLBACK_BATCH_SIZE,
+  sourcePagesPerBatch = FALLBACK_SOURCE_PAGES_PER_BATCH
+) => {
+  const collected: any[] = [];
+  const startPage = Math.max(0, (batchNum - 1) * sourcePagesPerBatch);
+
+  for (let pageOffset = 0; pageOffset < sourcePagesPerBatch && collected.length < batchSize; pageOffset += 1) {
     const response = await fetch(`https://api.tvmaze.com/shows?page=${startPage + pageOffset}`);
     if (!response.ok) break;
 
@@ -136,8 +153,8 @@ const fetchTvMazeFallbackBatch = async (batchNum: number, genreId?: number) => {
   }
 
   return {
-    movies: collected.slice(0, FALLBACK_BATCH_SIZE),
-    hasMore: collected.length >= FALLBACK_BATCH_SIZE
+    movies: collected.slice(0, batchSize),
+    hasMore: collected.length >= batchSize
   };
 };
 
@@ -154,8 +171,8 @@ const mapTvMazeShow = (show: any) => ({
   language: show.language || 'en'
 });
 
-const fetchTvMazeSeriesBatch = async (batchNum: number, genreId?: number) => {
-  const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId);
+const fetchTvMazeSeriesBatch = async (batchNum: number, genreId?: number, batchSize = FALLBACK_BATCH_SIZE) => {
+  const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId, batchSize, getSourcePagesPerBatch(batchSize));
   return {
     series: fallback.movies.map((item) => ({ ...item, mediaType: 'tv' })),
     hasMore: fallback.hasMore
@@ -608,7 +625,9 @@ app.get('/api/movies', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
     const batchNum = readPositiveInt(req.query.page) ?? 1;
-    const startTmdbPage = (batchNum - 1) * 5 + 1;
+    const pageSize = readBoundedInt(req.query.page_size, MIN_PAGE_SIZE, MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE);
+    const sourcePagesPerBatch = getSourcePagesPerBatch(pageSize);
+    const startTmdbPage = (batchNum - 1) * sourcePagesPerBatch + 1;
     const genreId = readOptionalInt(req.query.genre_id);
     const category = readStringValue(req.query.category) || 'popular';
     const year = readOptionalInt(req.query.year);
@@ -616,7 +635,7 @@ app.get('/api/movies', async (req, res) => {
 
     if (tmdbKey) {
       try {
-      const pages = Array.from({ length: 5 }, (_, i) => startTmdbPage + i);
+      const pages = Array.from({ length: sourcePagesPerBatch }, (_, i) => startTmdbPage + i);
       const genreParam = genreId ? `&with_genres=${genreId}` : '';
       const yearParam = year ? `&primary_release_year=${year}` : '';
       const israeliParam = israeliOnly ? '&with_original_language=he' : '';
@@ -646,9 +665,9 @@ app.get('/api/movies', async (req, res) => {
         mediaType: 'movie',
         year: m.release_date ? Number.parseInt(String(m.release_date).slice(0, 4), 10) : null,
         language: m.original_language || 'en'
-      }));
+      })).slice(0, pageSize);
         if (movies.length > 0) {
-          return res.json({ movies, hasMore: batchNum < 10 });
+          return res.json({ movies, hasMore: movies.length >= pageSize });
         }
       } catch (tmdbError) {
         console.warn('TMDB movie fetch failed, falling back to TVMaze content.', tmdbError);
@@ -656,7 +675,7 @@ app.get('/api/movies', async (req, res) => {
     }
 
     // Fallback
-    const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId);
+    const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId, pageSize, getSourcePagesPerBatch(pageSize));
     fallback.movies = sortLocalCatalog(fallback.movies, category, year, israeliOnly);
     /*
       { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: '', desc: 'גנב שגונב סודות תאגידיים.', mediaType: 'movie' },
@@ -674,15 +693,17 @@ app.get('/api/series', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
     const batchNum = readPositiveInt(req.query.page) ?? 1;
+    const pageSize = readBoundedInt(req.query.page_size, MIN_PAGE_SIZE, MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE);
     const genreId = readOptionalInt(req.query.genre_id);
     const category = readStringValue(req.query.category) || 'popular';
     const year = readOptionalInt(req.query.year);
     if (!tmdbKey) {
-      const fallback = await fetchTvMazeSeriesBatch(batchNum, genreId);
+      const fallback = await fetchTvMazeSeriesBatch(batchNum, genreId, pageSize);
       return res.json({ ...fallback, series: sortLocalCatalog(fallback.series, category, year) });
     }
-    const startTmdbPage = (batchNum - 1) * 5 + 1;
-    const pages = Array.from({ length: 5 }, (_, i) => startTmdbPage + i);
+    const sourcePagesPerBatch = getSourcePagesPerBatch(pageSize);
+    const startTmdbPage = (batchNum - 1) * sourcePagesPerBatch + 1;
+    const pages = Array.from({ length: sourcePagesPerBatch }, (_, i) => startTmdbPage + i);
     const genreParam = genreId ? `&with_genres=${genreId}` : '';
     const yearParam = year ? `&first_air_date_year=${year}` : '';
     const sortBy = category === 'top_rated'
@@ -708,8 +729,8 @@ app.get('/api/series', async (req, res) => {
       mediaType: 'tv',
       year: s.first_air_date ? Number.parseInt(String(s.first_air_date).slice(0, 4), 10) : null,
       language: s.original_language || 'en'
-    }));
-    return res.json({ series, hasMore: batchNum < 10 });
+    })).slice(0, pageSize);
+    return res.json({ series, hasMore: series.length >= pageSize });
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });
   }
