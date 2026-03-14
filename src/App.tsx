@@ -1,15 +1,18 @@
 import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Text, SpotLight, useKeyboardControls } from '@react-three/drei';
+import { Text, SpotLight } from '@react-three/drei';
 import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Play, Search, LogOut, Settings, Film, X, Loader2 } from 'lucide-react';
+import { Play, Search, LogOut, Settings, Film, X, Loader2, Eye, Clock3, Heart, HeartOff, SkipForward } from 'lucide-react';
 import { App as CapApp } from '@capacitor/app';
 import { textureManager } from './utils/TextureManager';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { registerPlugin } from '@capacitor/core';
 import { applyCatalogFilters, getUniqueGenres, SORT_OPTIONS, YEAR_OPTIONS, type LibrarySection, type SortMode, type YearFilter } from './utils/catalog';
 import { isRemoteVersionNewer } from './utils/version';
+import { buildMediaKey, createDefaultMediaStateEntry, MEDIA_STATE_STORAGE_KEY, migrateLegacyMediaState, type MediaStateEntry, type WatchStatus, updateProgressState } from './utils/mediaState';
+import { findNextEpisodeInSeason, findNextSeason, shouldPrepareNextEpisode } from './utils/nextEpisode';
+import { readAutoPlayNextEpisode, writeAutoPlayNextEpisode } from './utils/playerSettings';
 
 const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
@@ -59,6 +62,33 @@ const fetchApiJson = async (path: string, init: RequestInit = {}) => {
 };
 
 const buildApiUrl = (base: string, path: string) => `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+
+const WatchStatusChip = ({ status }: { status: WatchStatus }) => {
+  if (status === 'unwatched') return null;
+  const Icon = status === 'watched' ? Eye : Clock3;
+  const label = status === 'watched' ? 'נצפה' : 'בתהליך צפייה';
+  const tone = status === 'watched'
+    ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200'
+    : 'border-amber-400/40 bg-amber-500/15 text-amber-100';
+
+  return (
+    <div className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold ${tone}`}>
+      <Icon size={16} />
+      <span>{label}</span>
+    </div>
+  );
+};
+
+type PreparedPlayback = {
+  url: string;
+  title: string;
+  subtitleUrl?: string;
+  mediaItem: any;
+  peerId: string;
+  messageId: number;
+};
+
+type ActivePlayback = PreparedPlayback;
 
 // --- 3D Components ---
 const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, setFocusedId, setFocusedHeartId, isAnyModalOpen, selectedMovie, lastPosterZ, onNearEnd, onCameraMove }: any) => {
@@ -175,7 +205,7 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, s
   return null;
 };
 
-const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocused }: any) => {
+const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocused, watchStatus }: any) => {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const [showText, setShowText] = useState(false);
   const groupRef = useRef<THREE.Group>(null!);
@@ -199,6 +229,8 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
   });
 
   const heartColor = isFavorited ? '#ff3355' : isHeartFocused ? '#ff8899' : '#555555';
+  const watchBadgeColor = watchStatus === 'watched' ? '#22c55e' : watchStatus === 'in_progress' ? '#f59e0b' : null;
+  const watchBadgeGlyph = watchStatus === 'watched' ? '◉' : watchStatus === 'in_progress' ? '◷' : null;
 
   return (
     <group position={position} rotation={rotation} ref={groupRef}>
@@ -218,6 +250,17 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
         <circleGeometry args={[0.38, 16]} />
         <meshBasicMaterial color={heartColor} transparent opacity={0.85} />
       </mesh>
+      {watchBadgeColor && (
+        <mesh position={[-1.05, 2.05, 0.05]}>
+          <circleGeometry args={[0.34, 16]} />
+          <meshBasicMaterial color={watchBadgeColor} transparent opacity={0.88} />
+        </mesh>
+      )}
+      {watchBadgeGlyph && showText && (
+        <Text position={[-1.05, 2.05, 0.09]} fontSize={0.28} color="#04120f" anchorX="center" anchorY="middle">
+          {watchBadgeGlyph}
+        </Text>
+      )}
       {showText && (
         <Text position={[1.05, 2.05, 0.09]} fontSize={0.42} color={heartColor} anchorX="center" anchorY="middle">
           {isFavorited ? '❤' : isHeartFocused ? '❤' : '♡'}
@@ -279,25 +322,157 @@ export default function App() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
-  // Favorites
-  const [favorites, setFavorites] = useState<any[]>(() => {
-    try { return JSON.parse(localStorage.getItem('favorites') || '[]'); } catch { return []; }
+  const [mediaStateMap, setMediaStateMap] = useState<Record<string, MediaStateEntry>>(() => {
+    try {
+      const savedState = JSON.parse(localStorage.getItem(MEDIA_STATE_STORAGE_KEY) || '{}');
+      if (savedState && Object.keys(savedState).length > 0) return savedState;
+    } catch {}
+
+    try {
+      const legacyFavorites = JSON.parse(localStorage.getItem('favorites') || '[]');
+      const legacyHistory = JSON.parse(localStorage.getItem('watch_history') || '[]');
+      return migrateLegacyMediaState(legacyFavorites, legacyHistory);
+    } catch {
+      return {};
+    }
   });
-  useEffect(() => { localStorage.setItem('favorites', JSON.stringify(favorites)); }, [favorites]);
+  const [autoPlayNextEpisode, setAutoPlayNextEpisode] = useState<boolean>(() => {
+    return readAutoPlayNextEpisode(localStorage, true);
+  });
+
+  useEffect(() => {
+    localStorage.setItem(MEDIA_STATE_STORAGE_KEY, JSON.stringify(mediaStateMap));
+  }, [mediaStateMap]);
+
+  useEffect(() => {
+    writeAutoPlayNextEpisode(localStorage, autoPlayNextEpisode);
+  }, [autoPlayNextEpisode]);
+
+  const favorites = useMemo(() => Object.values(mediaStateMap)
+    .filter((entry) => entry.favorite)
+    .sort((left, right) => (right.lastWatchedAt || 0) - (left.lastWatchedAt || 0))
+    .map((entry) => entry.snapshot), [mediaStateMap]);
+
+  const watchHistory = useMemo(() => Object.values(mediaStateMap)
+    .filter((entry) => entry.lastWatchedAt)
+    .sort((left, right) => (right.lastWatchedAt || 0) - (left.lastWatchedAt || 0))
+    .map((entry) => entry.snapshot), [mediaStateMap]);
+
+  const getMediaEntry = (item: any) => mediaStateMap[buildMediaKey(item)] ?? createDefaultMediaStateEntry(item);
+
+  const upsertMediaState = (item: any, updater: (current: MediaStateEntry) => MediaStateEntry) => {
+    const key = buildMediaKey(item);
+    if (!key) return;
+    setMediaStateMap((current) => {
+      const base = current[key] ?? createDefaultMediaStateEntry(item);
+      return {
+        ...current,
+        [key]: updater(base)
+      };
+    });
+  };
 
   const handleHeartToggle = (uniqueId: string) => {
-    setFavorites(prev => {
-      const allItems = [...baseMovies, ...seriesItems].map((m, i) => ({ ...m, uniqueId: `${m.id}-${i}` }));
-      const item = navContext?.type === 'seasons'
-        ? navContext.seasons.find((s: any) => s.uniqueId === uniqueId)
-        : navContext?.type === 'episodes'
-          ? navContext.episodes.find((e: any) => e.uniqueId === uniqueId)
-          : allItems.find(m => m.uniqueId === uniqueId);
-      if (!item) return prev;
-      const baseItem = { ...item, uniqueId: undefined };
-      const exists = prev.some(f => f.id === baseItem.id && f.mediaType === baseItem.mediaType);
-      return exists ? prev.filter(f => !(f.id === baseItem.id && f.mediaType === baseItem.mediaType)) : [...prev, baseItem];
-    });
+    const allItems = displayMoviesRef.current;
+    const item = navContext?.type === 'seasons'
+      ? navContext.seasons.find((s: any) => s.uniqueId === uniqueId)
+      : navContext?.type === 'episodes'
+        ? navContext.episodes.find((e: any) => e.uniqueId === uniqueId)
+        : allItems.find(m => m.uniqueId === uniqueId);
+    if (!item) return;
+
+    upsertMediaState(item, (entry) => ({
+      ...entry,
+      snapshot: { ...entry.snapshot, ...item },
+      favorite: !entry.favorite
+    }));
+  };
+
+  const searchTelegramForItem = async (item: any) => {
+    const queryBase = item.mediaType === 'episode'
+      ? `${item.seriesTitle || navContext?.seriesTitle || ''} S${String(item.season_number || item.seasonNum || 0).padStart(2, '0')}E${String(item.episode_number || 0).padStart(2, '0')}`
+      : item.title;
+    const cleanQuery = queryBase.split('(')[0].trim();
+    if (!cleanQuery) return [];
+    const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/tg/search?query=${encodeURIComponent(cleanQuery)}`));
+    return data.results || [];
+  };
+
+  const buildPreparedPlayback = async (telegramResult: any, mediaItem: any): Promise<PreparedPlayback> => {
+    const sessionStr = localStorage.getItem('tg_session') || '';
+    const videoUrl = buildApiUrl(normalizedApiBase, `/api/tg/stream/${telegramResult.peerId}/${telegramResult.id}?session=${sessionStr}`);
+    let subtitleUrl: string | undefined;
+
+    try {
+      const subData = await fetch(buildApiUrl(normalizedApiBase, `/api/tg/search-subtitles?query=${encodeURIComponent(mediaItem.title || telegramResult.title)}`)).then(res => res.json());
+      subtitleUrl = subData.results?.[0]
+        ? buildApiUrl(normalizedApiBase, `/api/tg/subtitle/${subData.results[0].peerId}/${subData.results[0].id}`)
+        : undefined;
+    } catch {
+      subtitleUrl = undefined;
+    }
+
+    return {
+      url: videoUrl,
+      title: mediaItem.title || telegramResult.title,
+      subtitleUrl,
+      mediaItem,
+      peerId: telegramResult.peerId,
+      messageId: telegramResult.id
+    };
+  };
+
+  const resolveNextEpisode = async (episode: any) => {
+    if (episode?.mediaType !== 'episode' || !episode.seriesId) return null;
+
+    const currentSeasonNumber = episode.season_number || episode.seasonNum || 0;
+    const currentEpisodes = navContext?.type === 'episodes' && navContext.seriesId === episode.seriesId && navContext.seasonNum === currentSeasonNumber
+      ? navContext.episodes
+      : [];
+    const inSeasonNext = currentEpisodes.length > 0 ? findNextEpisodeInSeason(episode, currentEpisodes) : null;
+    if (inSeasonNext) return { ...inSeasonNext, seriesTitle: episode.seriesTitle || navContext?.seriesTitle };
+
+    const seasonsData = await fetch(buildApiUrl(normalizedApiBase, `/api/series/${episode.seriesId}`)).then((response) => response.json());
+    const seasons = seasonsData.seasons || [];
+    const nextSeason = findNextSeason(currentSeasonNumber, seasons);
+    if (!nextSeason) return null;
+
+    const nextSeasonData = await fetch(buildApiUrl(normalizedApiBase, `/api/series/${episode.seriesId}/season/${nextSeason.season_number}`)).then((response) => response.json());
+    const nextEpisodes = nextSeasonData.episodes || [];
+    if (nextEpisodes.length === 0) return null;
+
+    return {
+      ...nextEpisodes[0],
+      seriesTitle: episode.seriesTitle || navContext?.seriesTitle || seasonsData.seriesTitle
+    };
+  };
+
+  const prepareUpcomingEpisode = async (episode: any) => {
+    const activeKey = buildMediaKey(episode);
+    if (!activeKey || preloadAttemptKeyRef.current === activeKey || dismissedAutoPlayRef.current === activeKey) return;
+    preloadAttemptKeyRef.current = activeKey;
+
+    try {
+      const nextEpisode = await resolveNextEpisode(episode);
+      if (!nextEpisode) return;
+      const telegramResults = await searchTelegramForItem(nextEpisode);
+      if (!telegramResults.length) return;
+      const prepared = await buildPreparedPlayback(telegramResults[0], nextEpisode);
+      setPreparedNextMedia(prepared);
+    } catch {
+      setPreparedNextMedia(null);
+    }
+  };
+
+  const closePlayer = () => {
+    if (activeMedia?.mediaItem && videoRef.current) {
+      const currentTime = videoRef.current.currentTime || 0;
+      const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : 0;
+      upsertMediaState(activeMedia.mediaItem, (entry) => updateProgressState(activeMedia.mediaItem, entry, currentTime, duration));
+    }
+    setActiveMedia(null);
+    setPreparedNextMedia(null);
+    setNextEpisodeOverlay(null);
   };
 
   // Buffering States
@@ -314,7 +489,9 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [activeMedia, setActiveMedia] = useState<{ url: string, title: string, subtitleUrl?: string } | null>(null);
+  const [activeMedia, setActiveMedia] = useState<ActivePlayback | null>(null);
+  const [preparedNextMedia, setPreparedNextMedia] = useState<PreparedPlayback | null>(null);
+  const [nextEpisodeOverlay, setNextEpisodeOverlay] = useState<{ title: string; remainingSeconds: number } | null>(null);
 
   const [loginId, setLoginId] = useState('');
 
@@ -331,17 +508,18 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearchingTmdb, setIsSearchingTmdb] = useState(false);
 
-  // Watch history
-  const [watchHistory, setWatchHistory] = useState<any[]>(() => {
-    try { return JSON.parse(localStorage.getItem('watch_history') || '[]'); } catch { return []; }
-  });
-  useEffect(() => { localStorage.setItem('watch_history', JSON.stringify(watchHistory)); }, [watchHistory]);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const playbackProgressRef = useRef(0);
+  const preloadAttemptKeyRef = useRef<string | null>(null);
+  const dismissedAutoPlayRef = useRef<string | null>(null);
+  const displayMoviesRef = useRef<any[]>([]);
 
   const saveToHistory = (movie: any) => {
-    setWatchHistory(prev => {
-      const without = prev.filter(h => !(h.id === movie.id && h.mediaType === movie.mediaType));
-      return [{ ...movie, watchedAt: Date.now() }, ...without].slice(0, 50);
-    });
+    upsertMediaState(movie, (entry) => ({
+      ...entry,
+      snapshot: { ...entry.snapshot, ...movie },
+      lastWatchedAt: Date.now()
+    }));
   };
 
   // Dynamic genres from /api/genres
@@ -378,13 +556,21 @@ export default function App() {
       .catch(() => setTgStatus('loggedOut'));
   }, [normalizedApiBase]);
 
+  useEffect(() => {
+    playbackProgressRef.current = 0;
+    preloadAttemptKeyRef.current = null;
+    dismissedAutoPlayRef.current = null;
+    setPreparedNextMedia(null);
+    setNextEpisodeOverlay(null);
+  }, [activeMedia?.mediaItem?.id, activeMedia?.mediaItem?.season_number, activeMedia?.mediaItem?.episode_number]);
+
   const exitPressCount = useRef(0);
   const exitTimeout = useRef<any>(null);
 
   // Hardware Back Button Interceptor for Android TV (so remote 'Back' doesn't kill the app)
   useEffect(() => {
     const handleBackEvent = () => {
-      if (activeMedia) { setActiveMedia(null); return; }
+      if (activeMedia) { closePlayer(); return; }
       if (showCinemaScreen) { setShowCinemaScreen(false); return; }
       if (showSettings) { setShowSettings(false); return; }
       if (tgStatus === 'phoneInput' || tgStatus === 'codeInput' || tgStatus === 'passwordInput') {
@@ -600,7 +786,7 @@ export default function App() {
   const enterSeason = async (season: any) => {
     await runCorridorTransition(`Entering ${season.title}`, async () => {
       const data = await fetch(buildApiUrl(normalizedApiBase, `/api/series/${season.seriesId}/season/${season.season_number}`)).then(r => r.json());
-      const episodes = (data.episodes || []).map((e: any, i: number) => ({ ...e, uniqueId: `ep-${e.id}-${i}` }));
+      const episodes = (data.episodes || []).map((e: any, i: number) => ({ ...e, seriesTitle: (navContext as any)?.seriesTitle, uniqueId: `ep-${e.id}-${i}` }));
       setNavContext(prev => ({
         type: 'episodes',
         seriesId: (prev as any).seriesId,
@@ -656,6 +842,10 @@ export default function App() {
     return filtered.map((m: any, i: number) => ({ ...m, uniqueId: `${m.id}-${i}` }));
   }, [baseMovies, favorites, genre, isFavoritesSection, isHistorySection, isSeriesSection, navContext, searchResults, seriesGenreFilter, seriesItems, showSearch, shuffleSeed, sortMode, watchHistory, yearFilter]);
 
+  useEffect(() => {
+    displayMoviesRef.current = displayMovies;
+  }, [displayMovies]);
+
   const posterLayout = useMemo(() => {
     return displayMovies.map((movie: any, index: number) => {
       const zIndex = Math.floor(index / 2);
@@ -689,12 +879,22 @@ export default function App() {
       .catch(() => setIsSearchingTmdb(false));
   };
 
-  const handlePlayVideo = async (peerId: string, messageId: number, title: string) => {
+  const openTelegramSearch = async (item: any) => {
+    setIsSearchingTg(true);
+    setShowCinemaScreen(true);
+    try {
+      const results = await searchTelegramForItem(item);
+      setTgSearchResults(results);
+    } finally {
+      setIsSearchingTg(false);
+    }
+  };
+
+  const handlePlayVideo = async (telegramResult: any, mediaItem: any = selectedMovie) => {
+    if (!mediaItem) return;
     setIsBuffering(true);
     setBufferProgress(0);
-    const sessionStr = localStorage.getItem('tg_session') || '';
-    if (selectedMovie) saveToHistory(selectedMovie);
-    const videoUrl = buildApiUrl(normalizedApiBase, `/api/tg/stream/${peerId}/${messageId}?session=${sessionStr}`);
+    saveToHistory(mediaItem);
     
     let progress = 0;
     const interval = setInterval(() => {
@@ -703,18 +903,71 @@ export default function App() {
       if (progress >= 100) {
         clearInterval(interval);
         setIsBuffering(false);
-        fetch(buildApiUrl(normalizedApiBase, `/api/tg/search-subtitles?query=${encodeURIComponent(title)}`))
-          .then(res => res.json())
-          .then(subData => {
-            const subUrl = subData.results?.[0]
-              ? buildApiUrl(normalizedApiBase, `/api/tg/subtitle/${subData.results[0].peerId}/${subData.results[0].id}`)
-              : undefined;
-            setActiveMedia({ url: videoUrl, title, subtitleUrl: subUrl });
+        buildPreparedPlayback(telegramResult, mediaItem)
+          .then((prepared) => {
+            setShowCinemaScreen(false);
+            setSelectedMovie(null);
+            setActiveMedia(prepared);
           })
-          .catch(() => setActiveMedia({ url: videoUrl, title }));
+          .catch(() => setActiveMedia(null));
       }
     }, 300);
   };
+
+  const handleVideoTimeUpdate = () => {
+    if (!activeMedia?.mediaItem || !videoRef.current) return;
+    const video = videoRef.current;
+    const currentTime = video.currentTime || 0;
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    if (duration <= 0) return;
+
+    const now = Date.now();
+    if (now - playbackProgressRef.current > 1500) {
+      playbackProgressRef.current = now;
+      upsertMediaState(activeMedia.mediaItem, (entry) => updateProgressState(activeMedia.mediaItem, entry, currentTime, duration));
+    }
+
+    const currentKey = buildMediaKey(activeMedia.mediaItem);
+    if (activeMedia.mediaItem.mediaType === 'episode' && shouldPrepareNextEpisode(currentTime, duration, !!preparedNextMedia || preloadAttemptKeyRef.current === currentKey, autoPlayNextEpisode) && dismissedAutoPlayRef.current !== currentKey) {
+      void prepareUpcomingEpisode(activeMedia.mediaItem);
+    }
+
+    if (preparedNextMedia && dismissedAutoPlayRef.current !== currentKey) {
+      const remainingSeconds = Math.max(1, Math.ceil(duration - currentTime));
+      setNextEpisodeOverlay((current) =>
+        current?.title === preparedNextMedia.mediaItem.title && current.remainingSeconds === remainingSeconds
+          ? current
+          : {
+              title: preparedNextMedia.mediaItem.title,
+              remainingSeconds
+            }
+      );
+    }
+  };
+
+  const dismissUpcomingAutoplay = () => {
+    if (!activeMedia?.mediaItem) return;
+    const activeKey = buildMediaKey(activeMedia.mediaItem);
+    dismissedAutoPlayRef.current = activeKey;
+    setPreparedNextMedia(null);
+    setNextEpisodeOverlay(null);
+  };
+
+  const handleVideoEnded = () => {
+    if (activeMedia?.mediaItem && videoRef.current) {
+      const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : activeMedia.mediaItem.durationSeconds || 0;
+      upsertMediaState(activeMedia.mediaItem, (entry) => updateProgressState(activeMedia.mediaItem, entry, duration, duration));
+    }
+
+    if (autoPlayNextEpisode && preparedNextMedia) {
+      setActiveMedia(preparedNextMedia);
+      return;
+    }
+
+    closePlayer();
+  };
+
+  const selectedMediaEntry = selectedMovie ? getMediaEntry(selectedMovie) : null;
 
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative text-white font-sans" dir="rtl">
@@ -729,8 +982,9 @@ export default function App() {
                   key={movie.uniqueId}
                   movie={movie}
                   isFocused={focusedId === movie.uniqueId}
-                  isFavorited={favorites.some(f => f.id === movie.id && f.mediaType === movie.mediaType)}
+                  isFavorited={getMediaEntry(movie).favorite}
                   isHeartFocused={focusedHeartId === movie.uniqueId}
+                  watchStatus={getMediaEntry(movie).watchStatus}
                   position={position}
                   rotation={rotation}
                 />
@@ -990,6 +1244,19 @@ export default function App() {
                 </div>
               )}
 
+              <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex items-center justify-between gap-4">
+                <div className="text-right">
+                  <h3 className="text-xl font-bold text-white">ניגון אוטומטי לפרק הבא</h3>
+                  <p className="mt-1 text-sm text-gray-400">הנגן מכין את הפרק הבא כ-6 שניות לפני הסיום ונותן אפשרות לבטל.</p>
+                </div>
+                <button
+                  onClick={() => setAutoPlayNextEpisode((value) => !value)}
+                  className={`min-w-32 rounded-full px-5 py-3 text-sm font-bold transition-colors ${autoPlayNextEpisode ? 'bg-[#00ffcc] text-black' : 'bg-white/10 text-white border border-white/10'}`}
+                >
+                  {autoPlayNextEpisode ? 'פעיל' : 'כבוי'}
+                </button>
+              </div>
+
               <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex flex-col gap-6">
                 {!otaVersion && (
                   <button onClick={() => {
@@ -1064,7 +1331,7 @@ export default function App() {
               <div className="flex-1 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-6 p-4">
                 {isSearchingTg ? <div className="col-span-full text-center"><Loader2 className="animate-spin mx-auto w-16 h-16 text-blue-400" /></div> :
                   tgSearchResults.map((res, i) => (
-                    <button autoFocus={i === 0} key={i} onClick={() => handlePlayVideo(res.peerId, res.id, res.title)} className="bg-white/5 border border-white/10 p-8 rounded-[30px] text-right hover:border-blue-500 flex items-center gap-6 focus:ring-4 focus:ring-blue-400">
+                    <button autoFocus={i === 0} key={i} onClick={() => handlePlayVideo(res, selectedMovie)} className="bg-white/5 border border-white/10 p-8 rounded-[30px] text-right hover:border-blue-500 flex items-center gap-6 focus:ring-4 focus:ring-blue-400">
                       <Play fill="#3b82f6" size={32} />
                       <div className="flex-1 min-w-0"><h3 className="font-bold text-2xl truncate">{res.title}</h3><p className="text-gray-400 mt-2">{res.size} • {res.chatName}</p></div>
                     </button>
@@ -1079,19 +1346,46 @@ export default function App() {
       <AnimatePresence>
         {activeMedia && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[100] bg-black">
+            <AnimatePresence>
+              {nextEpisodeOverlay && autoPlayNextEpisode && (
+                <motion.div
+                  initial={{ opacity: 0, y: -12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -12 }}
+                  className="absolute top-8 right-8 z-[115] rounded-[28px] border border-white/15 bg-black/35 px-6 py-5 text-right shadow-[0_0_30px_rgba(0,255,204,0.15)] backdrop-blur-md"
+                >
+                  <div className="flex items-start gap-4">
+                    <div className="rounded-full bg-[#00ffcc]/15 p-3 text-[#00ffcc]">
+                      <SkipForward size={18} />
+                    </div>
+                    <div>
+                      <p className="text-sm text-white/70">הפרק הבא מוכן</p>
+                      <p className="mt-1 text-lg font-bold text-white">{nextEpisodeOverlay.title}</p>
+                      <p className="mt-1 text-sm text-white/70">מתחיל בעוד {nextEpisodeOverlay.remainingSeconds} שניות</p>
+                      <button autoFocus onClick={dismissUpcomingAutoplay} className="mt-4 rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">
+                        לא מעוניין
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
             <video 
+               ref={videoRef}
                src={activeMedia.url} 
                controls 
                autoPlay 
                className="w-full h-full object-contain"
                crossOrigin="anonymous"
-               onEnded={() => setActiveMedia(null)}
+               onTimeUpdate={handleVideoTimeUpdate}
+               onPause={handleVideoTimeUpdate}
+               onEnded={handleVideoEnded}
             >
                {activeMedia.subtitleUrl && (
                  <track kind="subtitles" src={activeMedia.subtitleUrl} srcLang="he" label="Hebrew" default />
                )}
             </video>
-            <button onClick={() => setActiveMedia(null)} className="absolute top-8 left-8 z-[110] bg-black/50 p-4 rounded-full text-white hover:bg-white/20 transition-all font-bold">
+            <button onClick={closePlayer} className="absolute top-8 left-8 z-[110] bg-black/50 p-4 rounded-full text-white hover:bg-white/20 transition-all font-bold">
                סגור נגן
             </button>
           </motion.div>
@@ -1102,7 +1396,21 @@ export default function App() {
            <div className="bg-[#0a0a0a] border border-[#00ffcc]/40 rounded-[40px] p-12 flex gap-12 max-w-5xl shadow-2xl">
               <img src={selectedMovie.poster} className="w-80 rounded-3xl object-cover shadow-2xl" />
               <div className="flex flex-col flex-1">
-                 <h2 className="text-5xl font-bold mb-6">{selectedMovie.title}</h2>
+                 <div className="mb-6 flex items-start justify-between gap-4">
+                   <div>
+                     <div className="mb-4 flex flex-wrap items-center gap-3">
+                       {selectedMediaEntry && <WatchStatusChip status={selectedMediaEntry.watchStatus} />}
+                       <button
+                         onClick={() => upsertMediaState(selectedMovie, (entry) => ({ ...entry, snapshot: { ...entry.snapshot, ...selectedMovie }, favorite: !entry.favorite }))}
+                         className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${selectedMediaEntry?.favorite ? 'border-pink-400/40 bg-pink-500/15 text-pink-100' : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'}`}
+                       >
+                         {selectedMediaEntry?.favorite ? <HeartOff size={16} /> : <Heart size={16} />}
+                         <span>{selectedMediaEntry?.favorite ? 'הסר ממועדפים' : 'הוסף למועדפים'}</span>
+                       </button>
+                     </div>
+                     <h2 className="text-5xl font-bold">{selectedMovie.title}</h2>
+                   </div>
+                 </div>
                  <p className="text-xl text-gray-400 mb-10 leading-relaxed overflow-y-auto max-h-48">{selectedMovie.desc}</p>
                  <div className="flex gap-6 mt-auto">
                     <button onClick={() => {
@@ -1110,10 +1418,7 @@ export default function App() {
                         setTgStatus('phoneInput');
                         return;
                       }
-                      setIsSearchingTg(true); setShowCinemaScreen(true);
-                      const cleanTitle = selectedMovie.title.split('(')[0].trim();
-                      fetchApiJson(`${apiBase.replace(/\/$/, '')}/api/tg/search?query=${encodeURIComponent(cleanTitle)}`)
-                        .then(data => { setTgSearchResults(data.results || []); setIsSearchingTg(false); });
+                      void openTelegramSearch(selectedMovie);
                     }} className="flex-1 py-5 bg-[#2AABEE] text-white text-xl font-bold rounded-2xl shadow-xl focus:ring-4 focus:ring-white">לצפייה</button>
                     <button onClick={() => setSelectedMovie(null)} className="px-10 py-5 bg-white/10 rounded-2xl focus:ring-4 focus:ring-white">חזור</button>
                  </div>
