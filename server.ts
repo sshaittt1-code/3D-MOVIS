@@ -120,6 +120,37 @@ const fetchTvMazeSeriesBatch = async (batchNum: number, genreId?: number) => {
   };
 };
 
+const sortLocalCatalog = (items: any[], category: string, year?: number, israeliOnly = false) => {
+  let filtered = [...items];
+  const resolveYear = (item: any) => item.year
+    || (item.release_date ? Number.parseInt(String(item.release_date).slice(0, 4), 10) : null)
+    || (item.first_air_date ? Number.parseInt(String(item.first_air_date).slice(0, 4), 10) : null)
+    || (item.premiered ? Number.parseInt(String(item.premiered).slice(0, 4), 10) : null);
+  const resolveRating = (item: any) => item.rating ?? item.vote_average ?? item.rating?.average ?? 0;
+  const resolvePopularity = (item: any) => item.popularity ?? item.weight ?? 0;
+  const resolveLanguage = (item: any) => item.language ?? item.original_language ?? '';
+
+  if (year) {
+    filtered = filtered.filter((item) => resolveYear(item) === year);
+  }
+
+  if (israeliOnly) {
+    filtered = filtered.filter((item) => resolveLanguage(item) === 'he');
+  }
+
+  if (category === 'top_rated') {
+    filtered.sort((left, right) => resolveRating(right) - resolveRating(left));
+  } else if (category === 'random') {
+    filtered.sort(() => Math.random() - 0.5);
+  } else if (category === 'new_releases' || category === 'recently_active') {
+    filtered.sort((left, right) => (resolveYear(right) || 0) - (resolveYear(left) || 0));
+  } else {
+    filtered.sort((left, right) => resolvePopularity(right) - resolvePopularity(left));
+  }
+
+  return filtered;
+};
+
 const fetchTvMazeShowContext = async (showId: number) => {
   const [showResponse, episodesResponse] = await Promise.all([
     fetch(`https://api.tvmaze.com/shows/${showId}`),
@@ -491,19 +522,29 @@ app.get('/api/movies', async (req, res) => {
     const batchNum = Math.max(1, parseInt(req.query.page as string || '1', 10));
     const startTmdbPage = (batchNum - 1) * 5 + 1;
     const genreId = req.query.genre_id ? parseInt(req.query.genre_id as string, 10) : undefined;
+    const category = String(req.query.category || 'popular');
+    const year = req.query.year ? parseInt(req.query.year as string, 10) : undefined;
+    const israeliOnly = req.query.israeli === '1';
 
     if (tmdbKey) {
       try {
       const pages = Array.from({ length: 5 }, (_, i) => startTmdbPage + i);
       const genreParam = genreId ? `&with_genres=${genreId}` : '';
-      const endpoint = genreParam
-        ? `https://api.themoviedb.org/3/discover/movie?sort_by=popularity.desc&api_key=${tmdbKey}&language=he-IL${genreParam}&page=`
-        : `https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=`;
-      const fetchPromises = pages.map(page =>
-        fetch(`${endpoint}${page}`).then(r => r.json())
-      );
-      const results = await Promise.all(fetchPromises);
-      const allMovies = results.flatMap(data => data.results || []);
+      const yearParam = year ? `&primary_release_year=${year}` : '';
+      const israeliParam = israeliOnly ? '&with_original_language=he' : '';
+      const shouldUseDiscover = category === 'top_rated' || category === 'new_releases' || category === 'random' || !!genreParam || !!yearParam || !!israeliParam;
+      const sortBy = category === 'top_rated'
+        ? 'vote_average.desc&vote_count.gte=200'
+        : category === 'new_releases'
+          ? 'primary_release_date.desc'
+          : 'popularity.desc';
+      const endpoint = category === 'trending'
+        ? `https://api.themoviedb.org/3/trending/movie/week?api_key=${tmdbKey}&language=he-IL&page=`
+        : shouldUseDiscover
+          ? `https://api.themoviedb.org/3/discover/movie?sort_by=${sortBy}&api_key=${tmdbKey}&language=he-IL${genreParam}${yearParam}${israeliParam}&page=`
+          : `https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=`;
+      const results = await Promise.all(pages.map(page => fetch(`${endpoint}${page}`).then(r => r.json())));
+      const allMovies = sortLocalCatalog(results.flatMap(data => data.results || []), category);
 
       const movies = allMovies.filter((m: any) => m.poster_path).map((m: any) => ({
         id: m.id,
@@ -528,6 +569,7 @@ app.get('/api/movies', async (req, res) => {
 
     // Fallback
     const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId);
+    fallback.movies = sortLocalCatalog(fallback.movies, category, year, israeliOnly);
     /*
       { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: '', desc: 'גנב שגונב סודות תאגידיים.', mediaType: 'movie' },
       { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', trailer: '', desc: 'צוות חוקרים נוסע דרך חור תולעת.', mediaType: 'movie' },
@@ -545,15 +587,28 @@ app.get('/api/series', async (req, res) => {
     const tmdbKey = process.env.TMDB_API_KEY;
     const batchNum = Math.max(1, parseInt(req.query.page as string || '1', 10));
     const genreId = req.query.genre_id ? parseInt(req.query.genre_id as string, 10) : undefined;
-    if (!tmdbKey) return res.json(await fetchTvMazeSeriesBatch(batchNum, genreId));
+    const category = String(req.query.category || 'popular');
+    const year = req.query.year ? parseInt(req.query.year as string, 10) : undefined;
+    if (!tmdbKey) {
+      const fallback = await fetchTvMazeSeriesBatch(batchNum, genreId);
+      return res.json({ ...fallback, series: sortLocalCatalog(fallback.series, category, year) });
+    }
     const startTmdbPage = (batchNum - 1) * 5 + 1;
     const pages = Array.from({ length: 5 }, (_, i) => startTmdbPage + i);
     const genreParam = genreId ? `&with_genres=${genreId}` : '';
-    const fetchPromises = pages.map(page =>
-      fetch(`https://api.themoviedb.org/3/discover/tv?sort_by=popularity.desc&api_key=${tmdbKey}&language=he-IL${genreParam}&page=${page}`).then(r => r.json())
-    );
-    const results = await Promise.all(fetchPromises);
-    const allShows = results.flatMap(d => d.results || []);
+    const yearParam = year ? `&first_air_date_year=${year}` : '';
+    const sortBy = category === 'top_rated'
+      ? 'vote_average.desc&vote_count.gte=80'
+      : category === 'recently_active'
+        ? 'first_air_date.desc'
+        : 'popularity.desc';
+    const endpoint = category === 'trending'
+      ? `https://api.themoviedb.org/3/trending/tv/week?api_key=${tmdbKey}&language=he-IL&page=`
+      : `https://api.themoviedb.org/3/discover/tv?sort_by=${sortBy}&api_key=${tmdbKey}&language=he-IL${genreParam}${yearParam}&page=`;
+    const results = await Promise.all(pages.map(page =>
+      fetch(`${endpoint}${page}`).then(r => r.json())
+    ));
+    const allShows = sortLocalCatalog(results.flatMap(d => d.results || []), category);
     const series = allShows.filter((s: any) => s.poster_path).map((s: any) => ({
       id: s.id,
       title: s.name,

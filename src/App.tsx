@@ -13,6 +13,8 @@ import { isRemoteVersionNewer } from './utils/version';
 import { buildMediaKey, createDefaultMediaStateEntry, MEDIA_STATE_STORAGE_KEY, migrateLegacyMediaState, type MediaStateEntry, type WatchStatus, updateProgressState } from './utils/mediaState';
 import { findNextEpisodeInSeason, findNextSeason, shouldPrepareNextEpisode } from './utils/nextEpisode';
 import { readAutoPlayNextEpisode, writeAutoPlayNextEpisode } from './utils/playerSettings';
+import { SideMenu } from './components/SideMenu';
+import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
 
 const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
@@ -62,6 +64,12 @@ const fetchApiJson = async (path: string, init: RequestInit = {}) => {
 };
 
 const buildApiUrl = (base: string, path: string) => `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+
+const SETTINGS_TABS: Array<{ id: SettingsPanel; label: string }> = [
+  { id: 'general', label: 'כללי' },
+  { id: 'telegram', label: 'טלגרם' },
+  { id: 'updates', label: 'עדכונים' }
+];
 
 const WatchStatusChip = ({ status }: { status: WatchStatus }) => {
   if (status === 'unwatched') return null;
@@ -313,6 +321,11 @@ export default function App() {
   const [sortMode, setSortMode] = useState<SortMode>('popular');
   const [yearFilter, setYearFilter] = useState<YearFilter>('all');
   const [seriesGenreFilter, setSeriesGenreFilter] = useState<string | null>(null);
+  const [movieCategory, setMovieCategory] = useState<FeedCategory>('popular');
+  const [seriesCategory, setSeriesCategory] = useState<FeedCategory>('popular');
+  const [isIsraeliOnly, setIsIsraeliOnly] = useState(false);
+  const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>('general');
+  const [activeMenuItemId, setActiveMenuItemId] = useState('quick-movies');
   const [shuffleSeed, setShuffleSeed] = useState(() => Date.now());
   const [cameraZ, setCameraZ] = useState(2);
   const [transitionLabel, setTransitionLabel] = useState<string | null>(null);
@@ -564,44 +577,50 @@ export default function App() {
     setNextEpisodeOverlay(null);
   }, [activeMedia?.mediaItem?.id, activeMedia?.mediaItem?.season_number, activeMedia?.mediaItem?.episode_number]);
 
-  const exitPressCount = useRef(0);
-  const exitTimeout = useRef<any>(null);
-
   // Hardware Back Button Interceptor for Android TV (so remote 'Back' doesn't kill the app)
   useEffect(() => {
     const handleBackEvent = () => {
       if (activeMedia) { closePlayer(); return; }
+      if (selectedMovie) { setSelectedMovie(null); return; }
       if (showCinemaScreen) { setShowCinemaScreen(false); return; }
+      if (showSearch) { setShowSearch(false); setSearchQuery(''); setSearchResults([]); return; }
+      if (navContext) {
+        if (navContext.type === 'episodes') {
+          const ctx = navContext;
+          fetch(buildApiUrl(normalizedApiBase, `/api/series/${ctx.seriesId}`))
+            .then(r => r.json())
+            .then(data => {
+              const seasons = (data.seasons || []).map((s: any, i: number) => ({ ...s, uniqueId: `season-${s.id}-${i}` }));
+              setNavContext({ type: 'seasons', seriesId: ctx.seriesId, seriesTitle: ctx.seriesTitle, seasons });
+            });
+        } else {
+          setNavContext(null);
+        }
+        return;
+      }
       if (showSettings) { setShowSettings(false); return; }
       if (tgStatus === 'phoneInput' || tgStatus === 'codeInput' || tgStatus === 'passwordInput') {
         setTgStatus('loggedOut'); 
         return; 
       }
-      if (isLocked) {
-        setIsLocked(false);
-        setFocusedId(null);
-        return;
-      }
-      
-      // In Main Menu Root
-      exitPressCount.current += 1;
-      if (exitPressCount.current >= 3) {
-        CapApp.exitApp();
-      } else {
-        clearTimeout(exitTimeout.current);
-        exitTimeout.current = setTimeout(() => { exitPressCount.current = 0; }, 2000);
-      }
+      setIsLocked((current) => !current);
+      setFocusedId(null);
     };
 
     let backListener: any;
     CapApp.addListener('backButton', handleBackEvent).then(l => backListener = l);
     return () => { if (backListener) backListener.remove(); };
-  }, [activeMedia, showCinemaScreen, showSettings, isLocked, tgStatus]);
+  }, [activeMedia, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings, normalizedApiBase, tgStatus]);
 
   useEffect(() => {
     const handleGlobalBack = (e: KeyboardEvent) => {
       // Catch conventional keyboard ESC for Web compatibility
       if (e.key === 'Escape' || e.key === 'Backspace') {
+        if (selectedMovie) {
+          stopTvEvent(e);
+          setSelectedMovie(null);
+          return;
+        }
         if (navContext) {
           stopTvEvent(e);
           if (navContext.type === 'episodes') {
@@ -630,6 +649,13 @@ export default function App() {
           setIsSearchingTg(false);
           return;
         }
+        if (showSearch) {
+          stopTvEvent(e);
+          setShowSearch(false);
+          setSearchQuery('');
+          setSearchResults([]);
+          return;
+        }
         if (showCinemaScreen) {
           stopTvEvent(e);
           setShowCinemaScreen(false);
@@ -640,11 +666,9 @@ export default function App() {
           setShowSettings(false);
           return;
         }
-        if (isLocked) {
-          stopTvEvent(e);
-          setIsLocked(false);
-          setFocusedId(null);
-        }
+        stopTvEvent(e);
+        setIsLocked((current) => !current);
+        setFocusedId(null);
       }
     };
     
@@ -657,7 +681,7 @@ export default function App() {
       if (isInputFocused) return;
       
       // If we are showing the corridor and nothing selected yet, start playing
-      if (!isLocked && !selectedMovie && !showCinemaScreen) {
+      if (!isLocked && !selectedMovie && !showCinemaScreen && !showSearch) {
         stopTvEvent(e);
         blurActiveElement();
         setIsLocked(true);
@@ -670,7 +694,7 @@ export default function App() {
       window.removeEventListener('keydown', handleMenuInput, true);
       window.removeEventListener('keydown', handleGlobalBack, true);
     };
-  }, [isLocked, selectedMovie, showCinemaScreen, showSettings, activeMedia, tgStatus]);
+  }, [isLocked, selectedMovie, navContext, showCinemaScreen, showSearch, showSettings, activeMedia, tgStatus, isSearchingTg, apiBase]);
 
   useEffect(() => {
     if (isLocked) {
@@ -685,17 +709,21 @@ export default function App() {
   const isFavoritesSection = librarySection === 'favorites';
   const isHistorySection = librarySection === 'history';
   const isBrowseSection = isMoviesSection || isSeriesSection;
+  const isRootCorridor = !navContext && !selectedMovie && !showCinemaScreen && !activeMedia && !showSettings && tgStatus !== 'phoneInput' && tgStatus !== 'codeInput' && tgStatus !== 'passwordInput';
 
   // Initial movie fetch
   useEffect(() => {
     if (genre === 'סדרות' || genre === 'מועדפים' || genre === 'צפיות אחרונות') return;
     if (!isMoviesSection) return;
     const genreParam = activeGenreId ? `&genre_id=${activeGenreId}` : '';
+    const yearParam = yearFilter !== 'all' ? `&year=${yearFilter}` : '';
+    const categoryParam = `&category=${movieCategory}`;
+    const israeliParam = isIsraeliOnly ? '&israeli=1' : '';
     setContentPage(1);
     setHasMore(true);
     setIsLoadingMore(false);
     setFetchError(null);
-    fetch(buildApiUrl(normalizedApiBase, `/api/movies?page=1${genreParam}`))
+    fetch(buildApiUrl(normalizedApiBase, `/api/movies?page=1${genreParam}${yearParam}${categoryParam}${israeliParam}`))
       .then(res => { if (!res.ok) throw new Error(`HTTP Error: ${res.status}`); return res.json(); })
       .then(data => {
         setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES);
@@ -706,7 +734,7 @@ export default function App() {
         setBaseMovies(BASE_MOVIES);
         setShowSettings(true);
       });
-  }, [activeGenreId, genre, isMoviesSection, normalizedApiBase]);
+  }, [activeGenreId, isIsraeliOnly, isMoviesSection, movieCategory, normalizedApiBase, yearFilter]);
 
   useEffect(() => {
     if (!isMoviesSection || baseMovies.length === 0) return;
@@ -739,8 +767,11 @@ export default function App() {
     if (isLoadingMore || !hasMore || navContext || genre === 'סדרות' || genre === 'מועדפים' || genre === 'צפיות אחרונות' || showSearch) return;
     const nextPage = contentPage + 1;
     const genreParam = activeGenreId ? `&genre_id=${activeGenreId}` : '';
+    const yearParam = yearFilter !== 'all' ? `&year=${yearFilter}` : '';
+    const categoryParam = `&category=${movieCategory}`;
+    const israeliParam = isIsraeliOnly ? '&israeli=1' : '';
     setIsLoadingMore(true);
-    fetch(buildApiUrl(normalizedApiBase, `/api/movies?page=${nextPage}${genreParam}`))
+    fetch(buildApiUrl(normalizedApiBase, `/api/movies?page=${nextPage}${genreParam}${yearParam}${categoryParam}${israeliParam}`))
       .then(r => r.json())
       .then(data => {
         setBaseMovies(prev => [...prev, ...(data.movies || [])]);
@@ -754,14 +785,16 @@ export default function App() {
   useEffect(() => {
     if (genre !== 'סדרות') return;
     if (!isSeriesSection) return;
-    fetch(buildApiUrl(normalizedApiBase, '/api/series?page=1'))
+    const yearParam = yearFilter !== 'all' ? `&year=${yearFilter}` : '';
+    const categoryParam = `&category=${seriesCategory}`;
+    fetch(buildApiUrl(normalizedApiBase, `/api/series?page=1${yearParam}${categoryParam}`))
       .then(r => r.json())
       .then(data => {
         setSeriesItems(data.series || []);
         setFetchError(data.series?.length ? null : 'לא נמצאו סדרות לטעינה.');
       })
       .catch((err) => setFetchError(`שגיאת סדרות: ${err.message}`));
-  }, [genre, isSeriesSection, normalizedApiBase]);
+  }, [genre, isSeriesSection, normalizedApiBase, seriesCategory, yearFilter]);
 
   // Navigate into series’ seasons
   const runCorridorTransition = async (label: string, action: () => Promise<void>) => {
@@ -877,6 +910,124 @@ export default function App() {
       .then(r => r.json())
       .then(data => { setSearchResults(data.results || []); setIsSearchingTmdb(false); })
       .catch(() => setIsSearchingTmdb(false));
+  };
+
+  const sideMenuGroups = useMemo(() => buildSideMenuGroups({
+    movieGenres: genreList,
+    seriesGenres: getUniqueGenres(seriesItems),
+    favoritesCount: favorites.length
+  }), [favorites.length, genreList, seriesItems]);
+
+  useEffect(() => {
+    setActiveMenuItemId(getActiveMenuItemId({
+      librarySection,
+      activeGenreId,
+      seriesGenreFilter,
+      yearFilter,
+      movieCategory,
+      seriesCategory,
+      isIsraeliOnly,
+      showSearch
+    }));
+  }, [librarySection, activeGenreId, seriesGenreFilter, yearFilter, movieCategory, seriesCategory, isIsraeliOnly, showSearch]);
+
+  const currentCorridorLabel = useMemo(() => {
+    if (showSearch) return 'חיפוש חי';
+    if (isFavoritesSection) return 'מועדפים';
+    if (isSeriesSection) {
+      if (seriesGenreFilter) return `סדרות • ${seriesGenreFilter}`;
+      if (yearFilter !== 'all') return `סדרות • ${yearFilter}`;
+      return seriesCategory === 'top_rated'
+        ? 'סדרות • הכי מדורג'
+        : seriesCategory === 'trending'
+          ? 'סדרות • טרנדי'
+          : seriesCategory === 'recently_active'
+            ? 'סדרות • פעילות לאחרונה'
+            : seriesCategory === 'random'
+              ? 'סדרות • מיקס אקראי'
+              : 'סדרות • פופולרי';
+    }
+    if (isIsraeliOnly) return 'ישראלי';
+    if (activeGenreId) {
+      return `סרטים • ${genreList.find((genreItem: any) => genreItem.tmdbId === activeGenreId)?.name || 'ז׳אנר'}`;
+    }
+    if (yearFilter !== 'all') return `סרטים • ${yearFilter}`;
+    return movieCategory === 'top_rated'
+      ? 'סרטים • הכי מדורג'
+      : movieCategory === 'trending'
+        ? 'סרטים • טרנדי'
+        : movieCategory === 'new_releases'
+          ? 'סרטים • חדשים'
+          : movieCategory === 'random'
+            ? 'סרטים • מיקס אקראי'
+            : 'סרטים • פופולרי';
+  }, [activeGenreId, genreList, isFavoritesSection, isIsraeliOnly, isSeriesSection, movieCategory, seriesCategory, seriesGenreFilter, showSearch, yearFilter]);
+
+  const activateMenuItem = (item: SideMenuItem) => {
+    if (item.kind === 'settings') {
+      setSettingsPanel(item.panel);
+      setShowSettings(true);
+      return;
+    }
+
+    if (item.kind === 'action') {
+      if (item.action === 'exit') {
+        CapApp.exitApp();
+      }
+      return;
+    }
+
+    const route = item.route;
+    setActiveMenuItemId(item.id);
+    setNavContext(null);
+    setSelectedMovie(null);
+    setShowCinemaScreen(false);
+    setSeriesGenreFilter(null);
+    setActiveGenreId(null);
+    setYearFilter(route.target === 'favorites' || route.target === 'search' ? 'all' : route.year ?? 'all');
+    setShowSearch(route.target === 'search');
+    if (route.target !== 'search') {
+      setSearchQuery('');
+      setSearchResults([]);
+    }
+
+    if (route.target === 'favorites') {
+      setLibrarySection('favorites');
+      setGenre('מועדפים');
+      setIsIsraeliOnly(false);
+      setIsLocked(true);
+      return;
+    }
+
+    if (route.target === 'search') {
+      setLibrarySection('all');
+      setGenre('הכל');
+      setMovieCategory('popular');
+      setIsIsraeliOnly(false);
+      setIsLocked(true);
+      return;
+    }
+
+    if (route.target === 'series') {
+      setLibrarySection('series');
+      setGenre('סדרות');
+      setSeriesCategory(route.category ?? 'popular');
+      setSortMode(route.category === 'top_rated' ? 'rating' : route.category === 'random' ? 'random' : 'popular');
+      setSeriesGenreFilter(route.genreLabel ?? null);
+      setIsIsraeliOnly(false);
+      if (route.category === 'random') setShuffleSeed(Date.now());
+      setIsLocked(true);
+      return;
+    }
+
+    setLibrarySection('all');
+    setGenre(route.israeliOnly ? 'ישראלי' : 'הכל');
+    setMovieCategory(route.category ?? 'popular');
+    setSortMode(route.category === 'top_rated' ? 'rating' : route.category === 'random' ? 'random' : 'popular');
+    setActiveGenreId(route.genreId ?? null);
+    setIsIsraeliOnly(!!route.israeliOnly);
+    if (route.category === 'random') setShuffleSeed(Date.now());
+    setIsLocked(true);
   };
 
   const openTelegramSearch = async (item: any) => {
@@ -1113,90 +1264,54 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {!isLocked && !selectedMovie && (
-        <div className="absolute inset-0 z-20 flex bg-black/80 backdrop-blur-xl">
-          <div className="w-80 h-full bg-black/90 p-8 border-l border-[#00ffcc]/30 flex flex-col shadow-2xl">
-            <h1 className="text-3xl font-bold text-[#00ffcc] mb-10">HoloCinema</h1>
-            <button onClick={() => setIsLocked(true)} className="py-5 bg-[#00ffcc] text-black font-bold rounded-2xl focus:ring-4 focus:ring-white">כניסה למסדרון</button>
-            <button onClick={() => { setShowSearch(true); setSearchQuery(''); setSearchResults([]); setIsLocked(true); }} className="mt-3 py-4 bg-white/10 hover:bg-white/20 text-white font-bold rounded-2xl w-full text-lg transition-colors border border-white/10">🔍 חפש תוכן</button>
-            <div className="mt-6 flex flex-col gap-2 overflow-y-auto flex-1">
-              <div className="space-y-2">
-                {SPECIAL_LIBRARY_SECTIONS.map((section) => (
-                  <button
-                    key={section.id}
-                    onClick={() => {
-                      setLibrarySection(section.id);
-                      setGenre(section.id === 'series' ? 'סדרות' : section.id === 'favorites' ? 'מועדפים' : 'צפיות אחרונות');
-                      setActiveGenreId(null);
-                      setSeriesGenreFilter(null);
-                      setNavContext(null);
-                    }}
-                    className={`p-3 rounded-xl text-right transition-all text-sm w-full ${(librarySection === section.id && !navContext) ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}
-                  >
-                    {section.icon} {section.label}
-                    {section.id === 'favorites' ? ` (${favorites.length})` : section.id === 'history' ? ` (${watchHistory.length})` : ''}
-                  </button>
-                ))}
-                <div className="border-t border-white/10 my-2" />
-                <button onClick={() => { setLibrarySection('all'); setGenre('הכל'); setNavContext(null); }} className={`p-3 rounded-xl text-right transition-all text-sm w-full ${librarySection === 'all' && !navContext ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>🎬 סרטים</button>
-                <p className="text-xs text-gray-500 px-1">{isSeriesSection ? 'קטגוריות סדרות' : 'קטגוריות סרטים'}</p>
-                <div className="grid grid-cols-2 gap-2">
-                  {SORT_OPTIONS.map((option) => (
-                    <button
-                      key={option.id}
-                      onClick={() => {
-                        setSortMode(option.id);
-                        if (option.id === 'random') setShuffleSeed(Date.now());
-                      }}
-                      className={`p-2 rounded-xl text-xs transition-all ${sortMode === option.id ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
+      <AnimatePresence>
+        {showSearch && isLocked && !selectedMovie && !showCinemaScreen && (
+          <motion.div initial={{ opacity: 0, y: -16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }} className="absolute top-6 right-1/2 z-30 w-[42rem] translate-x-1/2">
+            <div className="rounded-[30px] border border-[#00ffcc]/20 bg-[linear-gradient(180deg,rgba(5,12,16,0.95),rgba(4,8,12,0.78))] p-5 shadow-[0_0_50px_rgba(0,255,204,0.12)] backdrop-blur-2xl">
+              <div className="flex items-center gap-3">
+                <div className="rounded-full bg-[#00ffcc]/12 p-3 text-[#7debd6]">
+                  <Search size={20} />
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {YEAR_OPTIONS.map((option) => (
-                    <button key={option.id} onClick={() => setYearFilter(option.id)} className={`p-2 rounded-xl text-xs transition-all ${yearFilter === option.id ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>{option.label}</button>
-                  ))}
-                </div>
-                {!isSeriesSection && (genreList.length > 0 ? genreList : [{ id: 0, name: 'הכל', tmdbId: null }]).map((g: any) => (
-                  <button key={g.id} onClick={() => { setLibrarySection('all'); setGenre('הכל'); setActiveGenreId(g.tmdbId); setNavContext(null); }} className={`p-3 rounded-xl text-right transition-all text-sm w-full ${activeGenreId === g.tmdbId && librarySection === 'all' && !navContext ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>{g.name}</button>
-                ))}
-                {isSeriesSection && getUniqueGenres(seriesItems).map((genreOption) => (
-                  <button key={genreOption} onClick={() => setSeriesGenreFilter((current) => current === genreOption ? null : genreOption)} className={`p-3 rounded-xl text-right transition-all text-sm w-full ${seriesGenreFilter === genreOption ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>{genreOption}</button>
-                ))}
+                <input
+                  autoFocus
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') handleTmdbSearch();
+                  }}
+                  placeholder="שם סרט, סדרה או פרק"
+                  className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-right text-lg text-white outline-none transition focus:border-[#00ffcc]/50 focus:bg-white/10"
+                />
+                <button onClick={handleTmdbSearch} className="rounded-2xl bg-[#00ffcc] px-5 py-3 text-base font-bold text-black transition hover:bg-[#7debd6]">
+                  חפש
+                </button>
+                <button onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/80 transition hover:bg-white/10">
+                  סגור
+                </button>
               </div>
-               <div className="hidden">
-               {/* Special categories */}
-               {['סדרות 📺', 'מועדפים ♥', 'צפיות אחרונות 🕓'].map(g => {
-                 const key = g.split(' ')[0];
-                 return (
-                   <button key={g} onClick={() => { setGenre(key === 'סדרות' ? 'סדרות' : key === 'מועדפים' ? 'מועדפים' : 'צפיות אחרונות'); setActiveGenreId(null); setNavContext(null); }} className={`p-3 rounded-xl text-right transition-all text-sm ${(genre === (key === 'סדרות' ? 'סדרות' : key === 'מועדפים' ? 'מועדפים' : 'צפיות אחרונות') && !navContext) ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>
-                     {g}{g.startsWith('מועדפים') ? ` (${favorites.length})` : g.startsWith('צפיות') ? ` (${watchHistory.length})` : ''}
-                   </button>
-                 );
-               })}
-               <div className="border-t border-white/10 my-2" />
-               <p className="text-xs text-gray-500 px-1">סגנות סרטים</p>
-               {/* Genre list from TMDB */}
-               {(genreList.length > 0 ? genreList : [{ id: 0, name: 'הכל', tmdbId: null }]).map((g: any) => (
-                 <button key={g.id} onClick={() => { setActiveGenreId(g.tmdbId); setGenre('הכל'); setNavContext(null); }} className={`p-3 rounded-xl text-right transition-all text-sm ${activeGenreId === g.tmdbId && !navContext && genre !== 'סדרות' && genre !== 'מועדפים' && genre !== 'צפיות אחרונות' ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>{g.name}</button>
-               ))}
-               </div>
-               <button onClick={() => setShowSettings(true)} className="p-3 rounded-xl text-right transition-all bg-white/5 mt-2 text-gray-400 hover:text-white border border-white/5 text-sm">⚙️ הגדרות</button>
+              <div className="mt-3 flex items-center justify-between text-sm text-white/45">
+                <span>התוצאות מחליפות את המסדרון בזמן אמת</span>
+                {isSearchingTmdb && <span className="text-[#7debd6]">טוען...</span>}
+              </div>
             </div>
-            {fetchError && (
-              <div className="mt-auto p-4 bg-red-900/50 border border-red-500 rounded-xl text-red-200 text-sm">
-                <p className="font-bold mb-1">שגיאת רשת במשיכת סרטים:</p>
-                <p>{fetchError}</p>
-                <p className="mt-2 text-xs">האם שרת ה-Node פועל במחשב (npm run dev)?</p>
-              </div>
-            )}
-          </div>
-          <div className="flex-1 flex flex-col items-center justify-center text-[#00ffcc] animate-pulse text-2xl">
-            לחץ OK להתחלה
-            {fetchError && <span className="text-red-400 text-lg mt-4 text-center max-w-lg bg-black/50 p-2 rounded">מציג סרטי גיבוי בלבד בשל שגיאת רשת</span>}
-          </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <SideMenu
+        isOpen={!isLocked && isRootCorridor}
+        groups={sideMenuGroups}
+        activeItemId={activeMenuItemId}
+        currentLabel={currentCorridorLabel}
+        onActivate={activateMenuItem}
+        onClose={() => setIsLocked(true)}
+      />
+
+      {!isLocked && isRootCorridor && (
+        <div className="absolute left-8 top-8 z-20 max-w-md rounded-[28px] border border-[#00ffcc]/12 bg-black/25 px-5 py-4 text-white/80 shadow-[0_0_30px_rgba(0,255,204,0.06)] backdrop-blur-md">
+          <p className="text-xs uppercase tracking-[0.3em] text-[#7debd6]">Root Corridor</p>
+          <p className="mt-2 text-lg leading-8">בחירה בתפריט הימני מחליפה מיד את המסדרון. חזרה תסגור את המגירה ותשאיר אותך בתוך ה־3D.</p>
+          {fetchError && <p className="mt-3 text-sm text-red-300">{fetchError}</p>}
         </div>
       )}
 
@@ -1205,8 +1320,19 @@ export default function App() {
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-50 bg-black/95 flex flex-col items-center justify-center p-8 backdrop-blur-md">
             <div className="bg-[#0a0a0a] border border-[#00ffcc]/40 rounded-[40px] p-12 flex flex-col items-center max-w-xl w-full shadow-2xl">
               <h2 className="text-4xl font-bold text-[#00ffcc] mb-8">הגדרות</h2>
+              <div className="mb-8 grid w-full grid-cols-3 gap-3 rounded-[24px] border border-white/10 bg-white/5 p-2">
+                {SETTINGS_TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setSettingsPanel(tab.id)}
+                    className={`rounded-[18px] px-4 py-3 text-sm font-semibold transition-colors ${settingsPanel === tab.id ? 'bg-[#00ffcc] text-black' : 'bg-transparent text-white/70 hover:bg-white/5 hover:text-white'}`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
               
-              {otaVersion && (
+              {settingsPanel === 'updates' && otaVersion && (
                 <div className="w-full bg-blue-500/20 border border-blue-500/50 rounded-2xl p-6 mb-8 flex flex-col gap-4 relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-full h-1 bg-gradient-to-r from-blue-600 via-blue-400 to-transparent"></div>
                   <h3 className="text-2xl font-bold text-blue-300">עדכון גרסה זמין ({otaVersion})!</h3>
@@ -1244,6 +1370,7 @@ export default function App() {
                 </div>
               )}
 
+              {settingsPanel === 'general' && (
               <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex items-center justify-between gap-4">
                 <div className="text-right">
                   <h3 className="text-xl font-bold text-white">ניגון אוטומטי לפרק הבא</h3>
@@ -1256,7 +1383,9 @@ export default function App() {
                   {autoPlayNextEpisode ? 'פעיל' : 'כבוי'}
                 </button>
               </div>
+              )}
 
+              {settingsPanel === 'updates' && (
               <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex flex-col gap-6">
                 {!otaVersion && (
                   <button onClick={() => {
@@ -1276,6 +1405,14 @@ export default function App() {
                     חפש עדכונים ידנית
                   </button>
                 )}
+                <div className="rounded-2xl border border-white/10 bg-black/20 p-5 text-right text-sm text-white/65">
+                  עדכונים זמינים ומותקנים רק מתוך תפריט המערכת כדי לשמור על מסדרון נקי ויציב.
+                </div>
+              </div>
+              )}
+
+              {settingsPanel === 'telegram' && (
+              <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex flex-col gap-6">
                 <div className="flex items-center justify-between border-t border-white/10 pt-6 mt-2">
                   <div>
                     <p className="text-gray-400 text-sm mb-1">חיבור טלגרם למכשיר זה</p>
@@ -1292,21 +1429,14 @@ export default function App() {
                     <button onClick={() => { setShowSettings(false); setTgStatus('phoneInput'); }} className="px-6 py-3 bg-[#2AABEE]/20 text-[#2AABEE] border border-[#2AABEE]/50 rounded-xl hover:bg-[#2AABEE] hover:text-white transition-colors">התחבר עכשיו</button>
                   )}
                 </div>
+                <div className="rounded-2xl border border-white/10 bg-black/20 p-5 text-right text-sm text-white/65">
+                  חיבור הטלגרם משפיע רק על חיפוש מקורות ההזרמה והכתוביות, בלי לשנות את מסדרון הגלישה.
+                </div>
               </div>
+              )}
 
               <button onClick={() => setShowSettings(false)} className="px-10 py-4 bg-white/10 hover:bg-white/20 rounded-2xl transition-colors w-full text-xl font-bold">סגור</button>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {otaVersion && !showSettings && !showCinemaScreen && !selectedMovie && !isLocked && (
-          <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="absolute top-8 left-8 z-50">
-            <button onClick={() => setShowSettings(true)} className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-4 rounded-full font-bold shadow-[0_0_20px_rgba(37,99,235,0.8)] flex items-center gap-3 transition-colors text-lg border border-blue-400/50">
-              <span className="text-2xl">🔔</span>
-              עדכון מערכת זמין!
-            </button>
           </motion.div>
         )}
       </AnimatePresence>
