@@ -7,7 +7,7 @@ import { Play, Search, LogOut, Settings, Film, X, Loader2, Eye, Clock3, Heart, H
 import { App as CapApp } from '@capacitor/app';
 import { textureManager } from './utils/TextureManager';
 import { Filesystem, Directory } from '@capacitor/filesystem';
-import { registerPlugin } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { applyCatalogFilters, getUniqueGenres, SORT_OPTIONS, YEAR_OPTIONS, type LibrarySection, type SortMode, type YearFilter } from './utils/catalog';
 import { isRemoteVersionNewer } from './utils/version';
 import { buildMediaKey, createDefaultMediaStateEntry, MEDIA_STATE_STORAGE_KEY, migrateLegacyMediaState, type MediaStateEntry, type WatchStatus, updateProgressState } from './utils/mediaState';
@@ -16,6 +16,8 @@ import { readAutoPlayNextEpisode, writeAutoPlayNextEpisode } from './utils/playe
 import { SideMenu } from './components/SideMenu';
 import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
 import { safeGetJson, safeGetString, safeParseJson, safeRemove, safeSetJson, safeSetString } from './utils/safeStorage';
+import { buildPlaybackSourceKey } from './utils/sourceKey';
+import { getPrebufferTargetBytes, isPlayableFromCache, PLAYBACK_CACHE_STORAGE_KEY, readPlaybackCacheMap, removePlaybackCacheEntry, shouldDeleteCompletedCache, type PlaybackCacheEntry, type PlaybackCacheMap, upsertPlaybackCacheEntry, writePlaybackCacheMap } from './utils/playbackCache';
 
 const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
@@ -92,15 +94,59 @@ const WatchStatusChip = ({ status }: { status: WatchStatus }) => {
 };
 
 type PreparedPlayback = {
-  url: string;
   title: string;
   subtitleUrl?: string;
   mediaItem: any;
+  sourceKey: string;
+  streamUrl: string;
+  downloadUrl: string;
+  fileSizeBytes: number;
+  mimeType?: string;
+  fileName?: string;
+  durationSeconds: number;
+  cachePath: string;
+  cacheUri?: string;
+  resumePositionSeconds: number;
   peerId: string;
   messageId: number;
 };
 
-type ActivePlayback = PreparedPlayback;
+type ActivePlayback = PreparedPlayback & {
+  url: string;
+};
+
+type TelegramSourceInfo = {
+  sourceKey?: string;
+  fileName?: string;
+  fileSizeBytes?: number;
+  mimeType?: string;
+  durationSeconds?: number;
+  streamUrl?: string;
+  downloadUrl?: string;
+};
+
+const formatBytes = (bytes: number) => {
+  if (!bytes) return '0 MB';
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const formatTime = (seconds: number) => {
+  const safeSeconds = Math.max(0, Math.floor(seconds || 0));
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainingSeconds = safeSeconds % 60;
+  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`;
+};
+
+const toBase64 = (buffer: ArrayBuffer) => {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+};
 
 // --- 3D Components ---
 const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, setFocusedId, setFocusedHeartId, isAnyModalOpen, selectedMovie, lastPosterZ, onNearEnd, onCameraMove }: any) => {
@@ -350,6 +396,9 @@ export default function App() {
   const [autoPlayNextEpisode, setAutoPlayNextEpisode] = useState<boolean>(() => {
     return readAutoPlayNextEpisode(localStorage, true);
   });
+  const [playbackCacheMap, setPlaybackCacheMap] = useState<PlaybackCacheMap>(() =>
+    readPlaybackCacheMap(localStorage)
+  );
 
   useEffect(() => {
     safeSetJson(localStorage, MEDIA_STATE_STORAGE_KEY, mediaStateMap);
@@ -358,6 +407,31 @@ export default function App() {
   useEffect(() => {
     writeAutoPlayNextEpisode(localStorage, autoPlayNextEpisode);
   }, [autoPlayNextEpisode]);
+
+  useEffect(() => {
+    writePlaybackCacheMap(localStorage, playbackCacheMap);
+    playbackCacheMapRef.current = playbackCacheMap;
+  }, [playbackCacheMap]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const validatePlaybackCache = async () => {
+      const entries = Object.values(playbackCacheMapRef.current);
+      for (const entry of entries) {
+        try {
+          await Filesystem.stat({ path: entry.cachePath, directory: Directory.Cache });
+        } catch {
+          if (!cancelled) {
+            setPlaybackCacheMap((current) => removePlaybackCacheEntry(current, entry.sourceKey));
+          }
+        }
+      }
+    };
+    void validatePlaybackCache();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const favorites = useMemo(() => Object.values(mediaStateMap)
     .filter((entry) => entry.favorite)
@@ -409,9 +483,59 @@ export default function App() {
     return data.results || [];
   };
 
+  const upsertPlaybackCache = (sourceKey: string, patch: Partial<PlaybackCacheEntry> & Pick<PlaybackCacheEntry, 'sourceKey' | 'mediaKey' | 'title' | 'mediaType' | 'peerId' | 'messageId' | 'streamUrl' | 'downloadUrl' | 'cachePath' | 'fileSizeBytes'>) => {
+    setPlaybackCacheMap((current) => upsertPlaybackCacheEntry(current, sourceKey, patch));
+  };
+
+  const deletePlaybackCacheFile = async (entry: PlaybackCacheEntry | null | undefined) => {
+    if (!entry?.cachePath) return;
+    try {
+      await Filesystem.deleteFile({
+        path: entry.cachePath,
+        directory: Directory.Cache
+      });
+    } catch {}
+  };
+
+  const stopBackgroundDownload = () => {
+    if (downloadAbortRef.current) {
+      downloadAbortRef.current.abort();
+      downloadAbortRef.current = null;
+    }
+    if (prebufferResolverRef.current) {
+      prebufferResolverRef.current = null;
+    }
+  };
+
+  const getPlaybackCacheEntry = (sourceKey: string) => playbackCacheMapRef.current[sourceKey] ?? null;
+
   const buildPreparedPlayback = async (telegramResult: any, mediaItem: any): Promise<PreparedPlayback> => {
     const sessionStr = safeGetString(localStorage, 'tg_session');
-    const videoUrl = buildApiUrl(normalizedApiBase, `/api/tg/stream/${telegramResult.peerId}/${telegramResult.id}?session=${sessionStr}`);
+    const sourceInfo = await fetchApiJson<TelegramSourceInfo>(buildApiUrl(normalizedApiBase, `/api/tg/source/${telegramResult.peerId}/${telegramResult.id}`), {
+      headers: { 'x-tg-session': sessionStr }
+    });
+    const mediaKey = buildMediaKey(mediaItem);
+    const sourceKey = sourceInfo.sourceKey || buildPlaybackSourceKey({
+      mediaKey,
+      peerId: String(telegramResult.peerId),
+      messageId: telegramResult.id,
+      fileName: sourceInfo.fileName || telegramResult.title,
+      fileSizeBytes: sourceInfo.fileSizeBytes || telegramResult.sizeBytes,
+      mimeType: sourceInfo.mimeType
+    });
+    const streamUrl = buildApiUrl(normalizedApiBase, sourceInfo.streamUrl || `/api/tg/stream/${telegramResult.peerId}/${telegramResult.id}?session=${sessionStr}`);
+    const downloadUrl = buildApiUrl(normalizedApiBase, sourceInfo.downloadUrl || sourceInfo.streamUrl || `/api/tg/stream/${telegramResult.peerId}/${telegramResult.id}?session=${sessionStr}`);
+    const cachePath = `playback-cache/${sourceKey}.mp4`;
+    const existingEntry = getPlaybackCacheEntry(sourceKey);
+    let cacheUri = existingEntry?.cacheUri;
+
+    if (!cacheUri && existingEntry?.cachePath) {
+      try {
+        const uriResult = await Filesystem.getUri({ path: existingEntry.cachePath, directory: Directory.Cache });
+        cacheUri = Capacitor.convertFileSrc(uriResult.uri);
+      } catch {}
+    }
+
     let subtitleUrl: string | undefined;
 
     try {
@@ -424,10 +548,19 @@ export default function App() {
     }
 
     return {
-      url: videoUrl,
       title: mediaItem.title || telegramResult.title,
       subtitleUrl,
       mediaItem,
+      sourceKey,
+      streamUrl,
+      downloadUrl,
+      fileSizeBytes: sourceInfo.fileSizeBytes || telegramResult.sizeBytes || 0,
+      mimeType: sourceInfo.mimeType,
+      fileName: sourceInfo.fileName || telegramResult.title,
+      durationSeconds: sourceInfo.durationSeconds || mediaItem.durationSeconds || 0,
+      cachePath,
+      cacheUri,
+      resumePositionSeconds: existingEntry?.lastPositionSeconds || 0,
       peerId: telegramResult.peerId,
       messageId: telegramResult.id
     };
@@ -475,7 +608,166 @@ export default function App() {
     }
   };
 
-  const closePlayer = () => {
+  const startBackgroundDownload = async (prepared: PreparedPlayback) => {
+    stopBackgroundDownload();
+    const existingEntry = getPlaybackCacheEntry(prepared.sourceKey);
+    const existingBytes = existingEntry?.bytesDownloaded || 0;
+    const targetBytes = getPrebufferTargetBytes(prepared.fileSizeBytes);
+    const controller = new AbortController();
+    downloadAbortRef.current = controller;
+
+    upsertPlaybackCache(prepared.sourceKey, {
+      sourceKey: prepared.sourceKey,
+      mediaKey: buildMediaKey(prepared.mediaItem),
+      title: prepared.title,
+      mediaType: prepared.mediaItem.mediaType,
+      peerId: prepared.peerId,
+      messageId: prepared.messageId,
+      streamUrl: prepared.streamUrl,
+      downloadUrl: prepared.downloadUrl,
+      cachePath: prepared.cachePath,
+      cacheUri: prepared.cacheUri,
+      fileName: prepared.fileName,
+      mimeType: prepared.mimeType,
+      fileSizeBytes: prepared.fileSizeBytes,
+      bytesDownloaded: existingBytes,
+      durationSeconds: prepared.durationSeconds,
+      lastPositionSeconds: existingEntry?.lastPositionSeconds || prepared.resumePositionSeconds || 0,
+      isComplete: existingEntry?.isComplete || false
+    });
+
+    if (existingBytes >= targetBytes && prebufferResolverRef.current) {
+      prebufferResolverRef.current();
+      prebufferResolverRef.current = null;
+    }
+
+    if (prepared.fileSizeBytes > 0 && existingBytes >= prepared.fileSizeBytes) {
+      return;
+    }
+
+    const response = await fetch(prepared.downloadUrl, {
+      headers: existingBytes > 0 ? { Range: `bytes=${existingBytes}-` } : undefined,
+      signal: controller.signal
+    });
+    if (!response.ok && response.status !== 206) {
+      throw new Error(`Download failed with ${response.status}`);
+    }
+    if (!response.body) {
+      throw new Error('Streaming reader is not available in this environment');
+    }
+
+    let downloaded = existingBytes;
+    let started = existingBytes > 0;
+    if (existingBytes > 0 && response.status !== 206) {
+      try {
+        await Filesystem.deleteFile({ path: prepared.cachePath, directory: Directory.Cache });
+      } catch {}
+      downloaded = 0;
+      started = false;
+    }
+
+    const reader = response.body.getReader();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || controller.signal.aborted) break;
+
+      const base64Chunk = toBase64(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+      if (!started) {
+        await Filesystem.writeFile({
+          path: prepared.cachePath,
+          directory: Directory.Cache,
+          data: base64Chunk,
+          recursive: true
+        });
+        started = true;
+      } else {
+        await Filesystem.appendFile({
+          path: prepared.cachePath,
+          directory: Directory.Cache,
+          data: base64Chunk
+        });
+      }
+
+      downloaded += value.byteLength;
+      const isComplete = prepared.fileSizeBytes > 0 ? downloaded >= prepared.fileSizeBytes : false;
+      let cacheUri = prepared.cacheUri;
+      if (isComplete && !cacheUri) {
+        try {
+          const uriResult = await Filesystem.getUri({ path: prepared.cachePath, directory: Directory.Cache });
+          cacheUri = Capacitor.convertFileSrc(uriResult.uri);
+        } catch {}
+      }
+
+      upsertPlaybackCache(prepared.sourceKey, {
+        sourceKey: prepared.sourceKey,
+        mediaKey: buildMediaKey(prepared.mediaItem),
+        title: prepared.title,
+        mediaType: prepared.mediaItem.mediaType,
+        peerId: prepared.peerId,
+        messageId: prepared.messageId,
+        streamUrl: prepared.streamUrl,
+        downloadUrl: prepared.downloadUrl,
+        cachePath: prepared.cachePath,
+        cacheUri,
+        fileName: prepared.fileName,
+        mimeType: prepared.mimeType,
+        fileSizeBytes: prepared.fileSizeBytes,
+        bytesDownloaded: downloaded,
+        durationSeconds: prepared.durationSeconds,
+        lastPositionSeconds: getPlaybackCacheEntry(prepared.sourceKey)?.lastPositionSeconds || prepared.resumePositionSeconds || 0,
+        isComplete
+      });
+
+      setBufferProgress(prepared.fileSizeBytes > 0 ? Math.min(100, Math.round((downloaded / targetBytes) * 100)) : 0);
+      if (downloaded >= targetBytes && prebufferResolverRef.current) {
+        prebufferResolverRef.current();
+        prebufferResolverRef.current = null;
+      }
+    }
+
+    if (prebufferResolverRef.current) {
+      prebufferResolverRef.current();
+      prebufferResolverRef.current = null;
+    }
+  };
+
+  const activatePreparedPlayback = async (prepared: PreparedPlayback) => {
+    setIsBuffering(true);
+    setBufferProgress(0);
+    setBufferingSourceKey(prepared.sourceKey);
+
+    const entry = getPlaybackCacheEntry(prepared.sourceKey);
+    const alreadyBuffered = (entry?.bytesDownloaded || 0) >= getPrebufferTargetBytes(prepared.fileSizeBytes);
+    if (!alreadyBuffered) {
+      await new Promise<void>((resolve, reject) => {
+        prebufferResolverRef.current = resolve;
+        startBackgroundDownload(prepared).catch(reject);
+      });
+    } else {
+      void startBackgroundDownload(prepared).catch(() => undefined);
+    }
+
+    const latestEntry = getPlaybackCacheEntry(prepared.sourceKey);
+    const url = isPlayableFromCache(latestEntry)
+      ? latestEntry!.cacheUri!
+      : prepared.streamUrl;
+
+    setShowCinemaScreen(false);
+    setSelectedMovie(null);
+    setIsBuffering(false);
+    setBufferingSourceKey(null);
+    setActiveMedia({
+      ...prepared,
+      url,
+      cacheUri: latestEntry?.cacheUri || prepared.cacheUri,
+      resumePositionSeconds: latestEntry?.lastPositionSeconds || prepared.resumePositionSeconds || 0
+    });
+  };
+
+  const closePlayer = async (completedPlayback = false) => {
+    stopBackgroundDownload();
     if (bufferIntervalRef.current !== null) {
       window.clearInterval(bufferIntervalRef.current);
       bufferIntervalRef.current = null;
@@ -484,17 +776,45 @@ export default function App() {
       const currentTime = videoRef.current.currentTime || 0;
       const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : 0;
       upsertMediaState(activeMedia.mediaItem, (entry) => updateProgressState(activeMedia.mediaItem, entry, currentTime, duration));
+      upsertPlaybackCache(activeMedia.sourceKey, {
+        sourceKey: activeMedia.sourceKey,
+        mediaKey: buildMediaKey(activeMedia.mediaItem),
+        title: activeMedia.title,
+        mediaType: activeMedia.mediaItem.mediaType,
+        peerId: activeMedia.peerId,
+        messageId: activeMedia.messageId,
+        streamUrl: activeMedia.streamUrl,
+        downloadUrl: activeMedia.downloadUrl,
+        cachePath: activeMedia.cachePath,
+        cacheUri: activeMedia.cacheUri,
+        fileName: activeMedia.fileName,
+        mimeType: activeMedia.mimeType,
+        fileSizeBytes: activeMedia.fileSizeBytes,
+        bytesDownloaded: getPlaybackCacheEntry(activeMedia.sourceKey)?.bytesDownloaded || 0,
+        durationSeconds: duration || activeMedia.durationSeconds,
+        lastPositionSeconds: currentTime,
+        isComplete: getPlaybackCacheEntry(activeMedia.sourceKey)?.isComplete || false
+      });
+    }
+
+    const cacheEntry = activeMedia ? getPlaybackCacheEntry(activeMedia.sourceKey) : null;
+    const watched = activeMedia ? getMediaEntry(activeMedia.mediaItem).watchStatus === 'watched' || completedPlayback : completedPlayback;
+    if (shouldDeleteCompletedCache(cacheEntry, watched)) {
+      await deletePlaybackCacheFile(cacheEntry);
+      setPlaybackCacheMap((current) => removePlaybackCacheEntry(current, cacheEntry!.sourceKey));
     }
     setActiveMedia(null);
     setPreparedNextMedia(null);
     setNextEpisodeOverlay(null);
     setIsBuffering(false);
     setBufferProgress(0);
+    setBufferingSourceKey(null);
   };
 
   // Buffering States
   const [isBuffering, setIsBuffering] = useState(false);
   const [bufferProgress, setBufferProgress] = useState(0);
+  const [bufferingSourceKey, setBufferingSourceKey] = useState<string | null>(null);
 
   const [apiBase, setApiBase] = useState(() => safeGetString(localStorage, 'api_base', API_BASE));
   const normalizedApiBase = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase]);
@@ -531,6 +851,9 @@ export default function App() {
   const dismissedAutoPlayRef = useRef<string | null>(null);
   const displayMoviesRef = useRef<any[]>([]);
   const bufferIntervalRef = useRef<number | null>(null);
+  const downloadAbortRef = useRef<AbortController | null>(null);
+  const prebufferResolverRef = useRef<(() => void) | null>(null);
+  const playbackCacheMapRef = useRef<PlaybackCacheMap>(playbackCacheMap);
 
   const saveToHistory = (movie: any) => {
     upsertMediaState(movie, (entry) => ({
@@ -614,6 +937,48 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    const persistCurrentPlayback = () => {
+      if (!activeMedia || !videoRef.current) return;
+      const currentTime = videoRef.current.currentTime || 0;
+      const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : activeMedia.durationSeconds || 0;
+      upsertPlaybackCache(activeMedia.sourceKey, {
+        sourceKey: activeMedia.sourceKey,
+        mediaKey: buildMediaKey(activeMedia.mediaItem),
+        title: activeMedia.title,
+        mediaType: activeMedia.mediaItem.mediaType,
+        peerId: activeMedia.peerId,
+        messageId: activeMedia.messageId,
+        streamUrl: activeMedia.streamUrl,
+        downloadUrl: activeMedia.downloadUrl,
+        cachePath: activeMedia.cachePath,
+        cacheUri: activeMedia.cacheUri,
+        fileName: activeMedia.fileName,
+        mimeType: activeMedia.mimeType,
+        fileSizeBytes: activeMedia.fileSizeBytes,
+        bytesDownloaded: getPlaybackCacheEntry(activeMedia.sourceKey)?.bytesDownloaded || 0,
+        durationSeconds: duration,
+        lastPositionSeconds: currentTime,
+        isComplete: getPlaybackCacheEntry(activeMedia.sourceKey)?.isComplete || false
+      });
+    };
+
+    const onBeforeUnload = () => persistCurrentPlayback();
+    window.addEventListener('beforeunload', onBeforeUnload);
+
+    let appStateHandle: { remove: () => void } | undefined;
+    CapApp.addListener('appStateChange', ({ isActive }) => {
+      if (!isActive) persistCurrentPlayback();
+    }).then((listener) => {
+      appStateHandle = listener;
+    }).catch(() => undefined);
+
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      appStateHandle?.remove();
+    };
+  }, [activeMedia]);
+
   const loadSeriesSeasons = async (seriesId: number, seriesTitle: string) => {
     const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/series/${seriesId}`));
     const seasons = (Array.isArray(data.seasons) ? data.seasons : []).map((season: any, index: number) => ({
@@ -626,9 +991,9 @@ export default function App() {
   // Hardware Back Button Interceptor for Android TV (so remote 'Back' doesn't kill the app)
   useEffect(() => {
     const handleBackEvent = () => {
-      if (activeMedia) { closePlayer(); return; }
+      if (activeMedia) { void closePlayer(); return; }
       if (selectedMovie) { setSelectedMovie(null); return; }
-      if (showCinemaScreen) { setShowCinemaScreen(false); return; }
+      if (showCinemaScreen) { closeTelegramSourceScreen(); return; }
       if (showSearch) { setShowSearch(false); setSearchQuery(''); setSearchResults([]); return; }
       if (navContext) {
         if (navContext.type === 'episodes') {
@@ -691,7 +1056,7 @@ export default function App() {
         }
         if (showCinemaScreen) {
           stopTvEvent(e);
-          setShowCinemaScreen(false);
+          closeTelegramSourceScreen();
           return;
         }
         if (showSettings) {
@@ -1019,7 +1384,7 @@ export default function App() {
     setActiveMenuItemId(item.id);
     setNavContext(null);
     setSelectedMovie(null);
-    setShowCinemaScreen(false);
+    closeTelegramSourceScreen();
     setSeriesGenreFilter(null);
     setActiveGenreId(null);
     setYearFilter(route.target === 'favorites' || route.target === 'search' ? 'all' : route.year ?? 'all');
@@ -1079,35 +1444,25 @@ export default function App() {
     }
   };
 
+  const closeTelegramSourceScreen = () => {
+    stopBackgroundDownload();
+    setShowCinemaScreen(false);
+    setIsBuffering(false);
+    setBufferProgress(0);
+    setBufferingSourceKey(null);
+  };
+
   const handlePlayVideo = async (telegramResult: any, mediaItem: any = selectedMovie) => {
     if (!mediaItem) return;
-    if (bufferIntervalRef.current !== null) {
-      window.clearInterval(bufferIntervalRef.current);
-      bufferIntervalRef.current = null;
-    }
-    setIsBuffering(true);
-    setBufferProgress(0);
     saveToHistory(mediaItem);
-
-    let progress = 0;
-    bufferIntervalRef.current = window.setInterval(() => {
-      progress += 5;
-      setBufferProgress(progress);
-      if (progress >= 100) {
-        if (bufferIntervalRef.current !== null) {
-          window.clearInterval(bufferIntervalRef.current);
-          bufferIntervalRef.current = null;
-        }
-        setIsBuffering(false);
-        buildPreparedPlayback(telegramResult, mediaItem)
-          .then((prepared) => {
-            setShowCinemaScreen(false);
-            setSelectedMovie(null);
-            setActiveMedia(prepared);
-          })
-          .catch(() => setActiveMedia(null));
-      }
-    }, 300);
+    try {
+      const prepared = await buildPreparedPlayback(telegramResult, mediaItem);
+      await activatePreparedPlayback(prepared);
+    } catch (error) {
+      setIsBuffering(false);
+      setBufferingSourceKey(null);
+      setFetchError(error instanceof Error ? error.message : 'Playback failed to start.');
+    }
   };
 
   const handleVideoTimeUpdate = () => {
@@ -1121,6 +1476,25 @@ export default function App() {
     if (now - playbackProgressRef.current > 1500) {
       playbackProgressRef.current = now;
       upsertMediaState(activeMedia.mediaItem, (entry) => updateProgressState(activeMedia.mediaItem, entry, currentTime, duration));
+      upsertPlaybackCache(activeMedia.sourceKey, {
+        sourceKey: activeMedia.sourceKey,
+        mediaKey: buildMediaKey(activeMedia.mediaItem),
+        title: activeMedia.title,
+        mediaType: activeMedia.mediaItem.mediaType,
+        peerId: activeMedia.peerId,
+        messageId: activeMedia.messageId,
+        streamUrl: activeMedia.streamUrl,
+        downloadUrl: activeMedia.downloadUrl,
+        cachePath: activeMedia.cachePath,
+        cacheUri: activeMedia.cacheUri,
+        fileName: activeMedia.fileName,
+        mimeType: activeMedia.mimeType,
+        fileSizeBytes: activeMedia.fileSizeBytes,
+        bytesDownloaded: getPlaybackCacheEntry(activeMedia.sourceKey)?.bytesDownloaded || 0,
+        durationSeconds: duration || activeMedia.durationSeconds,
+        lastPositionSeconds: currentTime,
+        isComplete: getPlaybackCacheEntry(activeMedia.sourceKey)?.isComplete || false
+      });
     }
 
     const currentKey = buildMediaKey(activeMedia.mediaItem);
@@ -1149,6 +1523,33 @@ export default function App() {
     setNextEpisodeOverlay(null);
   };
 
+  const handleVideoLoadedMetadata = () => {
+    if (!activeMedia || !videoRef.current) return;
+    const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : activeMedia.durationSeconds;
+    upsertPlaybackCache(activeMedia.sourceKey, {
+      sourceKey: activeMedia.sourceKey,
+      mediaKey: buildMediaKey(activeMedia.mediaItem),
+      title: activeMedia.title,
+      mediaType: activeMedia.mediaItem.mediaType,
+      peerId: activeMedia.peerId,
+      messageId: activeMedia.messageId,
+      streamUrl: activeMedia.streamUrl,
+      downloadUrl: activeMedia.downloadUrl,
+      cachePath: activeMedia.cachePath,
+      cacheUri: activeMedia.cacheUri,
+      fileName: activeMedia.fileName,
+      mimeType: activeMedia.mimeType,
+      fileSizeBytes: activeMedia.fileSizeBytes,
+      bytesDownloaded: getPlaybackCacheEntry(activeMedia.sourceKey)?.bytesDownloaded || 0,
+      durationSeconds: duration || 0,
+      lastPositionSeconds: activeMedia.resumePositionSeconds || 0,
+      isComplete: getPlaybackCacheEntry(activeMedia.sourceKey)?.isComplete || false
+    });
+    if (activeMedia.resumePositionSeconds > 0) {
+      videoRef.current.currentTime = activeMedia.resumePositionSeconds;
+    }
+  };
+
   const handleVideoEnded = () => {
     if (activeMedia?.mediaItem && videoRef.current) {
       const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : activeMedia.mediaItem.durationSeconds || 0;
@@ -1156,14 +1557,16 @@ export default function App() {
     }
 
     if (autoPlayNextEpisode && preparedNextMedia) {
-      setActiveMedia(preparedNextMedia);
+      void closePlayer(true).then(() => activatePreparedPlayback(preparedNextMedia)).catch(() => undefined);
       return;
     }
 
-    closePlayer();
+    void closePlayer(true);
   };
 
   const selectedMediaEntry = selectedMovie ? getMediaEntry(selectedMovie) : null;
+  const bufferingEntry = bufferingSourceKey ? playbackCacheMap[bufferingSourceKey] ?? null : null;
+  const bufferTargetBytes = getPrebufferTargetBytes(bufferingEntry?.fileSizeBytes);
 
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative text-white font-sans" dir="rtl">
@@ -1490,12 +1893,13 @@ export default function App() {
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute inset-0 z-40 bg-black p-8 flex flex-col">
             <div className="flex justify-between items-center mb-8 border-b border-white/10 pb-4">
               <h2 className="text-3xl font-bold text-blue-400">תוצאות מטלגרם: {selectedMovie?.title}</h2>
-              <button onClick={() => setShowCinemaScreen(false)}><X /></button>
+              <button onClick={closeTelegramSourceScreen}><X /></button>
             </div>
             {isBuffering ? (
               <div className="flex-1 flex flex-col items-center justify-center">
                 <Loader2 className="animate-spin w-20 h-20 text-blue-500 mb-6" />
-                <p className="text-2xl mb-8">מכין זרם נתונים (50MB Buffer)...</p>
+                <p className="text-2xl mb-3">Preparing playback buffer...</p>
+                <p className="mb-8 text-base text-white/70">{formatBytes(bufferingEntry?.bytesDownloaded || 0)} / {formatBytes(bufferTargetBytes)} prebuffered</p>
                 <div className="w-[500px] h-4 bg-gray-800 rounded-full overflow-hidden border border-white/10">
                   <motion.div initial={{ width: 0 }} animate={{ width: `${bufferProgress}%` }} className="h-full bg-blue-500 shadow-[0_0_20px_#3b82f6]" />
                 </div>
@@ -1551,6 +1955,7 @@ export default function App() {
                autoPlay 
                className="w-full h-full object-contain"
                crossOrigin="anonymous"
+               onLoadedMetadata={handleVideoLoadedMetadata}
                onTimeUpdate={handleVideoTimeUpdate}
                onPause={handleVideoTimeUpdate}
                onEnded={handleVideoEnded}
@@ -1559,7 +1964,7 @@ export default function App() {
                  <track kind="subtitles" src={activeMedia.subtitleUrl} srcLang="he" label="Hebrew" default />
                )}
             </video>
-            <button onClick={closePlayer} className="absolute top-8 left-8 z-[110] bg-black/50 p-4 rounded-full text-white hover:bg-white/20 transition-all font-bold">
+            <button onClick={() => void closePlayer()} className="absolute top-8 left-8 z-[110] bg-black/50 p-4 rounded-full text-white hover:bg-white/20 transition-all font-bold">
                סגור נגן
             </button>
           </motion.div>

@@ -72,6 +72,32 @@ const readOptionalInt = (value: unknown) => {
   return readPositiveInt(value);
 };
 
+const extractTelegramDocumentInfo = (message: any) => {
+  const document = message?.media?.document;
+  const attributes = Array.isArray(document?.attributes) ? document.attributes : [];
+  const fileNameAttr = attributes.find((attribute: any) => attribute?.className === 'DocumentAttributeFilename');
+  const videoAttr = attributes.find((attribute: any) => attribute?.className === 'DocumentAttributeVideo');
+  const audioAttr = attributes.find((attribute: any) => attribute?.className === 'DocumentAttributeAudio');
+  const mimeType = document?.mimeType || 'video/mp4';
+  const fileName = fileNameAttr?.fileName || message?.message || 'telegram-media.mp4';
+  const fileSizeBytes = Number(document?.size || 0);
+  const durationSeconds = Number(videoAttr?.duration || audioAttr?.duration || 0);
+  const sourceKey = crypto
+    .createHash('sha1')
+    .update([message?.id, fileName, fileSizeBytes, mimeType].join('|'))
+    .digest('hex')
+    .slice(0, 24);
+
+  return {
+    document,
+    mimeType,
+    fileName,
+    fileSizeBytes,
+    durationSeconds,
+    sourceKey
+  };
+};
+
 const matchesTvMazeGenre = (genres: string[], genreId?: number) => {
   if (!genreId) return true;
   const allowedGenres = TVMAZE_GENRE_MAP[genreId];
@@ -369,6 +395,7 @@ app.get('/api/tg/search', async (req, res) => {
     const formattedResults = messages.map((m: any) => {
       const peerId = m.peerId?.channelId || m.peerId?.chatId || m.peerId?.userId;
       const chat = chatMap.get(peerId?.toString());
+      const info = extractTelegramDocumentInfo(m);
       
       // Try to extract a meaningful title from the message text or document attributes
       let title = m.message || 'Video File';
@@ -384,6 +411,10 @@ app.get('/api/tg/search', async (req, res) => {
         chatName: chat ? (chat.title || chat.username || 'Unknown Chat') : 'Unknown Chat',
         date: m.date,
         size: m.media?.document?.size ? (m.media.document.size / (1024 * 1024)).toFixed(2) + ' MB' : 'Unknown Size',
+        sizeBytes: info.fileSizeBytes,
+        fileName: info.fileName,
+        mimeType: info.mimeType,
+        durationSeconds: info.durationSeconds,
       };
     });
 
@@ -394,6 +425,35 @@ app.get('/api/tg/search', async (req, res) => {
 });
 
 // Stream Video with Range Support (Buffering)
+app.get('/api/tg/source/:peerId/:messageId', async (req, res) => {
+  try {
+    const sessionStr = readStringValue(req.query.session) || readStringValue(req.headers['x-tg-session']);
+    const client = await getClientParam(sessionStr);
+    const peerId = readStringValue(req.params.peerId);
+    const messageId = readPositiveInt(req.params.messageId);
+    if (!peerId || !messageId) return res.status(400).json({ error: 'Invalid source request' });
+
+    const messages = await client.getMessages(peerId, { ids: [messageId] });
+    if (!messages || messages.length === 0) return res.status(404).json({ error: 'Message not found' });
+    const message = messages[0];
+    if (!message.media || !('document' in message.media)) return res.status(404).json({ error: 'No video media found' });
+
+    const info = extractTelegramDocumentInfo(message);
+    const sessionQuery = `session=${encodeURIComponent(sessionStr)}`;
+    res.json({
+      sourceKey: info.sourceKey,
+      fileName: info.fileName,
+      fileSizeBytes: info.fileSizeBytes,
+      mimeType: info.mimeType,
+      durationSeconds: info.durationSeconds,
+      streamUrl: `/api/tg/stream/${peerId}/${messageId}?${sessionQuery}`,
+      downloadUrl: `/api/tg/stream/${peerId}/${messageId}?${sessionQuery}`
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: getErrorMessage(e) });
+  }
+});
+
 app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
   try {
     const sessionStr = readStringValue(req.query.session) || readStringValue(req.headers['x-tg-session']);
@@ -408,7 +468,8 @@ app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
 
     if (!message.media || !('document' in message.media)) return res.status(404).send('No video media found');
 
-    const fileSize = (message.media.document as any).size;
+    const info = extractTelegramDocumentInfo(message);
+    const fileSize = info.fileSizeBytes;
     const range = req.headers.range;
 
     if (range) {
@@ -424,7 +485,10 @@ app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
         'Content-Length': chunksize,
-        'Content-Type': 'video/mp4',
+        'Content-Type': info.mimeType,
+        'Content-Disposition': `inline; filename=\"${info.fileName}\"`,
+        'Cache-Control': 'private, max-age=0, must-revalidate',
+        'X-Source-Key': info.sourceKey,
       });
 
       const stream = client.iterDownload({
@@ -441,8 +505,11 @@ app.get('/api/tg/stream/:peerId/:messageId', async (req, res) => {
     } else {
       res.writeHead(200, {
         'Content-Length': fileSize,
-        'Content-Type': 'video/mp4',
+        'Content-Type': info.mimeType,
         'Accept-Ranges': 'bytes',
+        'Content-Disposition': `inline; filename=\"${info.fileName}\"`,
+        'Cache-Control': 'private, max-age=0, must-revalidate',
+        'X-Source-Key': info.sourceKey,
       });
 
       const stream = client.iterDownload({
