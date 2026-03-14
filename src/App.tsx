@@ -8,6 +8,8 @@ import { App as CapApp } from '@capacitor/app';
 import { textureManager } from './utils/TextureManager';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { registerPlugin } from '@capacitor/core';
+import { applyCatalogFilters, getUniqueGenres, SORT_OPTIONS, YEAR_OPTIONS, type LibrarySection, type SortMode, type YearFilter } from './utils/catalog';
+import { isRemoteVersionNewer } from './utils/version';
 
 const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
@@ -38,6 +40,12 @@ const BASE_MOVIES: any[] = [
   { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', desc: 'צוות חוקרים נוסע דרך חור תולעת בחלל.' },
 ];
 
+const SPECIAL_LIBRARY_SECTIONS: Array<{ id: LibrarySection; label: string; icon: string }> = [
+  { id: 'series', label: 'סדרות', icon: '📺' },
+  { id: 'favorites', label: 'מועדפים', icon: '♥' },
+  { id: 'history', label: 'צפיות אחרונות', icon: '🕓' }
+];
+
 const fetchApiJson = async (path: string, init: RequestInit = {}) => {
   const sessionStr = localStorage.getItem('tg_session') || '';
   init.headers = {
@@ -50,8 +58,10 @@ const fetchApiJson = async (path: string, init: RequestInit = {}) => {
   return JSON.parse(bodyText);
 };
 
+const buildApiUrl = (base: string, path: string) => `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+
 // --- 3D Components ---
-const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, setFocusedId, setFocusedHeartId, isAnyModalOpen, selectedMovie, lastPosterZ, onNearEnd }: any) => {
+const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, setFocusedId, setFocusedHeartId, isAnyModalOpen, selectedMovie, lastPosterZ, onNearEnd, onCameraMove }: any) => {
   const { camera } = useThree();
   const [targetPos, setTargetPos] = useState(new THREE.Vector3(0, 1.6, 2));
   const focusedMovieRef = useRef<any>(null);
@@ -116,6 +126,7 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, s
       camera.position.lerp(targetPos, 0.1);
       const targetQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, targetRotY.current, 0));
       camera.quaternion.slerp(targetQuat, 0.15);
+      onCameraMove?.(camera.position.z);
 
       // Infinite scroll - trigger only after the user has crossed 90% of the current corridor
       if (lastPosterZ !== undefined && lastPosterZ < INITIAL_CAMERA_Z && !nearEndFired.current) {
@@ -255,6 +266,13 @@ export default function App() {
   const [tgSearchResults, setTgSearchResults] = useState<any[]>([]);
   const [isSearchingTg, setIsSearchingTg] = useState(false);
   const [navContext, setNavContext] = useState<NavCtx>(null);
+  const [librarySection, setLibrarySection] = useState<LibrarySection>('all');
+  const [sortMode, setSortMode] = useState<SortMode>('popular');
+  const [yearFilter, setYearFilter] = useState<YearFilter>('all');
+  const [seriesGenreFilter, setSeriesGenreFilter] = useState<string | null>(null);
+  const [shuffleSeed, setShuffleSeed] = useState(() => Date.now());
+  const [cameraZ, setCameraZ] = useState(2);
+  const [transitionLabel, setTransitionLabel] = useState<string | null>(null);
 
   // Infinite scroll
   const [contentPage, setContentPage] = useState(1);
@@ -287,6 +305,7 @@ export default function App() {
   const [bufferProgress, setBufferProgress] = useState(0);
 
   const [apiBase, setApiBase] = useState(() => localStorage.getItem('api_base') || API_BASE);
+  const normalizedApiBase = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase]);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   const [tgStatus, setTgStatus] = useState<'checking' | 'loggedOut' | 'phoneInput' | 'codeInput' | 'passwordInput' | 'loggedIn'>('checking');
@@ -299,7 +318,7 @@ export default function App() {
 
   const [loginId, setLoginId] = useState('');
 
-  const CURRENT_VERSION = '1.0.5';
+  const CURRENT_VERSION = '1.0.6';
   const [otaVersion, setOtaVersion] = useState<string | null>(null);
   const [otaMessage, setOtaMessage] = useState<string | null>(null);
   const [otaDate, setOtaDate] = useState<string | null>(null);
@@ -329,33 +348,35 @@ export default function App() {
   const [genreList, setGenreList] = useState<any[]>([]);
   const [activeGenreId, setActiveGenreId] = useState<number | null>(null);
   useEffect(() => {
-    fetch(`${apiBase.replace(/\/$/, '')}/api/genres`)
+    fetch(buildApiUrl(normalizedApiBase, '/api/genres'))
       .then(r => r.json())
       .then(data => setGenreList(data.genres || []));
-  }, [apiBase]);
+  }, [normalizedApiBase]);
 
   useEffect(() => {
-    const base = apiBase.replace(/\/$/, '');
-    fetch(`${base}/api/version`)
+    fetch(buildApiUrl(normalizedApiBase, '/api/version'))
       .then(res => res.json())
       .then(data => {
-        if (data.version && data.version !== CURRENT_VERSION) {
+        if (isRemoteVersionNewer(CURRENT_VERSION, data.version)) {
           setOtaVersion(data.version);
           setOtaMessage(data.message);
           setOtaDate(data.date);
+        } else {
+          setOtaVersion(null);
+          setOtaMessage(null);
+          setOtaDate(null);
         }
       })
       .catch(() => {});
-  }, [apiBase]);
+  }, [CURRENT_VERSION, normalizedApiBase]);
 
   useEffect(() => {
-    const base = apiBase.replace(/\/$/, '');
     const sessionStr = localStorage.getItem('tg_session') || '';
-    fetch(`${base}/api/tg/status`, { headers: { 'x-tg-session': sessionStr } })
+    fetch(buildApiUrl(normalizedApiBase, '/api/tg/status'), { headers: { 'x-tg-session': sessionStr } })
       .then(res => res.json())
       .then(data => setTgStatus(data.loggedIn ? 'loggedIn' : 'loggedOut'))
       .catch(() => setTgStatus('loggedOut'));
-  }, [apiBase]);
+  }, [normalizedApiBase]);
 
   const exitPressCount = useRef(0);
   const exitTimeout = useRef<any>(null);
@@ -473,16 +494,22 @@ export default function App() {
 
   const isMovieCorridor = genre !== '׳¡׳“׳¨׳•׳×' && genre !== '׳׳•׳¢׳“׳₪׳™׳' && genre !== '׳¦׳₪׳™׳•׳× ׳׳—׳¨׳•׳ ׳•׳×' && !navContext;
 
+  const isMoviesSection = librarySection === 'all';
+  const isSeriesSection = librarySection === 'series';
+  const isFavoritesSection = librarySection === 'favorites';
+  const isHistorySection = librarySection === 'history';
+  const isBrowseSection = isMoviesSection || isSeriesSection;
+
   // Initial movie fetch
   useEffect(() => {
     if (genre === 'סדרות' || genre === 'מועדפים' || genre === 'צפיות אחרונות') return;
-    const base = apiBase.replace(/\/$/, '');
+    if (!isMoviesSection) return;
     const genreParam = activeGenreId ? `&genre_id=${activeGenreId}` : '';
     setContentPage(1);
     setHasMore(true);
     setIsLoadingMore(false);
     setFetchError(null);
-    fetch(`${base}/api/movies?page=1${genreParam}`)
+    fetch(buildApiUrl(normalizedApiBase, `/api/movies?page=1${genreParam}`))
       .then(res => { if (!res.ok) throw new Error(`HTTP Error: ${res.status}`); return res.json(); })
       .then(data => {
         setBaseMovies(data.movies && data.movies.length > 0 ? data.movies : BASE_MOVIES);
@@ -493,10 +520,10 @@ export default function App() {
         setBaseMovies(BASE_MOVIES);
         setShowSettings(true);
       });
-  }, [apiBase, activeGenreId, genre]);
+  }, [activeGenreId, genre, isMoviesSection, normalizedApiBase]);
 
   useEffect(() => {
-    if (!isMovieCorridor || baseMovies.length === 0) return;
+    if (!isMoviesSection || baseMovies.length === 0) return;
 
     let cancelled = false;
     const posterUrls = baseMovies
@@ -517,17 +544,17 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [baseMovies, isMovieCorridor]);
+  }, [baseMovies, isMoviesSection]);
 
   // Load more movies when reaching the end
   const handleNearEnd = () => {
-    if (isMovieCorridor && baseMovies.length === 0) return;
+    if (isMoviesSection && baseMovies.length === 0) return;
+    if (!isMoviesSection) return;
     if (isLoadingMore || !hasMore || navContext || genre === 'סדרות' || genre === 'מועדפים' || genre === 'צפיות אחרונות' || showSearch) return;
-    const base = apiBase.replace(/\/$/, '');
     const nextPage = contentPage + 1;
     const genreParam = activeGenreId ? `&genre_id=${activeGenreId}` : '';
     setIsLoadingMore(true);
-    fetch(`${base}/api/movies?page=${nextPage}${genreParam}`)
+    fetch(buildApiUrl(normalizedApiBase, `/api/movies?page=${nextPage}${genreParam}`))
       .then(r => r.json())
       .then(data => {
         setBaseMovies(prev => [...prev, ...(data.movies || [])]);
@@ -540,39 +567,56 @@ export default function App() {
   // Fetch series when genre switches to 'סדרות'
   useEffect(() => {
     if (genre !== 'סדרות') return;
-    const base = apiBase.replace(/\/$/, '');
-    fetch(`${base}/api/series?page=1`)
+    if (!isSeriesSection) return;
+    fetch(buildApiUrl(normalizedApiBase, '/api/series?page=1'))
       .then(r => r.json())
-      .then(data => setSeriesItems(data.series || []));
-  }, [genre, apiBase]);
+      .then(data => {
+        setSeriesItems(data.series || []);
+        setFetchError(data.series?.length ? null : 'לא נמצאו סדרות לטעינה.');
+      })
+      .catch((err) => setFetchError(`שגיאת סדרות: ${err.message}`));
+  }, [genre, isSeriesSection, normalizedApiBase]);
 
   // Navigate into series’ seasons
+  const runCorridorTransition = async (label: string, action: () => Promise<void>) => {
+    setTransitionLabel(label);
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    try {
+      await action();
+    } finally {
+      window.setTimeout(() => setTransitionLabel(null), 240);
+    }
+  };
+
   const enterSeries = async (series: any) => {
-    const base = apiBase.replace(/\/$/, '');
-    const data = await fetch(`${base}/api/series/${series.id}`).then(r => r.json());
-    const seasons = (data.seasons || []).map((s: any, i: number) => ({ ...s, uniqueId: `season-${s.id}-${i}` }));
-    setNavContext({ type: 'seasons', seriesId: series.id, seriesTitle: series.title, seasons });
+    await runCorridorTransition(`Opening ${series.title}`, async () => {
+      const data = await fetch(buildApiUrl(normalizedApiBase, `/api/series/${series.id}`)).then(r => r.json());
+      const seasons = (data.seasons || []).map((s: any, i: number) => ({ ...s, uniqueId: `season-${s.id}-${i}` }));
+      setNavContext({ type: 'seasons', seriesId: series.id, seriesTitle: series.title, seasons });
+    });
   };
 
   // Navigate into a season’s episodes
   const enterSeason = async (season: any) => {
-    const base = apiBase.replace(/\/$/, '');
-    const data = await fetch(`${base}/api/series/${season.seriesId}/season/${season.season_number}`).then(r => r.json());
-    const episodes = (data.episodes || []).map((e: any, i: number) => ({ ...e, uniqueId: `ep-${e.id}-${i}` }));
-    setNavContext(prev => ({
-      type: 'episodes',
-      seriesId: (prev as any).seriesId,
-      seriesTitle: (prev as any).seriesTitle,
-      seasonNum: season.season_number,
-      seasonTitle: season.title,
-      episodes
-    }));
+    await runCorridorTransition(`Entering ${season.title}`, async () => {
+      const data = await fetch(buildApiUrl(normalizedApiBase, `/api/series/${season.seriesId}/season/${season.season_number}`)).then(r => r.json());
+      const episodes = (data.episodes || []).map((e: any, i: number) => ({ ...e, uniqueId: `ep-${e.id}-${i}` }));
+      setNavContext(prev => ({
+        type: 'episodes',
+        seriesId: (prev as any).seriesId,
+        seriesTitle: (prev as any).seriesTitle,
+        seasonNum: season.season_number,
+        seasonTitle: season.title,
+        episodes
+      }));
+    });
   };
 
   // Smart poster select: route based on current context
   const handlePosterSelect = (movie: any) => {
     if (navContext?.type === 'seasons') { enterSeason(movie); return; }
     if (navContext?.type === 'episodes') { setSelectedMovie(movie); return; }
+    if (isSeriesSection) { enterSeries(movie); return; }
     if (genre === 'סדרות') { enterSeries(movie); return; }
     setSelectedMovie(movie); // normal movie/favorite - open Telegram search
   };
@@ -583,6 +627,20 @@ export default function App() {
     }
     if (navContext?.type === 'seasons') return navContext.seasons;
     if (navContext?.type === 'episodes') return navContext.episodes;
+    if (isFavoritesSection) {
+      return favorites.map((m: any, i: number) => ({ ...m, uniqueId: `fav-${m.id}-${m.mediaType}-${i}` }));
+    }
+    if (isHistorySection) {
+      return watchHistory.map((m: any, i: number) => ({ ...m, uniqueId: `hist-${m.id}-${m.mediaType}-${i}` }));
+    }
+    if (isSeriesSection) {
+      return applyCatalogFilters(seriesItems, {
+        sortMode,
+        yearFilter,
+        genreFilter: seriesGenreFilter,
+        randomSeed: shuffleSeed
+      }).map((m: any, i: number) => ({ ...m, uniqueId: `ser-${m.id}-${i}` }));
+    }
     if (genre === 'מועדפים') {
       return favorites.map((m: any, i: number) => ({ ...m, uniqueId: `fav-${m.id}-${m.mediaType}-${i}` }));
     }
@@ -590,9 +648,13 @@ export default function App() {
       return watchHistory.map((m: any, i: number) => ({ ...m, uniqueId: `hist-${m.id}-${m.mediaType}-${i}` }));
     }
     if (genre === 'סדרות') return seriesItems.map((m: any, i: number) => ({ ...m, uniqueId: `ser-${m.id}-${i}` }));
-    const filtered = (baseMovies && baseMovies.length > 0 ? baseMovies : BASE_MOVIES) || [];
+    const filtered = applyCatalogFilters((baseMovies && baseMovies.length > 0 ? baseMovies : BASE_MOVIES) || [], {
+      sortMode,
+      yearFilter,
+      randomSeed: shuffleSeed
+    });
     return filtered.map((m: any, i: number) => ({ ...m, uniqueId: `${m.id}-${i}` }));
-  }, [baseMovies, genre, seriesItems, navContext, favorites, watchHistory, searchResults, showSearch]);
+  }, [baseMovies, favorites, genre, isFavoritesSection, isHistorySection, isSeriesSection, navContext, searchResults, seriesGenreFilter, seriesItems, showSearch, shuffleSeed, sortMode, watchHistory, yearFilter]);
 
   const posterLayout = useMemo(() => {
     return displayMovies.map((movie: any, index: number) => {
@@ -606,6 +668,13 @@ export default function App() {
     });
   }, [displayMovies]);
 
+  const renderedPosterLayout = useMemo(() => (
+    posterLayout.filter(({ position }) => {
+      const z = position[2] as number;
+      return z < cameraZ + 28 && z > cameraZ - 90;
+    })
+  ), [cameraZ, posterLayout]);
+
   const lastPosterZ = posterLayout.length > 0
     ? posterLayout[posterLayout.length - 1].position[2] as number
     : -2;
@@ -613,9 +682,8 @@ export default function App() {
   // Trigger TMDB search
   const handleTmdbSearch = () => {
     if (!searchQuery.trim()) return;
-    const base = apiBase.replace(/\/$/, '');
     setIsSearchingTmdb(true);
-    fetch(`${base}/api/search?q=${encodeURIComponent(searchQuery)}&type=all`)
+    fetch(buildApiUrl(normalizedApiBase, `/api/search?q=${encodeURIComponent(searchQuery)}&type=${isSeriesSection ? 'tv' : 'all'}`))
       .then(r => r.json())
       .then(data => { setSearchResults(data.results || []); setIsSearchingTmdb(false); })
       .catch(() => setIsSearchingTmdb(false));
@@ -624,9 +692,9 @@ export default function App() {
   const handlePlayVideo = async (peerId: string, messageId: number, title: string) => {
     setIsBuffering(true);
     setBufferProgress(0);
-    const base = apiBase.replace(/\/$/, '');
     const sessionStr = localStorage.getItem('tg_session') || '';
-    const videoUrl = `${window.location.origin}${base}/api/tg/stream/${peerId}/${messageId}?session=${sessionStr}`;
+    if (selectedMovie) saveToHistory(selectedMovie);
+    const videoUrl = buildApiUrl(normalizedApiBase, `/api/tg/stream/${peerId}/${messageId}?session=${sessionStr}`);
     
     let progress = 0;
     const interval = setInterval(() => {
@@ -635,10 +703,12 @@ export default function App() {
       if (progress >= 100) {
         clearInterval(interval);
         setIsBuffering(false);
-        fetch(`${base}/api/tg/search-subtitles?query=${encodeURIComponent(title)}`)
+        fetch(buildApiUrl(normalizedApiBase, `/api/tg/search-subtitles?query=${encodeURIComponent(title)}`))
           .then(res => res.json())
           .then(subData => {
-            const subUrl = subData.results?.[0] ? `${window.location.origin}${base}/api/tg/subtitle/${subData.results[0].peerId}/${subData.results[0].id}` : undefined;
+            const subUrl = subData.results?.[0]
+              ? buildApiUrl(normalizedApiBase, `/api/tg/subtitle/${subData.results[0].peerId}/${subData.results[0].id}`)
+              : undefined;
             setActiveMedia({ url: videoUrl, title, subtitleUrl: subUrl });
           })
           .catch(() => setActiveMedia({ url: videoUrl, title }));
@@ -654,7 +724,7 @@ export default function App() {
           <group>
              <mesh rotation={[-Math.PI/2, 0, 0]} position={[0,0,-100]}><planeGeometry args={[20, 300]} /><meshStandardMaterial color="#050505" /></mesh>
              <gridHelper args={[100, 50, '#00ffcc', '#001111']} position={[0, 0.01, -50]} />
-              {posterLayout.map(({ movie, position, rotation }: any) => (
+              {renderedPosterLayout.map(({ movie, position, rotation }: any) => (
                 <Poster
                   key={movie.uniqueId}
                   movie={movie}
@@ -679,17 +749,18 @@ export default function App() {
             setFocusedId={setFocusedId}
             setFocusedHeartId={setFocusedHeartId}
             isAnyModalOpen={!!selectedMovie || showCinemaScreen}
-            selectedMovie={selectedMovie}
-            lastPosterZ={lastPosterZ}
-            onNearEnd={handleNearEnd}
-          />
+             selectedMovie={selectedMovie}
+             lastPosterZ={lastPosterZ}
+             onNearEnd={handleNearEnd}
+             onCameraMove={setCameraZ}
+           />
         </Suspense>
       </Canvas>
 
       {/* Breadcrumb — shows where we are in the series hierarchy */}
       {isLocked && navContext && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 pointer-events-none flex gap-2 items-center text-white/80 text-lg bg-black/50 px-6 py-2 rounded-full backdrop-blur">
-          <span className="cursor-pointer" onClick={() => { setNavContext(null); setGenre('סדרות'); }}>🏠 סדרות</span>
+          <span className="cursor-pointer" onClick={() => { setNavContext(null); setLibrarySection('series'); setGenre('סדרות'); }}>🏠 סדרות</span>
           <span className="text-[#00ffcc]">&rsaquo;</span>
           <span>{navContext.seriesTitle}</span>
           {navContext.type === 'episodes' && (
@@ -704,6 +775,16 @@ export default function App() {
           <div className="w-2 h-2 bg-red-600 rounded-full shadow-[0_0_8px_4px_rgba(220,38,38,0.8)]"></div>
         </div>
       )}
+
+      <AnimatePresence>
+        {transitionLabel && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-[radial-gradient(circle_at_center,rgba(0,255,204,0.12),rgba(0,0,0,0.92)_60%)]">
+            <motion.div initial={{ scale: 0.92, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 1.08, opacity: 0 }} className="px-8 py-4 rounded-full border border-[#00ffcc]/40 bg-black/70 backdrop-blur-md text-[#00ffcc] text-xl tracking-[0.2em] uppercase shadow-[0_0_40px_rgba(0,255,204,0.18)]">
+              {transitionLabel}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {tgStatus !== 'checking' && tgStatus !== 'loggedIn' && tgStatus !== 'loggedOut' && (
@@ -785,6 +866,53 @@ export default function App() {
             <button onClick={() => setIsLocked(true)} className="py-5 bg-[#00ffcc] text-black font-bold rounded-2xl focus:ring-4 focus:ring-white">כניסה למסדרון</button>
             <button onClick={() => { setShowSearch(true); setSearchQuery(''); setSearchResults([]); setIsLocked(true); }} className="mt-3 py-4 bg-white/10 hover:bg-white/20 text-white font-bold rounded-2xl w-full text-lg transition-colors border border-white/10">🔍 חפש תוכן</button>
             <div className="mt-6 flex flex-col gap-2 overflow-y-auto flex-1">
+              <div className="space-y-2">
+                {SPECIAL_LIBRARY_SECTIONS.map((section) => (
+                  <button
+                    key={section.id}
+                    onClick={() => {
+                      setLibrarySection(section.id);
+                      setGenre(section.id === 'series' ? 'סדרות' : section.id === 'favorites' ? 'מועדפים' : 'צפיות אחרונות');
+                      setActiveGenreId(null);
+                      setSeriesGenreFilter(null);
+                      setNavContext(null);
+                    }}
+                    className={`p-3 rounded-xl text-right transition-all text-sm w-full ${(librarySection === section.id && !navContext) ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}
+                  >
+                    {section.icon} {section.label}
+                    {section.id === 'favorites' ? ` (${favorites.length})` : section.id === 'history' ? ` (${watchHistory.length})` : ''}
+                  </button>
+                ))}
+                <div className="border-t border-white/10 my-2" />
+                <button onClick={() => { setLibrarySection('all'); setGenre('הכל'); setNavContext(null); }} className={`p-3 rounded-xl text-right transition-all text-sm w-full ${librarySection === 'all' && !navContext ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>🎬 סרטים</button>
+                <p className="text-xs text-gray-500 px-1">{isSeriesSection ? 'קטגוריות סדרות' : 'קטגוריות סרטים'}</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {SORT_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      onClick={() => {
+                        setSortMode(option.id);
+                        if (option.id === 'random') setShuffleSeed(Date.now());
+                      }}
+                      className={`p-2 rounded-xl text-xs transition-all ${sortMode === option.id ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {YEAR_OPTIONS.map((option) => (
+                    <button key={option.id} onClick={() => setYearFilter(option.id)} className={`p-2 rounded-xl text-xs transition-all ${yearFilter === option.id ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>{option.label}</button>
+                  ))}
+                </div>
+                {!isSeriesSection && (genreList.length > 0 ? genreList : [{ id: 0, name: 'הכל', tmdbId: null }]).map((g: any) => (
+                  <button key={g.id} onClick={() => { setLibrarySection('all'); setGenre('הכל'); setActiveGenreId(g.tmdbId); setNavContext(null); }} className={`p-3 rounded-xl text-right transition-all text-sm w-full ${activeGenreId === g.tmdbId && librarySection === 'all' && !navContext ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>{g.name}</button>
+                ))}
+                {isSeriesSection && getUniqueGenres(seriesItems).map((genreOption) => (
+                  <button key={genreOption} onClick={() => setSeriesGenreFilter((current) => current === genreOption ? null : genreOption)} className={`p-3 rounded-xl text-right transition-all text-sm w-full ${seriesGenreFilter === genreOption ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>{genreOption}</button>
+                ))}
+              </div>
+               <div className="hidden">
                {/* Special categories */}
                {['סדרות 📺', 'מועדפים ♥', 'צפיות אחרונות 🕓'].map(g => {
                  const key = g.split(' ')[0];
@@ -800,6 +928,7 @@ export default function App() {
                {(genreList.length > 0 ? genreList : [{ id: 0, name: 'הכל', tmdbId: null }]).map((g: any) => (
                  <button key={g.id} onClick={() => { setActiveGenreId(g.tmdbId); setGenre('הכל'); setNavContext(null); }} className={`p-3 rounded-xl text-right transition-all text-sm ${activeGenreId === g.tmdbId && !navContext && genre !== 'סדרות' && genre !== 'מועדפים' && genre !== 'צפיות אחרונות' ? 'bg-[#00ffcc] text-black font-bold' : 'bg-white/5 hover:bg-white/10'}`}>{g.name}</button>
                ))}
+               </div>
                <button onClick={() => setShowSettings(true)} className="p-3 rounded-xl text-right transition-all bg-white/5 mt-2 text-gray-400 hover:text-white border border-white/5 text-sm">⚙️ הגדרות</button>
             </div>
             {fetchError && (
@@ -833,8 +962,7 @@ export default function App() {
                     try {
                       setIsDownloadingOta(true);
                       setOtaDownloadProgress(0);
-                      const base = apiBase.replace(/\/$/, '');
-                      const apkUrl = `${base}/apk/app-debug.apk`;
+                      const apkUrl = buildApiUrl(normalizedApiBase, '/apk/app-debug.apk');
                       
                       const listener = await Filesystem.addListener('progress', (progress) => {
                          setOtaDownloadProgress(Math.floor((progress.bytes / progress.contentLength) * 100));
@@ -865,13 +993,13 @@ export default function App() {
               <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 flex flex-col gap-6">
                 {!otaVersion && (
                   <button onClick={() => {
-                    const base = apiBase.replace(/\/$/, '');
-                    fetch(`${base}/api/version`)
+                    fetch(buildApiUrl(normalizedApiBase, '/api/version'))
                       .then(res => res.json())
                       .then(data => {
-                        if (data.version && data.version !== CURRENT_VERSION) {
+                        if (isRemoteVersionNewer(CURRENT_VERSION, data.version)) {
                           setOtaVersion(data.version);
                           setOtaMessage(data.message);
+                          setOtaDate(data.date || null);
                         } else {
                           alert(`אתה בגרסה העדכנית ביותר (${CURRENT_VERSION})`);
                         }

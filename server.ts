@@ -85,7 +85,9 @@ const fetchTvMazeFallbackBatch = async (batchNum: number, genreId?: number) => {
         poster: show.image?.original || show.image?.medium,
         trailer: '',
         desc: stripHtml(show.summary) || 'No description available.',
-        mediaType: 'movie'
+        mediaType: 'movie',
+        year: show.premiered ? Number.parseInt(String(show.premiered).slice(0, 4), 10) : null,
+        language: show.language || 'en'
       }));
 
     collected.push(...mappedShows);
@@ -95,6 +97,42 @@ const fetchTvMazeFallbackBatch = async (batchNum: number, genreId?: number) => {
     movies: collected.slice(0, FALLBACK_BATCH_SIZE),
     hasMore: collected.length >= FALLBACK_BATCH_SIZE
   };
+};
+
+const mapTvMazeShow = (show: any) => ({
+  id: show.id,
+  title: show.name,
+  genre: (show.genres || []).join(', ') || 'TV',
+  rating: show.rating?.average || 0,
+  popularity: show.weight || 0,
+  poster: show.image?.original || show.image?.medium,
+  desc: stripHtml(show.summary) || 'No description available.',
+  mediaType: 'tv',
+  year: show.premiered ? Number.parseInt(String(show.premiered).slice(0, 4), 10) : null,
+  language: show.language || 'en'
+});
+
+const fetchTvMazeSeriesBatch = async (batchNum: number, genreId?: number) => {
+  const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId);
+  return {
+    series: fallback.movies.map((item) => ({ ...item, mediaType: 'tv' })),
+    hasMore: fallback.hasMore
+  };
+};
+
+const fetchTvMazeShowContext = async (showId: number) => {
+  const [showResponse, episodesResponse] = await Promise.all([
+    fetch(`https://api.tvmaze.com/shows/${showId}`),
+    fetch(`https://api.tvmaze.com/shows/${showId}/episodes`)
+  ]);
+
+  if (!showResponse.ok || !episodesResponse.ok) {
+    throw new Error('Failed to load TVMaze show data');
+  }
+
+  const show = await showResponse.json();
+  const episodes = await episodesResponse.json();
+  return { show, episodes: Array.isArray(episodes) ? episodes : [] };
 };
 
 const getClientParam = async (sessionStr: string) => {
@@ -476,7 +514,9 @@ app.get('/api/movies', async (req, res) => {
         poster: `https://image.tmdb.org/t/p/w500${m.poster_path}`,
         trailer: '',
         desc: m.overview || 'אין תיאור זמין בעברית.',
-        mediaType: 'movie'
+        mediaType: 'movie',
+        year: m.release_date ? Number.parseInt(String(m.release_date).slice(0, 4), 10) : null,
+        language: m.original_language || 'en'
       }));
         if (movies.length > 0) {
           return res.json({ movies, hasMore: batchNum < 10 });
@@ -503,12 +543,14 @@ app.get('/api/movies', async (req, res) => {
 app.get('/api/series', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
-    if (!tmdbKey) return res.json({ series: [] });
     const batchNum = Math.max(1, parseInt(req.query.page as string || '1', 10));
+    const genreId = req.query.genre_id ? parseInt(req.query.genre_id as string, 10) : undefined;
+    if (!tmdbKey) return res.json(await fetchTvMazeSeriesBatch(batchNum, genreId));
     const startTmdbPage = (batchNum - 1) * 5 + 1;
     const pages = Array.from({ length: 5 }, (_, i) => startTmdbPage + i);
+    const genreParam = genreId ? `&with_genres=${genreId}` : '';
     const fetchPromises = pages.map(page =>
-      fetch(`https://api.themoviedb.org/3/discover/tv?sort_by=popularity.desc&api_key=${tmdbKey}&language=he-IL&page=${page}`).then(r => r.json())
+      fetch(`https://api.themoviedb.org/3/discover/tv?sort_by=popularity.desc&api_key=${tmdbKey}&language=he-IL${genreParam}&page=${page}`).then(r => r.json())
     );
     const results = await Promise.all(fetchPromises);
     const allShows = results.flatMap(d => d.results || []);
@@ -520,7 +562,9 @@ app.get('/api/series', async (req, res) => {
       popularity: s.popularity,
       poster: `https://image.tmdb.org/t/p/w500${s.poster_path}`,
       desc: s.overview || '',
-      mediaType: 'tv'
+      mediaType: 'tv',
+      year: s.first_air_date ? Number.parseInt(String(s.first_air_date).slice(0, 4), 10) : null,
+      language: s.original_language || 'en'
     }));
     return res.json({ series, hasMore: batchNum < 10 });
   } catch (e: any) {
@@ -532,7 +576,27 @@ app.get('/api/series', async (req, res) => {
 app.get('/api/series/:id', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
-    if (!tmdbKey) return res.json({ seasons: [], seriesTitle: '' });
+    if (!tmdbKey) {
+      const { show, episodes } = await fetchTvMazeShowContext(parseInt(req.params.id, 10));
+      const seasons = Array.from(new Set(episodes.map((episode: any) => episode.season)))
+        .sort((left, right) => left - right)
+        .map((seasonNumber, index) => {
+          const seasonEpisodes = episodes.filter((episode: any) => episode.season === seasonNumber);
+          return {
+            id: Number(`${show.id}${seasonNumber}`),
+            title: `Season ${seasonNumber}`,
+            season_number: seasonNumber,
+            seriesId: show.id,
+            poster: show.image?.original || show.image?.medium,
+            episode_count: seasonEpisodes.length,
+            desc: stripHtml(show.summary) || `${seasonEpisodes.length} episodes`,
+            genre: 'Season',
+            rating: show.rating?.average || 0,
+            mediaType: 'season'
+          };
+        });
+      return res.json({ seasons, seriesTitle: show.name });
+    }
     const data = await fetch(`https://api.themoviedb.org/3/tv/${req.params.id}?api_key=${tmdbKey}&language=he-IL`).then(r => r.json());
     const seasons = (data.seasons || [])
       .filter((s: any) => s.season_number > 0)
@@ -558,7 +622,27 @@ app.get('/api/series/:id', async (req, res) => {
 app.get('/api/series/:id/season/:num', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
-    if (!tmdbKey) return res.json({ episodes: [], seasonTitle: '' });
+    if (!tmdbKey) {
+      const showId = parseInt(req.params.id, 10);
+      const seasonNum = parseInt(req.params.num, 10);
+      const { show, episodes: allEpisodes } = await fetchTvMazeShowContext(showId);
+      const episodes = allEpisodes
+        .filter((episode: any) => episode.season === seasonNum)
+        .map((episode: any) => ({
+          id: episode.id,
+          title: `${episode.number}. ${episode.name}`,
+          episode_number: episode.number,
+          seriesId: showId,
+          seasonNum,
+          poster: episode.image?.original || episode.image?.medium || show.image?.original || show.image?.medium,
+          desc: stripHtml(episode.summary) || '',
+          genre: 'Episode',
+          rating: episode.rating?.average || 0,
+          mediaType: 'episode',
+          year: episode.airdate ? Number.parseInt(String(episode.airdate).slice(0, 4), 10) : null
+        }));
+      return res.json({ episodes, seasonTitle: `Season ${seasonNum}` });
+    }
     const data = await fetch(`https://api.themoviedb.org/3/tv/${req.params.id}/season/${req.params.num}?api_key=${tmdbKey}&language=he-IL`).then(r => r.json());
     const episodes = (data.episodes || []).map((e: any) => ({
       id: e.id,
@@ -582,7 +666,7 @@ async function startServer() {
   // OTA Version Check
   app.get('/api/version', (req, res) => {
     res.json({
-      version: '1.0.4',
+      version: '1.0.6',
       date: '13 במרץ 2026',
       message: 'עדכון מערכת רחב: כל משתמש כעת מנהל חיבור פרטי לטלגרם על גבי הענן בשמירה מקומית! תוקנו שלל באגים של תנועת השלט עבור כפתורים והוספת מקורות.'
     });
@@ -614,9 +698,17 @@ startServer();
 app.get('/api/search', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
-    if (!tmdbKey) return res.json({ results: [] });
     const q = encodeURIComponent((req.query.q as string) || '');
     const type = req.query.type as string || 'all';
+    if (!tmdbKey) {
+      const tvMazeResults = await fetch(`https://api.tvmaze.com/search/shows?q=${q}`).then((response) => response.json());
+      const results = (Array.isArray(tvMazeResults) ? tvMazeResults : [])
+        .map((entry: any) => entry.show)
+        .filter((show: any) => show?.image?.original)
+        .map((show: any) => mapTvMazeShow(show))
+        .slice(0, 40);
+      return res.json({ results });
+    }
     const [movieRes, tvRes] = await Promise.all([
       type !== 'tv' ? fetch(`https://api.themoviedb.org/3/search/movie?api_key=${tmdbKey}&language=he-IL&query=${q}&page=1`).then(r => r.json()) : Promise.resolve({ results: [] }),
       type !== 'movie' ? fetch(`https://api.themoviedb.org/3/search/tv?api_key=${tmdbKey}&language=he-IL&query=${q}&page=1`).then(r => r.json()) : Promise.resolve({ results: [] }),
