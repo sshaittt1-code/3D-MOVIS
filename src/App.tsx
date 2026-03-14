@@ -59,6 +59,7 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, s
   const nearEndFired = useRef(false);
   const STEP_SIZE = 0.8;
   const ROTATION_SPEED = 0.012;
+  const INITIAL_CAMERA_Z = 2;
   
   const keys = useRef<{ left: boolean; right: boolean }>({ left: false, right: false });
   const targetRotY = useRef(0);
@@ -116,10 +117,13 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onHeartToggle, s
       const targetQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, targetRotY.current, 0));
       camera.quaternion.slerp(targetQuat, 0.15);
 
-      // Infinite scroll - trigger near end of corridor
-      if (lastPosterZ !== undefined && !nearEndFired.current && camera.position.z < lastPosterZ + 25) {
-        nearEndFired.current = true;
-        onNearEnd?.();
+      // Infinite scroll - trigger only after the user has crossed 90% of the current corridor
+      if (lastPosterZ !== undefined && lastPosterZ < INITIAL_CAMERA_Z && !nearEndFired.current) {
+        const nearEndTriggerZ = INITIAL_CAMERA_Z + (lastPosterZ - INITIAL_CAMERA_Z) * 0.9;
+        if (camera.position.z <= nearEndTriggerZ) {
+          nearEndFired.current = true;
+          onNearEnd?.();
+        }
       }
       // Allow re-firing after load (if lastPosterZ updates, effect above resets)
 
@@ -490,6 +494,30 @@ export default function App() {
         setShowSettings(true);
       });
   }, [apiBase, activeGenreId, genre]);
+
+  useEffect(() => {
+    if (!isMovieCorridor || baseMovies.length === 0) return;
+
+    let cancelled = false;
+    const posterUrls = baseMovies
+      .slice(0, 100)
+      .map((movie: any) => movie.poster)
+      .filter(Boolean);
+
+    const preloadInitialBatch = async () => {
+      const batchSize = 6;
+      for (let i = 0; i < posterUrls.length && !cancelled; i += batchSize) {
+        const batch = posterUrls.slice(i, i + batchSize);
+        await Promise.all(batch.map((url: string) => textureManager.loadTexture(url).catch(() => null)));
+      }
+    };
+
+    preloadInitialBatch();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [baseMovies, isMovieCorridor]);
 
   // Load more movies when reaching the end
   const handleNearEnd = () => {

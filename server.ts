@@ -35,6 +35,68 @@ interface LoginSession {
 }
 const loginSessions = new Map<string, LoginSession>();
 
+const FALLBACK_BATCH_SIZE = 100;
+const FALLBACK_SOURCE_PAGES_PER_BATCH = 3;
+const TVMAZE_GENRE_MAP: Record<number, string[]> = {
+  28: ['Action'],
+  35: ['Comedy'],
+  18: ['Drama'],
+  27: ['Horror'],
+  878: ['Science-Fiction'],
+  10749: ['Romance'],
+  53: ['Thriller'],
+  16: ['Animation'],
+  80: ['Crime'],
+  12: ['Adventure'],
+  10751: ['Children', 'Family'],
+  14: ['Fantasy'],
+  36: ['History']
+};
+
+const stripHtml = (value: string | null | undefined) =>
+  (value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+const matchesTvMazeGenre = (genres: string[], genreId?: number) => {
+  if (!genreId) return true;
+  const allowedGenres = TVMAZE_GENRE_MAP[genreId];
+  if (!allowedGenres || allowedGenres.length === 0) return true;
+  return genres.some((genre) => allowedGenres.includes(genre));
+};
+
+const fetchTvMazeFallbackBatch = async (batchNum: number, genreId?: number) => {
+  const collected: any[] = [];
+  const startPage = Math.max(0, (batchNum - 1) * FALLBACK_SOURCE_PAGES_PER_BATCH);
+
+  for (let pageOffset = 0; pageOffset < FALLBACK_SOURCE_PAGES_PER_BATCH && collected.length < FALLBACK_BATCH_SIZE; pageOffset += 1) {
+    const response = await fetch(`https://api.tvmaze.com/shows?page=${startPage + pageOffset}`);
+    if (!response.ok) break;
+
+    const shows = await response.json();
+    if (!Array.isArray(shows) || shows.length === 0) break;
+
+    const mappedShows = shows
+      .filter((show: any) => show?.image?.original && matchesTvMazeGenre(show.genres || [], genreId))
+      .map((show: any) => ({
+        id: show.id,
+        title: show.name,
+        genre: (show.genres || []).join(', ') || 'TV',
+        rating: show.rating?.average || 0,
+        popularity: show.weight || 0,
+        poster: show.image?.original || show.image?.medium,
+        trailer: '',
+        desc: stripHtml(show.summary) || 'No description available.',
+        mediaType: 'movie'
+      }));
+
+    collected.push(...mappedShows);
+  }
+
+  return {
+    movies: collected.slice(0, FALLBACK_BATCH_SIZE),
+    hasMore: collected.length >= FALLBACK_BATCH_SIZE
+  };
+};
+
 const getClientParam = async (sessionStr: string) => {
   if (!sessionStr) throw new Error("Missing Telegram Session! Please login on your TV.");
   if (activeClients.has(sessionStr)) return activeClients.get(sessionStr)!;
@@ -390,10 +452,12 @@ app.get('/api/movies', async (req, res) => {
     const tmdbKey = process.env.TMDB_API_KEY;
     const batchNum = Math.max(1, parseInt(req.query.page as string || '1', 10));
     const startTmdbPage = (batchNum - 1) * 5 + 1;
+    const genreId = req.query.genre_id ? parseInt(req.query.genre_id as string, 10) : undefined;
 
     if (tmdbKey) {
+      try {
       const pages = Array.from({ length: 5 }, (_, i) => startTmdbPage + i);
-      const genreParam = req.query.genre_id ? `&with_genres=${req.query.genre_id}` : '';
+      const genreParam = genreId ? `&with_genres=${genreId}` : '';
       const endpoint = genreParam
         ? `https://api.themoviedb.org/3/discover/movie?sort_by=popularity.desc&api_key=${tmdbKey}&language=he-IL${genreParam}&page=`
         : `https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=`;
@@ -414,15 +478,22 @@ app.get('/api/movies', async (req, res) => {
         desc: m.overview || 'אין תיאור זמין בעברית.',
         mediaType: 'movie'
       }));
-      return res.json({ movies, hasMore: batchNum < 10 });
+        if (movies.length > 0) {
+          return res.json({ movies, hasMore: batchNum < 10 });
+        }
+      } catch (tmdbError) {
+        console.warn('TMDB movie fetch failed, falling back to TVMaze content.', tmdbError);
+      }
     }
 
     // Fallback
-    const fallback = [
+    const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId);
+    /*
       { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: '', desc: 'גנב שגונב סודות תאגידיים.', mediaType: 'movie' },
       { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', trailer: '', desc: 'צוות חוקרים נוסע דרך חור תולעת.', mediaType: 'movie' },
     ];
-    res.json({ movies: fallback, hasMore: false });
+    */
+    res.json(fallback);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
