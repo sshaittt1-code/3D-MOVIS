@@ -15,6 +15,7 @@ type AppSettingsPanelProps = {
   telegramStatusLabel: string;
   telegramStatusTone: string;
   apiBase: string;
+  telegramPanelContent?: React.ReactNode;
 };
 
 export const AppSettingsPanel = ({
@@ -29,7 +30,8 @@ export const AppSettingsPanel = ({
   onAutoPlayNextEpisodeChange,
   telegramStatusLabel,
   telegramStatusTone,
-  apiBase
+  apiBase,
+  telegramPanelContent
 }: AppSettingsPanelProps) => (
   <div className="absolute inset-0 z-[120] flex items-center justify-center bg-black/88 p-8" data-tv-scope="ui">
     <div className="w-full max-w-5xl rounded-[42px] border border-[#00ffcc]/20 bg-[linear-gradient(180deg,rgba(8,16,20,0.98),rgba(4,8,12,0.94))] p-8 shadow-[0_0_80px_rgba(0,0,0,0.5)]">
@@ -41,7 +43,7 @@ export const AppSettingsPanel = ({
           </div>
           <h2 className="mt-4 text-4xl font-bold text-white">הגדרות המערכת</h2>
           <p className="mt-3 max-w-2xl text-base text-white/60">
-            שלב הייצוב של המוצר: מעטפת הגדרות אחת, ברורה ויציבה, שמחזיקה את חוויית ה־Android TV בלי מצבים מתים.
+            מעטפת הגדרות אחת, ברורה ויציבה, שמחזיקה את חוויית Android TV בלי מצבים מתים.
           </p>
         </div>
         <button onClick={onClose} className="rounded-full border border-white/10 bg-white/5 p-3 text-white/70 transition hover:bg-white/10 hover:text-white">
@@ -76,7 +78,7 @@ export const AppSettingsPanel = ({
               <h3 className="text-2xl font-semibold">מסדרון ופוסטרים</h3>
             </div>
             <p className="mt-3 text-sm leading-7 text-white/60">
-              שליטה ברוחב הטעינה הראשוני, כדי להתאים את המסדרון גם לסטרימרים חלשים וגם למכשירים חזקים יותר.
+              שליטה ברוחב הטעינה הראשוני כדי להתאים את המסדרון גם לסטרימרים חלשים וגם למכשירים חזקים יותר.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               {posterBatchOptions.map((value) => (
@@ -101,7 +103,7 @@ export const AppSettingsPanel = ({
               <h3 className="text-2xl font-semibold">התנהגות צפייה</h3>
             </div>
             <p className="mt-3 text-sm leading-7 text-white/60">
-              בחירה אם להכין אוטומטית את הפרק הבא כשהמשתמש צופה בסדרה, כדי לשמור על חוויית binge חלקה.
+              בחירה אם להכין אוטומטית את הפרק הבא כשהמשתמש צופה בסדרה, כדי לשמור על binge חלק.
             </p>
             <div className="mt-6 flex gap-3">
               <button
@@ -130,19 +132,21 @@ export const AppSettingsPanel = ({
       )}
 
       {panel === 'telegram' && (
-        <div className="mt-8 rounded-[30px] border border-white/8 bg-white/[0.03] p-6">
-          <div className="flex items-center gap-3 text-white">
-            <Loader2 size={18} className="text-[#7debd6]" />
-            <h3 className="text-2xl font-semibold">מעטפת Telegram</h3>
+        telegramPanelContent ?? (
+          <div className="mt-8 rounded-[30px] border border-white/8 bg-white/[0.03] p-6">
+            <div className="flex items-center gap-3 text-white">
+              <Loader2 size={18} className="text-[#7debd6]" />
+              <h3 className="text-2xl font-semibold">מעטפת Telegram</h3>
+            </div>
+            <p className="mt-3 max-w-3xl text-sm leading-7 text-white/60">
+              חיבור מלא למקורות, login flow וניגון ישיר מוצגים כאן כשהם זמינים למעטפת הראשית.
+            </p>
+            <div className="mt-6 inline-flex items-center gap-3 rounded-full border px-4 py-2 text-sm text-white">
+              <span className={`h-2.5 w-2.5 rounded-full ${telegramStatusTone}`} />
+              <span>{telegramStatusLabel}</span>
+            </div>
           </div>
-          <p className="mt-3 max-w-3xl text-sm leading-7 text-white/60">
-            שלב 1 מייצב את מעטפת המוצר. החיבור המלא למקורות, login flow וניגון ישיר יועמקו בשלבי Telegram ו־Player, אבל כאן כבר יש נקודת כניסה יציבה וברורה.
-          </p>
-          <div className="mt-6 inline-flex items-center gap-3 rounded-full border px-4 py-2 text-sm text-white">
-            <span className={`h-2.5 w-2.5 rounded-full ${telegramStatusTone}`} />
-            <span>{telegramStatusLabel}</span>
-          </div>
-        </div>
+        )
       )}
 
       {panel === 'updates' && (

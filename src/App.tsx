@@ -9,12 +9,13 @@ import { textureManager } from './utils/TextureManager';
 import { applyCatalogFilters, getApiYearFilter, getUniqueGenres, type LibrarySection, type SortMode, type YearFilter } from './utils/catalog';
 import { isRemoteVersionNewer } from './utils/version';
 import { buildMediaKey, createDefaultMediaStateEntry, MEDIA_STATE_STORAGE_KEY, migrateLegacyMediaState, type MediaStateEntry, type WatchStatus, updateProgressState } from './utils/mediaState';
-import { findNextEpisodeInSeason, findNextSeason, shouldPrepareNextEpisode } from './utils/nextEpisode';
+import { AUTOPLAY_PRELOAD_SECONDS, findNextEpisodeInSeason, findNextSeason, shouldPrepareNextEpisode } from './utils/nextEpisode';
 import { readAutoPlayNextEpisode, writeAutoPlayNextEpisode } from './utils/playerSettings';
 import { SideMenu } from './components/SideMenu';
 import { PosterContextMenu } from './components/PosterContextMenu';
 import { AppSettingsPanel } from './components/AppSettingsPanel';
 import { CinemaGate } from './components/CinemaGate';
+import { TelegramConsolePanel } from './components/TelegramConsolePanel';
 import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
 import { safeGetJson, safeGetString, safeParseJson, safeRemove, safeSetJson, safeSetString } from './utils/safeStorage';
 import { buildCategoryCacheKey, getCategoryCacheEntry, writeCategoryCacheEntry } from './utils/categoryCache';
@@ -22,7 +23,14 @@ import { DEFAULT_POSTER_BATCH_SIZE, POSTER_BATCH_SIZE_OPTIONS, readPosterBatchSi
 import { LONG_PRESS_DURATION_MS, classifyPressDuration } from './utils/longPress';
 import { applyEditingKeyToInput, isEditableTextTarget } from './utils/keyboardActions';
 import { normalizeSearchText, rankSearchResults, shouldTriggerPredictiveSearch } from './utils/searchNormalize';
-import { NativePlayer } from './utils/nativePlayer';
+import { NativePlayer, type NativePlayerErrorEvent, type NativePlayerProgressEvent } from './utils/nativePlayer';
+import {
+  isPlayableFromCache,
+  readPlaybackCacheMap,
+  removePlaybackCacheEntry,
+  upsertPlaybackCacheEntry,
+  writePlaybackCacheMap
+} from './utils/playbackCache';
 import {
   buildLoadMorePageKey,
   canTriggerLoadMoreForPage,
@@ -71,6 +79,19 @@ import {
   resolveAppBackAction,
   resolveAppShellLayer
 } from './utils/appShell';
+import {
+  buildPreparedPlayback,
+  buildSubtitleSearchQuery,
+  buildTelegramSearchQuery,
+  getResumePositionSeconds,
+  isPlayableMediaItem,
+  pickDefaultSubtitle,
+  type PreparedPlayback,
+  type TelegramAuthStatus,
+  type TelegramSearchResult,
+  type TelegramSourceInfo,
+  type TelegramSubtitleResult
+} from './utils/telegramPlayer';
 
 // --- API Helpers ---
 const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://threed-movis.onrender.com';
@@ -170,52 +191,13 @@ const WatchStatusChip = ({ status }: { status: WatchStatus }) => {
   );
 };
 
-type PreparedPlayback = {
-  title: string;
-  subtitleUrl?: string;
-  mediaItem: any;
-  sourceKey: string;
-  streamUrl: string;
-  downloadUrl: string;
-  fileSizeBytes: number;
-  mimeType?: string;
-  fileName?: string;
-  durationSeconds: number;
-  cachePath: string;
-  cacheUri?: string;
-  resumePositionSeconds: number;
-  peerId: string;
-  messageId: number;
-};
-
 type ActivePlayback = PreparedPlayback & {
   url: string;
-};
-
-type TelegramSourceInfo = {
-  sourceKey?: string;
-  fileName?: string;
-  fileSizeBytes?: number;
-  mimeType?: string;
-  durationSeconds?: number;
-  streamUrl?: string;
-  downloadUrl?: string;
 };
 
 const formatBytes = (bytes: number) => {
   if (!bytes) return '0 MB';
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-};
-
-const toBase64 = (buffer: ArrayBuffer) => {
-  let binary = '';
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    const chunk = bytes.subarray(offset, offset + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
 };
 
 // --- 3D Components ---
@@ -484,8 +466,24 @@ export default function App() {
   const normalizedApiBase = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase]);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  const [tgStatus, setTgStatus] = useState<'checking' | 'loggedOut' | 'phoneInput' | 'codeInput' | 'passwordInput' | 'loggedIn'>('checking');
+  const [tgStatus, setTgStatus] = useState<TelegramAuthStatus>('checking');
   const [activeMedia, setActiveMedia] = useState<ActivePlayback | null>(null);
+  const [playbackCacheMap, setPlaybackCacheMap] = useState(() => readPlaybackCacheMap(localStorage));
+  const [tgConfigured, setTgConfigured] = useState(true);
+  const [tgBusy, setTgBusy] = useState(false);
+  const [tgError, setTgError] = useState<string | null>(null);
+  const [tgLoginId, setTgLoginId] = useState<string | null>(null);
+  const [tgPhone, setTgPhone] = useState('');
+  const [tgCode, setTgCode] = useState('');
+  const [tgPassword, setTgPassword] = useState('');
+  const [tgSearchQuery, setTgSearchQuery] = useState('');
+  const [tgSources, setTgSources] = useState<TelegramSearchResult[]>([]);
+  const [tgSubtitleResults, setTgSubtitleResults] = useState<TelegramSubtitleResult[]>([]);
+  const [tgSelectedSubtitleUrl, setTgSelectedSubtitleUrl] = useState<string | null>(null);
+  const [isSearchingTelegramSources, setIsSearchingTelegramSources] = useState(false);
+  const [isSearchingTelegramSubtitles, setIsSearchingTelegramSubtitles] = useState(false);
+  const [preparingTelegramSourceId, setPreparingTelegramSourceId] = useState<number | null>(null);
+  const [preparedNextPlayback, setPreparedNextPlayback] = useState<PreparedPlayback | null>(null);
 
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -500,8 +498,19 @@ export default function App() {
   const searchReturnToSidebarRef = useRef(false);
   const settingsReturnToSidebarRef = useRef(false);
   const mediaStateMapRef = useRef(mediaStateMap);
+  const playbackCacheMapRef = useRef(playbackCacheMap);
+  const activeMediaRef = useRef<ActivePlayback | null>(null);
+  const preparedNextPlaybackRef = useRef<PreparedPlayback | null>(null);
+  const preparedNextNavContextRef = useRef<NavContext>(null);
+  const autoplayDismissedRef = useRef(false);
+  const nextEpisodePreparePromiseRef = useRef<Promise<void> | null>(null);
+  const telegramContextKeyRef = useRef('');
+  const telegramStatusRequestRef = useRef(0);
 
   useEffect(() => { mediaStateMapRef.current = mediaStateMap; safeSetJson(localStorage, MEDIA_STATE_STORAGE_KEY, mediaStateMap); }, [mediaStateMap]);
+  useEffect(() => { playbackCacheMapRef.current = playbackCacheMap; writePlaybackCacheMap(localStorage, playbackCacheMap); }, [playbackCacheMap]);
+  useEffect(() => { activeMediaRef.current = activeMedia; }, [activeMedia]);
+  useEffect(() => { preparedNextPlaybackRef.current = preparedNextPlayback; }, [preparedNextPlayback]);
 
   const favorites = useMemo(() => Object.values(mediaStateMap).filter(e => e.favorite).map(e => e.snapshot), [mediaStateMap]);
   const watchHistory = useMemo(() => Object.values(mediaStateMap).filter(e => e.lastWatchedAt).sort((a,b) => (b.lastWatchedAt||0) - (a.lastWatchedAt||0)).map(e => e.snapshot), [mediaStateMap]);
@@ -538,6 +547,9 @@ export default function App() {
   }, []);
 
   const openSettingsPanel = useCallback((panel: SettingsPanel, options: { returnToSidebar?: boolean } = {}) => {
+    if (panel === 'telegram') {
+      telegramContextKeyRef.current = '';
+    }
     setSettingsPanel(panel);
     setShowCinemaScreen(false);
     setShowSettings(true);
@@ -558,10 +570,440 @@ export default function App() {
     if (item) toggleFavoriteForItem(item);
   };
 
-  const closePlayer = async () => {
+  const updateMediaProgressEntry = useCallback((item: CorridorItem, progressSeconds: number, durationSeconds: number) => {
+    const mediaKey = buildMediaKey(item);
+    if (!mediaKey) return;
+
+    setMediaStateMap((prev) => ({
+      ...prev,
+      [mediaKey]: updateProgressState(item, prev[mediaKey], progressSeconds, durationSeconds)
+    }));
+  }, []);
+
+  const clearPreparedNextPlayback = useCallback(async (options: { preserveDismissed?: boolean } = {}) => {
+    preparedNextNavContextRef.current = null;
+    if (!options.preserveDismissed) {
+      autoplayDismissedRef.current = false;
+    }
+    preparedNextPlaybackRef.current = null;
+    nextEpisodePreparePromiseRef.current = null;
+    setPreparedNextPlayback(null);
+    await NativePlayer.updateAutoplayOverlay({ visible: false }).catch(() => null);
+  }, []);
+
+  const closePlayer = useCallback(async (options: { preserveQueuedNext?: boolean } = {}) => {
+    if (!options.preserveQueuedNext) {
+      await clearPreparedNextPlayback();
+    } else {
+      await NativePlayer.updateAutoplayOverlay({ visible: false }).catch(() => null);
+    }
+
     await NativePlayer.close().catch(() => null);
     setActiveMedia(null);
-  };
+  }, [clearPreparedNextPlayback]);
+
+  const refreshTelegramStatus = useCallback(async (options: { quiet?: boolean } = {}) => {
+    const requestId = ++telegramStatusRequestRef.current;
+    if (!options.quiet) {
+      setTgBusy(true);
+    }
+
+    try {
+      const data = await fetchApiJson<{ loggedIn?: boolean; configured?: boolean }>(
+        buildApiUrl(normalizedApiBase, '/api/tg/status')
+      );
+
+      if (requestId !== telegramStatusRequestRef.current) return;
+
+      setTgConfigured(data.configured !== false);
+      setTgStatus(data.loggedIn ? 'loggedIn' : 'loggedOut');
+      if (!data.loggedIn) {
+        setTgLoginId(null);
+        setTgSources([]);
+        setTgSubtitleResults([]);
+        setTgSelectedSubtitleUrl(null);
+      }
+    } catch (error: any) {
+      if (requestId !== telegramStatusRequestRef.current) return;
+      console.error('Telegram status failed', error);
+      const message = error?.message || 'Failed to check Telegram status';
+      setTgError(message);
+      setTgConfigured(!String(message).toLowerCase().includes('not configured'));
+      setTgStatus('loggedOut');
+    } finally {
+      if (requestId === telegramStatusRequestRef.current && !options.quiet) {
+        setTgBusy(false);
+      }
+    }
+  }, [normalizedApiBase]);
+
+  const resetTelegramSearchState = useCallback((options: { preserveQuery?: boolean } = {}) => {
+    if (!options.preserveQuery) {
+      setTgSearchQuery('');
+    }
+    setTgSources([]);
+    setTgSubtitleResults([]);
+    setTgSelectedSubtitleUrl(null);
+  }, []);
+
+  const applyTelegramSession = useCallback((sessionString: string | null) => {
+    if (sessionString) {
+      safeSetString(localStorage, 'tg_session', sessionString);
+    } else {
+      safeRemove(localStorage, 'tg_session');
+    }
+  }, []);
+
+  const startTelegramLogin = useCallback(async () => {
+    const phone = tgPhone.trim();
+    if (!phone) {
+      setTgError('Enter a phone number first.');
+      return;
+    }
+
+    setTgBusy(true);
+    setTgError(null);
+    try {
+      const data = await fetchApiJson<{ loginId?: string; success?: boolean }>(
+        buildApiUrl(normalizedApiBase, '/api/tg/startLogin'),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone })
+        }
+      );
+
+      if (!data.loginId) {
+        throw new Error('Telegram login did not return a login id.');
+      }
+
+      setTgLoginId(data.loginId);
+      setTgCode('');
+      setTgPassword('');
+      setTgStatus('codeInput');
+    } catch (error: any) {
+      console.error('Telegram login start failed', error);
+      setTgError(error?.message || 'Failed to start Telegram login');
+    } finally {
+      setTgBusy(false);
+    }
+  }, [normalizedApiBase, tgPhone]);
+
+  const submitTelegramCode = useCallback(async () => {
+    if (!tgLoginId || !tgCode.trim()) {
+      setTgError('Enter the verification code first.');
+      return;
+    }
+
+    setTgBusy(true);
+    setTgError(null);
+    try {
+      const data = await fetchApiJson<{ success?: boolean; requiresPassword?: boolean; sessionString?: string }>(
+        buildApiUrl(normalizedApiBase, '/api/tg/submitCode'),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loginId: tgLoginId, code: tgCode.trim() })
+        }
+      );
+
+      if (data.requiresPassword) {
+        setTgStatus('passwordInput');
+        return;
+      }
+
+      if (!data.sessionString) {
+        throw new Error('Telegram did not return a session after code verification.');
+      }
+
+      applyTelegramSession(data.sessionString);
+      setTgLoginId(null);
+      setTgCode('');
+      setTgPassword('');
+      setTgStatus('loggedIn');
+      await refreshTelegramStatus({ quiet: true });
+    } catch (error: any) {
+      console.error('Telegram code verification failed', error);
+      setTgError(error?.message || 'Failed to verify the Telegram code');
+    } finally {
+      setTgBusy(false);
+    }
+  }, [applyTelegramSession, normalizedApiBase, refreshTelegramStatus, tgCode, tgLoginId]);
+
+  const submitTelegramPassword = useCallback(async () => {
+    if (!tgLoginId || !tgPassword.trim()) {
+      setTgError('Enter the Telegram password first.');
+      return;
+    }
+
+    setTgBusy(true);
+    setTgError(null);
+    try {
+      const data = await fetchApiJson<{ success?: boolean; sessionString?: string }>(
+        buildApiUrl(normalizedApiBase, '/api/tg/submitPassword'),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loginId: tgLoginId, password: tgPassword })
+        }
+      );
+
+      if (!data.sessionString) {
+        throw new Error('Telegram did not return a session after password verification.');
+      }
+
+      applyTelegramSession(data.sessionString);
+      setTgLoginId(null);
+      setTgCode('');
+      setTgPassword('');
+      setTgStatus('loggedIn');
+      await refreshTelegramStatus({ quiet: true });
+    } catch (error: any) {
+      console.error('Telegram password verification failed', error);
+      setTgError(error?.message || 'Failed to verify the Telegram password');
+    } finally {
+      setTgBusy(false);
+    }
+  }, [applyTelegramSession, normalizedApiBase, refreshTelegramStatus, tgLoginId, tgPassword]);
+
+  const logoutTelegram = useCallback(async () => {
+    setTgBusy(true);
+    setTgError(null);
+    try {
+      await fetchApiJson(buildApiUrl(normalizedApiBase, '/api/tg/logout'), { method: 'POST' });
+    } catch (error) {
+      console.warn('Telegram logout reported an error, clearing local session anyway.', error);
+    } finally {
+      applyTelegramSession(null);
+      setTgLoginId(null);
+      setTgCode('');
+      setTgPassword('');
+      resetTelegramSearchState();
+      setTgStatus('loggedOut');
+      setTgBusy(false);
+    }
+  }, [applyTelegramSession, normalizedApiBase, resetTelegramSearchState]);
+
+  const searchTelegramSubtitlesForItem = useCallback(async (
+    item: CorridorItem,
+    options: { query?: string; quiet?: boolean } = {}
+  ) => {
+    if (!isPlayableMediaItem(item) || tgStatus !== 'loggedIn') return [];
+
+    const query = (options.query ?? buildSubtitleSearchQuery(item)).trim();
+    if (!query) return [];
+
+    if (!options.quiet) {
+      setIsSearchingTelegramSubtitles(true);
+    }
+
+    try {
+      const data = await fetchApiJson<{ results?: TelegramSubtitleResult[] }>(
+        buildApiUrl(normalizedApiBase, `/api/tg/search-subtitles?query=${encodeURIComponent(query)}`)
+      );
+
+      const results = Array.isArray(data.results) ? data.results : [];
+      setTgSubtitleResults(results);
+      setTgSelectedSubtitleUrl((current) => {
+        if (current && results.some((subtitle) => subtitle.subtitleUrl === current)) {
+          return current;
+        }
+        return pickDefaultSubtitle(results) ?? null;
+      });
+      return results;
+    } catch (error: any) {
+      console.error('Subtitle search failed', error);
+      setTgError(error?.message || 'Failed to search Telegram subtitles');
+      return [];
+    } finally {
+      if (!options.quiet) {
+        setIsSearchingTelegramSubtitles(false);
+      }
+    }
+  }, [normalizedApiBase, tgStatus]);
+
+  const searchTelegramSourcesForItem = useCallback(async (
+    item: CorridorItem,
+    options: { query?: string; includeSubtitles?: boolean } = {}
+  ) => {
+    if (!isPlayableMediaItem(item)) {
+      setTgError('Choose a movie or an episode before searching Telegram sources.');
+      return [];
+    }
+
+    if (tgStatus !== 'loggedIn') {
+      setTgError('Connect Telegram first to search for sources.');
+      return [];
+    }
+
+    const query = (options.query ?? buildTelegramSearchQuery(item)).trim();
+    if (!query) {
+      setTgError('The Telegram query is empty.');
+      return [];
+    }
+
+    setIsSearchingTelegramSources(true);
+    setTgError(null);
+
+    try {
+      const data = await fetchApiJson<{ results?: TelegramSearchResult[] }>(
+        buildApiUrl(normalizedApiBase, `/api/tg/search?query=${encodeURIComponent(query)}`)
+      );
+
+      const results = Array.isArray(data.results) ? data.results : [];
+      setTgSearchQuery(query);
+      setTgSources(results);
+
+      if (options.includeSubtitles) {
+        void searchTelegramSubtitlesForItem(item, { quiet: true });
+      }
+
+      return results;
+    } catch (error: any) {
+      console.error('Telegram source search failed', error);
+      setTgError(error?.message || 'Failed to search Telegram sources');
+      return [];
+    } finally {
+      setIsSearchingTelegramSources(false);
+    }
+  }, [normalizedApiBase, searchTelegramSubtitlesForItem, tgStatus]);
+
+  const openPreparedPlayback = useCallback(async (
+    prepared: PreparedPlayback,
+    options: { nextNavContext?: NavContext | null } = {}
+  ) => {
+    const cacheEntry = playbackCacheMapRef.current[prepared.sourceKey];
+    const resolvedUrl = isPlayableFromCache(cacheEntry) && cacheEntry.cacheUri ? cacheEntry.cacheUri : prepared.streamUrl;
+    const nextActiveMedia: ActivePlayback = {
+      ...prepared,
+      cacheUri: cacheEntry?.cacheUri ?? prepared.cacheUri,
+      url: resolvedUrl
+    };
+
+    await NativePlayer.updateAutoplayOverlay({ visible: false }).catch(() => null);
+    await NativePlayer.close().catch(() => null);
+
+    if (options.nextNavContext) {
+      setNavContext(options.nextNavContext);
+    }
+
+    autoplayDismissedRef.current = false;
+    preparedNextNavContextRef.current = null;
+    setPreparedNextPlayback(null);
+    preparedNextPlaybackRef.current = null;
+    nextEpisodePreparePromiseRef.current = null;
+
+    setShowSettings(false);
+    settingsReturnToSidebarRef.current = false;
+    setShowCinemaScreen(false);
+    setPosterContextMovie(null);
+    setSelectedMovie(prepared.mediaItem);
+    setIsLocked(true);
+    setActiveMedia(nextActiveMedia);
+
+    setPlaybackCacheMap((prev) => upsertPlaybackCacheEntry(prev, prepared.sourceKey, {
+      sourceKey: prepared.sourceKey,
+      mediaKey: buildMediaKey(prepared.mediaItem),
+      title: prepared.title,
+      mediaType: prepared.mediaItem.mediaType,
+      peerId: prepared.peerId,
+      messageId: prepared.messageId,
+      streamUrl: prepared.streamUrl,
+      downloadUrl: prepared.downloadUrl,
+      cachePath: prepared.cachePath,
+      cacheUri: cacheEntry?.cacheUri ?? prepared.cacheUri,
+      fileName: prepared.fileName,
+      mimeType: prepared.mimeType,
+      fileSizeBytes: prepared.fileSizeBytes,
+      durationSeconds: prepared.durationSeconds,
+      lastPositionSeconds: prepared.resumePositionSeconds
+    }));
+
+    try {
+      await NativePlayer.open({
+        url: resolvedUrl,
+        title: prepared.title,
+        sourceKey: prepared.sourceKey,
+        subtitleUrl: prepared.subtitleUrl,
+        startPositionMs: Math.round(prepared.resumePositionSeconds * 1000)
+      });
+    } catch (error) {
+      setActiveMedia(null);
+      throw error;
+    }
+  }, []);
+
+  const resolvePreparedPlayback = useCallback(async (
+    mediaItem: CorridorItem,
+    source: TelegramSearchResult,
+    options: { allowSubtitleLookup?: boolean } = {}
+  ) => {
+    const [sourceInfo, subtitleResults] = await Promise.all([
+      fetchApiJson<TelegramSourceInfo>(
+        buildApiUrl(normalizedApiBase, `/api/tg/source/${encodeURIComponent(source.peerId)}/${source.id}`)
+      ),
+      tgSelectedSubtitleUrl || options.allowSubtitleLookup === false
+        ? Promise.resolve<TelegramSubtitleResult[]>([])
+        : searchTelegramSubtitlesForItem(mediaItem, { quiet: true })
+    ]);
+
+    const subtitleUrl = tgSelectedSubtitleUrl
+      || pickDefaultSubtitle(subtitleResults)
+      || undefined;
+
+    if (!sourceInfo.streamUrl) {
+      throw new Error('Telegram source is missing a stream URL.');
+    }
+
+    return buildPreparedPlayback({
+      apiBase: normalizedApiBase,
+      mediaItem,
+      source,
+      sourceInfo,
+      subtitleUrl,
+      resumePositionSeconds: getResumePositionSeconds(mediaItem, mediaStateMapRef.current)
+    });
+  }, [normalizedApiBase, searchTelegramSubtitlesForItem, tgSelectedSubtitleUrl]);
+
+  const playTelegramSource = useCallback(async (
+    source: TelegramSearchResult,
+    options: { mediaItem?: CorridorItem; nextNavContext?: NavContext | null; queueOnly?: boolean; allowSubtitleLookup?: boolean } = {}
+  ) => {
+    const mediaItem = options.mediaItem ?? (selectedMovie && isPlayableMediaItem(selectedMovie) ? selectedMovie : null);
+    if (!mediaItem) {
+      setTgError('Choose a movie or an episode before playing a Telegram source.');
+      return null;
+    }
+
+    setPreparingTelegramSourceId(source.id);
+    setTgError(null);
+    try {
+      const prepared = await resolvePreparedPlayback(mediaItem, source, {
+        allowSubtitleLookup: options.allowSubtitleLookup
+      });
+      if (options.queueOnly) {
+        preparedNextPlaybackRef.current = prepared;
+        preparedNextNavContextRef.current = options.nextNavContext ?? null;
+        autoplayDismissedRef.current = false;
+        setPreparedNextPlayback(prepared);
+        await NativePlayer.updateAutoplayOverlay({
+          visible: true,
+          title: prepared.title,
+          remainingSeconds: AUTOPLAY_PRELOAD_SECONDS
+        }).catch(() => null);
+        return prepared;
+      }
+
+      await openPreparedPlayback(prepared, { nextNavContext: options.nextNavContext });
+      return prepared;
+    } catch (error: any) {
+      console.error('Preparing Telegram playback failed', error);
+      setTgError(error?.message || 'Failed to prepare Telegram playback');
+      return null;
+    } finally {
+      setPreparingTelegramSourceId(null);
+    }
+  }, [openPreparedPlayback, resolvePreparedPlayback, selectedMovie]);
 
   const fetchSeriesSeasons = useCallback(async (seriesItem: CorridorItem, signal?: AbortSignal) => {
     const seriesId = Number(seriesItem.seriesId ?? seriesItem.id);
@@ -610,6 +1052,241 @@ export default function App() {
 
     return buildEpisodesNavContext(seasonItem, episodes, parent, seasonTitle);
   }, [normalizedApiBase]);
+
+  const resolveNextEpisodeCandidate = useCallback(async (currentItem: CorridorItem) => {
+    if (currentItem.mediaType !== 'episode' || navContext?.type !== 'episodes') {
+      return null;
+    }
+
+    const currentSeasonNumber = Number(currentItem.seasonNum ?? currentItem.season_number ?? 0);
+    if (
+      Number(navContext.seriesId) !== Number(currentItem.seriesId ?? 0)
+      || Number(navContext.seasonNum) !== currentSeasonNumber
+    ) {
+      return null;
+    }
+
+    const nextEpisode = findNextEpisodeInSeason(currentItem, navContext.episodes);
+    if (nextEpisode) {
+      return { item: nextEpisode, nextNavContext: null as NavContext };
+    }
+
+    const nextSeason = findNextSeason(navContext.seasonNum, navContext.parent.seasons);
+    if (!nextSeason) {
+      return null;
+    }
+
+    const nextContext = await fetchSeasonEpisodes(nextSeason, navContext.parent);
+    const firstEpisode = nextContext.episodes[0];
+    if (!firstEpisode) {
+      return null;
+    }
+
+    return { item: firstEpisode, nextNavContext: nextContext as NavContext };
+  }, [fetchSeasonEpisodes, navContext]);
+
+  const prepareNextEpisodePlayback = useCallback(async (
+    playback: ActivePlayback,
+    progressSeconds: number,
+    durationSeconds: number
+  ) => {
+    if (autoplayDismissedRef.current) {
+      return;
+    }
+
+    if (!shouldPrepareNextEpisode(
+      progressSeconds,
+      durationSeconds,
+      Boolean(preparedNextPlaybackRef.current || nextEpisodePreparePromiseRef.current),
+      autoPlayNextEpisode
+    )) {
+      if (preparedNextPlaybackRef.current && !autoplayDismissedRef.current) {
+        const remainingSeconds = Math.max(0, Math.ceil(durationSeconds - progressSeconds));
+        await NativePlayer.updateAutoplayOverlay({
+          visible: true,
+          title: preparedNextPlaybackRef.current.title,
+          remainingSeconds
+        }).catch(() => null);
+      }
+      return;
+    }
+
+    if (playback.mediaItem.mediaType !== 'episode' || nextEpisodePreparePromiseRef.current) {
+      return;
+    }
+
+    const candidateTask = (async () => {
+      try {
+        const candidate = await resolveNextEpisodeCandidate(playback.mediaItem);
+        if (!candidate?.item) return;
+
+        const data = await fetchApiJson<{ results?: TelegramSearchResult[] }>(
+          buildApiUrl(
+            normalizedApiBase,
+            `/api/tg/search?query=${encodeURIComponent(buildTelegramSearchQuery(candidate.item))}`
+          )
+        );
+        const searchResults = Array.isArray(data.results) ? data.results : [];
+        const source = searchResults[0];
+        if (!source) return;
+
+        await playTelegramSource(source, {
+          mediaItem: candidate.item,
+          nextNavContext: candidate.nextNavContext,
+          queueOnly: true,
+          allowSubtitleLookup: false
+        });
+      } catch (error) {
+        console.error('Next episode preparation failed', error);
+      } finally {
+        nextEpisodePreparePromiseRef.current = null;
+      }
+    })();
+
+    nextEpisodePreparePromiseRef.current = candidateTask;
+    await candidateTask;
+  }, [autoPlayNextEpisode, normalizedApiBase, playTelegramSource, resolveNextEpisodeCandidate]);
+
+  useEffect(() => {
+    void refreshTelegramStatus();
+  }, [refreshTelegramStatus]);
+
+  useEffect(() => {
+    if (!showSettings || settingsPanel !== 'telegram') return;
+
+    const playableItem = selectedMovie && isPlayableMediaItem(selectedMovie) ? selectedMovie : null;
+    const contextKey = playableItem ? buildMediaKey(playableItem) : '';
+
+    if (telegramContextKeyRef.current === contextKey) return;
+    telegramContextKeyRef.current = contextKey;
+
+    resetTelegramSearchState({ preserveQuery: false });
+    setTgError(null);
+
+    if (!playableItem) return;
+
+    const nextQuery = buildTelegramSearchQuery(playableItem);
+    setTgSearchQuery(nextQuery);
+
+    if (tgStatus === 'loggedIn') {
+      void searchTelegramSourcesForItem(playableItem, {
+        query: nextQuery,
+        includeSubtitles: true
+      });
+    }
+  }, [resetTelegramSearchState, searchTelegramSourcesForItem, selectedMovie, settingsPanel, showSettings, tgStatus]);
+
+  useEffect(() => {
+    if (settingsPanel !== 'telegram' || !showSettings || tgStatus !== 'loggedIn') return;
+    if (tgSources.length > 0 || isSearchingTelegramSources) return;
+
+    const playableItem = selectedMovie && isPlayableMediaItem(selectedMovie) ? selectedMovie : null;
+    if (!playableItem) return;
+
+    const nextQuery = tgSearchQuery.trim() || buildTelegramSearchQuery(playableItem);
+    if (!nextQuery) return;
+
+    void searchTelegramSourcesForItem(playableItem, {
+      query: nextQuery,
+      includeSubtitles: tgSubtitleResults.length === 0
+    });
+  }, [isSearchingTelegramSources, searchTelegramSourcesForItem, selectedMovie, settingsPanel, showSettings, tgSearchQuery, tgSources.length, tgStatus, tgSubtitleResults.length]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const handles: Array<{ remove: () => Promise<void> }> = [];
+
+    const bindListeners = async () => {
+      try {
+        const progressHandle = await NativePlayer.addListener('progress', async (event: NativePlayerProgressEvent) => {
+          if (cancelled) return;
+          const playback = activeMediaRef.current;
+          if (!playback) return;
+
+          const positionSeconds = Math.max(0, Math.round((event.positionMs || 0) / 1000));
+          const durationSeconds = Math.max(
+            playback.durationSeconds || 0,
+            Math.round((event.durationMs || 0) / 1000)
+          );
+
+          updateMediaProgressEntry(playback.mediaItem, positionSeconds, durationSeconds);
+          setPlaybackCacheMap((prev) => upsertPlaybackCacheEntry(prev, playback.sourceKey, {
+            sourceKey: playback.sourceKey,
+            mediaKey: buildMediaKey(playback.mediaItem),
+            title: playback.title,
+            mediaType: playback.mediaItem.mediaType,
+            peerId: playback.peerId,
+            messageId: playback.messageId,
+            streamUrl: playback.streamUrl,
+            downloadUrl: playback.downloadUrl,
+            cachePath: playback.cachePath,
+            cacheUri: playback.cacheUri,
+            fileName: playback.fileName,
+            mimeType: playback.mimeType,
+            fileSizeBytes: playback.fileSizeBytes,
+            durationSeconds,
+            lastPositionSeconds: positionSeconds
+          }));
+
+          void prepareNextEpisodePlayback(playback, positionSeconds, durationSeconds);
+        });
+
+        const endedHandle = await NativePlayer.addListener('ended', async () => {
+          if (cancelled) return;
+          const playback = activeMediaRef.current;
+          if (!playback) return;
+
+          const durationSeconds = playback.durationSeconds || mediaStateMapRef.current[buildMediaKey(playback.mediaItem)]?.durationSeconds || 0;
+          updateMediaProgressEntry(playback.mediaItem, durationSeconds, durationSeconds);
+
+          if (preparedNextPlaybackRef.current && !autoplayDismissedRef.current) {
+            const nextPlayback = preparedNextPlaybackRef.current;
+            const nextNavContext = preparedNextNavContextRef.current;
+            preparedNextPlaybackRef.current = null;
+            preparedNextNavContextRef.current = null;
+            autoplayDismissedRef.current = false;
+            setPreparedNextPlayback(null);
+            await openPreparedPlayback(nextPlayback, { nextNavContext });
+            return;
+          }
+
+          const cacheEntry = playbackCacheMapRef.current[playback.sourceKey];
+          if (cacheEntry?.isComplete) {
+            setPlaybackCacheMap((prev) => removePlaybackCacheEntry(prev, playback.sourceKey));
+          }
+          await closePlayer();
+        });
+
+        const backHandle = await NativePlayer.addListener('backRequest', () => {
+          void closePlayer();
+        });
+
+        const autoplayDismissedHandle = await NativePlayer.addListener('autoplayDismissed', () => {
+          autoplayDismissedRef.current = true;
+          void clearPreparedNextPlayback({ preserveDismissed: true });
+        });
+
+        const errorHandle = await NativePlayer.addListener('error', (event: NativePlayerErrorEvent) => {
+          console.error('Native player error', event);
+          setTgError(event.message || 'Native player error');
+          void closePlayer();
+        });
+
+        handles.push(progressHandle, endedHandle, backHandle, autoplayDismissedHandle, errorHandle);
+      } catch (error) {
+        console.warn('Native player listeners are unavailable in this runtime.', error);
+      }
+    };
+
+    void bindListeners();
+
+    return () => {
+      cancelled = true;
+      handles.forEach((handle) => {
+        void handle.remove();
+      });
+    };
+  }, [clearPreparedNextPlayback, closePlayer, openPreparedPlayback, prepareNextEpisodePlayback, updateMediaProgressEntry]);
 
   const openPosterDetails = useCallback((item: CorridorItem) => {
     setFetchError(null);
@@ -1239,6 +1916,11 @@ export default function App() {
     [navContext]
   );
 
+  const telegramPlayableItem = useMemo(
+    () => (selectedMovie && isPlayableMediaItem(selectedMovie) ? selectedMovie : null),
+    [selectedMovie]
+  );
+
   const selectedMoviePrimaryActionLabel = selectedMovie?.mediaType === 'tv'
     ? 'עונות'
     : selectedMovie?.mediaType === 'season'
@@ -1254,6 +1936,31 @@ export default function App() {
     }
     void handlePosterSelect(selectedMovie);
   }, [handlePosterSelect, selectedMovie]);
+
+  const handleTelegramSourceSearch = useCallback(() => {
+    if (!telegramPlayableItem) {
+      setTgError('בחר סרט או פרק כדי לחפש מקורות בטלגרם.');
+      return;
+    }
+
+    void searchTelegramSourcesForItem(telegramPlayableItem, {
+      query: tgSearchQuery.trim() || buildTelegramSearchQuery(telegramPlayableItem),
+      includeSubtitles: true
+    });
+  }, [searchTelegramSourcesForItem, telegramPlayableItem, tgSearchQuery]);
+
+  const handleTelegramSubtitleSearch = useCallback(() => {
+    if (!telegramPlayableItem) {
+      setTgError('בחר סרט או פרק כדי לחפש כתוביות.');
+      return;
+    }
+
+    void searchTelegramSubtitlesForItem(telegramPlayableItem);
+  }, [searchTelegramSubtitlesForItem, telegramPlayableItem]);
+
+  const handleTelegramSourcePlay = useCallback((source: TelegramSearchResult) => {
+    void playTelegramSource(source);
+  }, [playTelegramSource]);
 
   const nearEndTriggerKey = useMemo(() => {
     if (!hasMore || isLoadingMore || showSearch || navContext) return null;
@@ -1351,16 +2058,24 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalBackKey, true);
   }, [performBackAction]);
 
-  const telegramStatusLabel = tgStatus === 'loggedIn'
-    ? 'מחובר לחשבון Telegram'
-    : tgStatus === 'checking'
-      ? 'בודק חיבור Telegram'
-      : 'עדיין לא מחובר ל-Telegram';
-  const telegramStatusTone = tgStatus === 'loggedIn'
-    ? 'bg-emerald-400'
-    : tgStatus === 'checking'
-      ? 'bg-amber-400'
-      : 'bg-white/40';
+  const telegramStatusLabel = !tgConfigured
+    ? 'Telegram API לא מוגדר בשרת'
+    : tgStatus === 'loggedIn'
+      ? 'מחובר לחשבון Telegram'
+      : tgStatus === 'checking'
+        ? 'בודק חיבור Telegram'
+        : tgStatus === 'codeInput'
+          ? 'ממתין לקוד אימות'
+          : tgStatus === 'passwordInput'
+            ? 'ממתין לסיסמת 2FA'
+            : 'עדיין לא מחובר ל-Telegram';
+  const telegramStatusTone = !tgConfigured
+    ? 'bg-red-400'
+    : tgStatus === 'loggedIn'
+      ? 'bg-emerald-400'
+      : tgStatus === 'checking'
+        ? 'bg-amber-400'
+        : 'bg-white/40';
 
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative text-white" dir="rtl">
@@ -1456,6 +2171,41 @@ export default function App() {
               telegramStatusLabel={telegramStatusLabel}
               telegramStatusTone={telegramStatusTone}
               apiBase={normalizedApiBase}
+              telegramPanelContent={
+                <TelegramConsolePanel
+                  configured={tgConfigured}
+                  status={tgStatus}
+                  busy={tgBusy}
+                  sourceSearchBusy={isSearchingTelegramSources}
+                  subtitleSearchBusy={isSearchingTelegramSubtitles}
+                  preparingSourceId={preparingTelegramSourceId}
+                  error={tgError}
+                  currentItem={telegramPlayableItem}
+                  currentPlaybackTitle={activeMedia?.title ?? null}
+                  preparedNextTitle={preparedNextPlayback?.title ?? null}
+                  phone={tgPhone}
+                  code={tgCode}
+                  password={tgPassword}
+                  searchQuery={tgSearchQuery}
+                  sources={tgSources}
+                  subtitles={tgSubtitleResults}
+                  selectedSubtitleUrl={tgSelectedSubtitleUrl}
+                  onPhoneChange={setTgPhone}
+                  onCodeChange={setTgCode}
+                  onPasswordChange={setTgPassword}
+                  onSearchQueryChange={setTgSearchQuery}
+                  onSelectedSubtitleChange={setTgSelectedSubtitleUrl}
+                  onRefreshStatus={() => { void refreshTelegramStatus(); }}
+                  onStartLogin={() => { void startTelegramLogin(); }}
+                  onSubmitCode={() => { void submitTelegramCode(); }}
+                  onSubmitPassword={() => { void submitTelegramPassword(); }}
+                  onLogout={() => { void logoutTelegram(); }}
+                  onSearchSources={handleTelegramSourceSearch}
+                  onSearchSubtitles={handleTelegramSubtitleSearch}
+                  onPlaySource={handleTelegramSourcePlay}
+                  formatBytes={formatBytes}
+                />
+              }
             />
           </motion.div>
         )}
@@ -1494,7 +2244,7 @@ export default function App() {
         onClose={() => setIsLocked(true)}
       />
 
-      {selectedMovie && (
+      {selectedMovie && !activeMedia && (
         <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/90 p-10" data-tv-scope="ui">
           <div className="bg-[#111] border border-white/10 rounded-[50px] p-12 flex gap-12 max-w-6xl w-full">
             <img src={selectedMovie.poster} className="w-96 rounded-[30px] shadow-2xl" />
