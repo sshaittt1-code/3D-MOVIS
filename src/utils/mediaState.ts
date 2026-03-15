@@ -1,7 +1,7 @@
 export type WatchStatus = 'unwatched' | 'in_progress' | 'watched';
 
 export interface MediaSnapshot {
-  id: number;
+  id: number | string;
   mediaType: string;
   title: string;
   seriesTitle?: string;

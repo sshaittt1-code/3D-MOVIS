@@ -6,6 +6,14 @@ import { StringSession } from 'telegram/sessions/index.js';
 import cors from 'cors';
 import path from 'node:path';
 import { normalizeSearchText, rankSearchResults } from './src/utils/searchNormalize';
+import {
+  FALLBACK_LIBRARY,
+  getCatalogFallbackMediaType,
+  normalizeCatalogPage,
+  normalizeEpisodePage,
+  normalizeSeasonPage,
+  type FeedTarget
+} from './src/utils/contentModel';
 
 const app = express();
 app.use(cors());
@@ -238,6 +246,17 @@ const withPosterFields = (item: any, fallbackMediaType: 'movie' | 'tv') => {
   };
 };
 
+const buildCatalogResponse = (target: FeedTarget, items: any[], hasMore: boolean) => {
+  const normalizedItems = normalizeCatalogPage(items, getCatalogFallbackMediaType(target));
+  if (target === 'movies') {
+    return { movies: normalizedItems, hasMore };
+  }
+  if (target === 'series') {
+    return { series: normalizedItems, hasMore };
+  }
+  return { items: normalizedItems, hasMore };
+};
+
 const mapTvMazeShow = (show: any) => ({
   id: show.id,
   title: show.name,
@@ -253,84 +272,6 @@ const mapTvMazeShow = (show: any) => ({
   year: show.premiered ? Number.parseInt(String(show.premiered).slice(0, 4), 10) : null,
   language: show.language || 'en'
 });
-
-const ISRAELI_FALLBACK_CONTENT = [
-  {
-    id: 62852,
-    title: 'Fauda',
-    localizedTitle: 'Fauda',
-    originalTitle: 'Fauda',
-    genre: 'Action',
-    rating: 8.2,
-    popularity: 73,
-    poster: 'https://picsum.photos/seed/fauda-server/500/750',
-    posterThumb: 'https://picsum.photos/seed/fauda-server/342/513',
-    desc: 'An undercover team navigates escalating conflict and loyalty.',
-    mediaType: 'tv',
-    year: 2015,
-    language: 'he'
-  },
-  {
-    id: 72673,
-    title: 'Shtisel',
-    localizedTitle: 'Shtisel',
-    originalTitle: 'Shtisel',
-    genre: 'Drama',
-    rating: 8.5,
-    popularity: 66,
-    poster: 'https://picsum.photos/seed/shtisel-server/500/750',
-    posterThumb: 'https://picsum.photos/seed/shtisel-server/342/513',
-    desc: 'An intimate portrait of family and tradition in Jerusalem.',
-    mediaType: 'tv',
-    year: 2013,
-    language: 'he'
-  },
-  {
-    id: 130965,
-    title: 'Tehran',
-    localizedTitle: 'Tehran',
-    originalTitle: 'Tehran',
-    genre: 'Thriller',
-    rating: 7.5,
-    popularity: 69,
-    poster: 'https://picsum.photos/seed/tehran-server/500/750',
-    posterThumb: 'https://picsum.photos/seed/tehran-server/342/513',
-    desc: 'An Israeli agent goes undercover in a hostile capital.',
-    mediaType: 'tv',
-    year: 2020,
-    language: 'he'
-  },
-  {
-    id: 888,
-    title: 'Waltz with Bashir',
-    localizedTitle: 'Waltz with Bashir',
-    originalTitle: 'Waltz with Bashir',
-    genre: 'Animation',
-    rating: 8.0,
-    popularity: 61,
-    poster: 'https://picsum.photos/seed/bashir-server/500/750',
-    posterThumb: 'https://picsum.photos/seed/bashir-server/342/513',
-    desc: 'A veteran reconstructs lost memories from war.',
-    mediaType: 'movie',
-    year: 2008,
-    language: 'he'
-  },
-  {
-    id: 4122,
-    title: 'Beaufort',
-    localizedTitle: 'Beaufort',
-    originalTitle: 'Beaufort',
-    genre: 'War',
-    rating: 7.0,
-    popularity: 52,
-    poster: 'https://picsum.photos/seed/beaufort-server/500/750',
-    posterThumb: 'https://picsum.photos/seed/beaufort-server/342/513',
-    desc: 'Soldiers endure the final days of an isolated outpost.',
-    mediaType: 'movie',
-    year: 2007,
-    language: 'he'
-  }
-];
 
 const fetchTvMazeSeriesBatch = async (batchNum: number, genreId?: number, batchSize = FALLBACK_BATCH_SIZE) => {
   const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId, batchSize, getSourcePagesPerBatch(batchSize));
@@ -845,7 +786,7 @@ app.get('/api/movies', async (req, res) => {
         language: m.original_language || 'en'
       })).slice(0, pageSize);
         if (movies.length > 0) {
-          return res.json({ movies, hasMore: movies.length >= pageSize });
+          return res.json(buildCatalogResponse('movies', movies, movies.length >= pageSize));
         }
       } catch (tmdbError) {
         console.warn('TMDB movie fetch failed, falling back to TVMaze content.', tmdbError);
@@ -862,7 +803,7 @@ app.get('/api/movies', async (req, res) => {
       { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', trailer: '', desc: 'צוות חוקרים נוסע דרך חור תולעת.', mediaType: 'movie' },
     ];
     */
-    res.json(fallback);
+    res.json(buildCatalogResponse('movies', fallback.movies, fallback.hasMore));
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });
   }
@@ -881,12 +822,13 @@ app.get('/api/series', async (req, res) => {
     const randomSeed = readPositiveInt(req.query.seed) ?? Date.now();
     if (!tmdbKey) {
       const fallback = await fetchTvMazeSeriesBatch(batchNum, genreId, pageSize);
-      return res.json({
-        ...fallback,
-        series: sortLocalCatalog(fallback.series, category, year, israeliOnly, randomSeed)
+      return res.json(buildCatalogResponse(
+        'series',
+        sortLocalCatalog(fallback.series, category, year, israeliOnly, randomSeed)
           .map((item: any) => withPosterFields(item, 'tv'))
-          .filter(Boolean)
-      });
+          .filter(Boolean),
+        fallback.hasMore
+      ));
     }
     const sourcePagesPerBatch = getSourcePagesPerBatch(pageSize);
     const startTmdbPage = (batchNum - 1) * sourcePagesPerBatch + 1;
@@ -921,7 +863,7 @@ app.get('/api/series', async (req, res) => {
       year: s.first_air_date ? Number.parseInt(String(s.first_air_date).slice(0, 4), 10) : null,
       language: s.original_language || 'en'
     })).slice(0, pageSize);
-    return res.json({ series, hasMore: series.length >= pageSize });
+    return res.json(buildCatalogResponse('series', series, series.length >= pageSize));
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });
   }
@@ -956,15 +898,16 @@ app.get('/api/israeli', async (req, res) => {
 
     const resolvedItems = items.length > 0
       ? items
-      : sortLocalCatalog(ISRAELI_FALLBACK_CONTENT, normalizedCategory, year, true, randomSeed)
+      : sortLocalCatalog(FALLBACK_LIBRARY.israeli, normalizedCategory, year, true, randomSeed)
           .map((item: any) => withPosterFields(item, item?.mediaType === 'tv' ? 'tv' : 'movie'))
           .filter(Boolean)
           .slice(0, pageSize);
 
-    res.json({
-      items: resolvedItems,
-      hasMore: resolvedItems.length >= pageSize || Boolean(moviesData.hasMore) || Boolean(seriesData.hasMore)
-    });
+    res.json(buildCatalogResponse(
+      'israeli',
+      resolvedItems,
+      resolvedItems.length >= pageSize || Boolean(moviesData.hasMore) || Boolean(seriesData.hasMore)
+    ));
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });
   }
@@ -995,7 +938,10 @@ app.get('/api/series/:id', async (req, res) => {
             mediaType: 'season'
           };
         });
-      return res.json({ seasons, seriesTitle: show.name });
+      return res.json({
+        seasons: normalizeSeasonPage(seasons, { seriesId: show.id, seriesTitle: show.name }),
+        seriesTitle: show.name
+      });
     }
     const data = await fetch(`https://api.themoviedb.org/3/tv/${seriesId}?api_key=${tmdbKey}&language=he-IL`).then(r => r.json());
     const seasons = (data.seasons || [])
@@ -1012,7 +958,10 @@ app.get('/api/series/:id', async (req, res) => {
         rating: data.vote_average,
         mediaType: 'season'
       }));
-    return res.json({ seasons, seriesTitle: data.name });
+    return res.json({
+      seasons: normalizeSeasonPage(seasons, { seriesId, seriesTitle: data.name }),
+      seriesTitle: data.name
+    });
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });
   }
@@ -1042,7 +991,15 @@ app.get('/api/series/:id/season/:num', async (req, res) => {
           mediaType: 'episode',
           year: episode.airdate ? Number.parseInt(String(episode.airdate).slice(0, 4), 10) : null
         }));
-      return res.json({ episodes, seasonTitle: `Season ${seasonNum}` });
+      return res.json({
+        episodes: normalizeEpisodePage(episodes, {
+          seriesId: showId,
+          seriesTitle: show.name,
+          seasonNum,
+          seasonTitle: `Season ${seasonNum}`
+        }),
+        seasonTitle: `Season ${seasonNum}`
+      });
     }
     const data = await fetch(`https://api.themoviedb.org/3/tv/${showId}/season/${seasonNum}?api_key=${tmdbKey}&language=he-IL`).then(r => r.json());
     const episodes = (data.episodes || []).map((e: any) => ({
@@ -1057,7 +1014,15 @@ app.get('/api/series/:id/season/:num', async (req, res) => {
       rating: e.vote_average || 0,
       mediaType: 'episode'
     }));
-    return res.json({ episodes, seasonTitle: data.name });
+    return res.json({
+      episodes: normalizeEpisodePage(episodes, {
+        seriesId: showId,
+        seriesTitle: '',
+        seasonNum,
+        seasonTitle: data.name
+      }),
+      seasonTitle: data.name
+    });
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });
   }

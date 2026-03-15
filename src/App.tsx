@@ -40,15 +40,20 @@ import {
 } from './utils/corridorEngine';
 import {
   FALLBACK_LIBRARY,
+  getCatalogFallbackMediaType,
+  mergeCorridorItems,
+  normalizeCatalogPage,
+  type CatalogPageResult,
+  type CorridorItem,
+  normalizeCatalogResponse,
+  type FeedTarget,
+  type NavContext
+} from './utils/contentModel';
+import {
   buildRootRequestKey,
   getActiveGenreFilterForSection,
   getFeedTargetForSection,
-  mergeCorridorItems,
-  normalizeCatalogPage,
-  resolveRootRouteState,
-  type CatalogPageResult,
-  type CorridorItem,
-  type FeedTarget
+  resolveRootRouteState
 } from './utils/corridorFeed';
 import { shouldHandleGlobalTvBack } from './utils/tvNavigation';
 import {
@@ -115,7 +120,7 @@ const readLastGoodFeedMap = (): LastGoodFeedMap => {
 const readInitialFeedItems = (target: FeedTarget): CorridorItem[] => {
   const lastGood = readLastGoodFeedMap()[target];
   if (Array.isArray(lastGood?.items) && lastGood.items.length > 0) {
-    return normalizeCatalogPage(lastGood.items, target === 'series' ? 'tv' : 'movie');
+    return normalizeCatalogPage(lastGood.items, getCatalogFallbackMediaType(target));
   }
   return FALLBACK_LIBRARY[target];
 };
@@ -432,19 +437,17 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
   );
 };
 
-type NavCtx = null | { type: 'seasons'; seriesId: number; seriesTitle: string; seasons: any[] } | { type: 'episodes'; seriesId: number; seasonNum: number; seriesTitle: string; seasonTitle: string; episodes: any[] };
-
 export default function App() {
   const [baseMovies, setBaseMovies] = useState<CorridorItem[]>(() => readInitialFeedItems('movies'));
   const [seriesItems, setSeriesItems] = useState<CorridorItem[]>(() => readInitialFeedItems('series'));
   const [israeliItems, setIsraeliItems] = useState<CorridorItem[]>(() => readInitialFeedItems('israeli'));
-  const [selectedMovie, setSelectedMovie] = useState<any>(null);
+  const [selectedMovie, setSelectedMovie] = useState<CorridorItem | null>(null);
   const [isLocked, setIsLocked] = useState(true);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [focusedHeartId, setFocusedHeartId] = useState<string | null>(null);
   const [showCinemaScreen, setShowCinemaScreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [navContext, setNavContext] = useState<NavCtx>(null);
+  const [navContext, setNavContext] = useState<NavContext>(null);
   const [librarySection, setLibrarySection] = useState<LibrarySection>(DEFAULT_ROOT_CATALOG_STATE.librarySection);
   const [sortMode, setSortMode] = useState<SortMode>(DEFAULT_ROOT_CATALOG_STATE.sortMode);
   const [yearFilter, setYearFilter] = useState<YearFilter>(DEFAULT_ROOT_CATALOG_STATE.yearFilter);
@@ -532,7 +535,7 @@ export default function App() {
     setIsLocked(true);
   }, []);
 
-  const toggleFavoriteForItem = useCallback((item: any, force?: boolean) => {
+  const toggleFavoriteForItem = useCallback((item: CorridorItem, force?: boolean) => {
     const key = buildMediaKey(item);
     setMediaStateMap(prev => {
       const existing = prev[key] || createDefaultMediaStateEntry(item);
@@ -607,7 +610,7 @@ export default function App() {
     });
 
     if (!cached) return null;
-    const items = normalizeCatalogPage(cached.items, target === 'series' ? 'tv' : 'movie');
+    const items = normalizeCatalogPage(cached.items, getCatalogFallbackMediaType(target));
     if (items.length === 0) return null;
 
     return {
@@ -617,7 +620,7 @@ export default function App() {
     };
   }, [getCategorySeed, posterBatchSize]);
 
-  const prefetchPostersForItems = useCallback((items: any[], priorityCount = 10) => {
+  const prefetchPostersForItems = useCallback((items: CorridorItem[], priorityCount = 10) => {
     const validItems = items.filter((item) => item?.poster);
     if (validItems.length === 0) return;
 
@@ -641,7 +644,7 @@ export default function App() {
     }
 
     const lastGood = readLastGoodFeedMap()[target];
-    const lastGoodItems = normalizeCatalogPage(lastGood?.items ?? [], target === 'series' ? 'tv' : 'movie');
+    const lastGoodItems = normalizeCatalogPage(lastGood?.items ?? [], getCatalogFallbackMediaType(target));
     if (lastGoodItems.length > 0) {
       setItemsForTarget(target, lastGoodItems);
       return lastGoodItems;
@@ -705,9 +708,7 @@ export default function App() {
 
     const requestPromise = (async () => {
       const data = await fetchApiJson<any>(url, { signal });
-      const rawItems = target === 'movies' ? data.movies : target === 'series' ? data.series : data.items;
-      const items = normalizeCatalogPage(rawItems, target === 'series' ? 'tv' : 'movie');
-      const hasMore = Boolean(data.hasMore);
+      const { items, hasMore } = normalizeCatalogResponse(data, target);
 
       writeCategoryCacheEntry(localStorage, cacheKey, { items, hasMore });
       if (prefetchPosters) {
