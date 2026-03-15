@@ -51,6 +51,9 @@ const stopTvEvent = (e: KeyboardEvent) => {
 const isUiScopeTarget = (target: EventTarget | null) =>
   typeof Element !== 'undefined' && target instanceof Element && !!target.closest('[data-tv-scope="ui"]');
 
+const isTelegramAuthScreen = (status: string) =>
+  status === 'phoneInput' || status === 'codeInput' || status === 'passwordInput';
+
 // Native Video Player replaced MX Player requirement
 
 // --- Mock Data ---
@@ -1093,7 +1096,7 @@ export default function App() {
         return;
       }
       if (showSettings) { setShowSettings(false); return; }
-      if (tgStatus === 'phoneInput' || tgStatus === 'codeInput' || tgStatus === 'passwordInput') {
+      if (isTelegramAuthScreen(tgStatus)) {
         setTgStatus('loggedOut'); 
         return; 
       }
@@ -1141,7 +1144,7 @@ export default function App() {
           }
           return;
         }
-        if (tgStatus === 'phoneInput' || tgStatus === 'codeInput' || tgStatus === 'passwordInput') {
+        if (isTelegramAuthScreen(tgStatus)) {
           stopTvEvent(e);
           setTgStatus('loggedOut');
           return;
@@ -1174,14 +1177,27 @@ export default function App() {
     
     const handleMenuInput = (e: KeyboardEvent) => {
       if (!isTvSelectKey(e)) return;
+      if (isUiScopeTarget(e.target) || isUiScopeTarget(document.activeElement)) return;
       
       // Let standard HTML buttons/inputs handle the OK click native to Android Webview
       const activeTag = document.activeElement?.tagName.toLowerCase();
       const isInputFocused = activeTag === 'input' || activeTag === 'button' || activeTag === 'a';
       if (isInputFocused) return;
       
+      if (
+        posterContextMovie
+        || activeMedia
+        || showSettings
+        || showCinemaScreen
+        || showSearch
+        || selectedMovie
+        || isTelegramAuthScreen(tgStatus)
+      ) {
+        return;
+      }
+
       // If we are showing the corridor and nothing selected yet, start playing
-      if (!isLocked && !selectedMovie && !showCinemaScreen && !showSearch) {
+      if (!isLocked) {
         stopTvEvent(e);
         blurActiveElement();
         setIsLocked(true);
@@ -2016,7 +2032,7 @@ export default function App() {
 
       <AnimatePresence>
         {tgStatus !== 'checking' && tgStatus !== 'loggedIn' && tgStatus !== 'loggedOut' && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[60] bg-black/95 flex flex-col items-center justify-center p-8 backdrop-blur-md">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[60] bg-black/95 flex flex-col items-center justify-center p-8 backdrop-blur-md" data-tv-scope="ui">
             <div className="bg-[#0a0a0a] border border-[#2AABEE]/40 rounded-[40px] p-12 flex flex-col items-center max-w-2xl shadow-[0_0_50px_rgba(42,171,238,0.2)]">
               <h2 className="text-4xl font-bold text-[#2AABEE] mb-4">התחברות לטלגרם</h2>
               
@@ -2089,7 +2105,7 @@ export default function App() {
 
       <AnimatePresence>
         {showSearch && isLocked && !selectedMovie && !showCinemaScreen && (
-          <motion.div initial={{ opacity: 0, y: -16, x: 12 }} animate={{ opacity: 1, y: 0, x: 0 }} exit={{ opacity: 0, y: -16, x: 12 }} className="absolute top-6 right-8 z-30 w-[30rem]">
+          <motion.div initial={{ opacity: 0, y: -16, x: 12 }} animate={{ opacity: 1, y: 0, x: 0 }} exit={{ opacity: 0, y: -16, x: 12 }} className="absolute top-6 right-8 z-30 w-[30rem]" data-tv-scope="ui">
             <div className="rounded-[30px] border border-[#00ffcc]/20 bg-[linear-gradient(180deg,rgba(5,12,16,0.95),rgba(4,8,12,0.78))] p-5 shadow-[0_0_50px_rgba(0,255,204,0.12)] backdrop-blur-2xl">
               <div className="flex items-center gap-3">
                 <div className="rounded-full bg-[#00ffcc]/12 p-3 text-[#7debd6]">
@@ -2157,7 +2173,7 @@ export default function App() {
 
       <AnimatePresence>
         {showSettings && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-50 bg-black/95 flex flex-col items-center justify-center p-8 backdrop-blur-md">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-50 bg-black/95 flex flex-col items-center justify-center p-8 backdrop-blur-md" data-tv-scope="ui">
             <div className="bg-[#0a0a0a] border border-[#00ffcc]/40 rounded-[40px] p-12 flex flex-col items-center max-w-xl w-full shadow-2xl">
               <h2 className="text-4xl font-bold text-[#00ffcc] mb-8">הגדרות</h2>
               <div className="mb-8 grid w-full grid-cols-3 gap-3 rounded-[24px] border border-white/10 bg-white/5 p-2">
@@ -2301,7 +2317,7 @@ export default function App() {
 
       <AnimatePresence>
         {showCinemaScreen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute inset-0 z-40 bg-black p-8 flex flex-col">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute inset-0 z-40 bg-black p-8 flex flex-col" data-tv-scope="ui">
             <div className="flex justify-between items-center mb-8 border-b border-white/10 pb-4">
               <h2 className="text-3xl font-bold text-blue-400">תוצאות מטלגרם: {selectedMovie?.title}</h2>
               <button onClick={closeTelegramSourceScreen}><X /></button>
@@ -2334,7 +2350,7 @@ export default function App() {
 
       <AnimatePresence>
         {activeMedia && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[100] bg-black">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[100] bg-black" data-tv-scope="ui">
             <AnimatePresence>
               {nextEpisodeOverlay && autoPlayNextEpisode && (
                 <motion.div
@@ -2382,7 +2398,7 @@ export default function App() {
         )}
       </AnimatePresence>
       {selectedMovie && !showCinemaScreen && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center p-8 bg-black/95">
+        <div className="absolute inset-0 z-30 flex items-center justify-center p-8 bg-black/95" data-tv-scope="ui">
            <div className="bg-[#0a0a0a] border border-[#00ffcc]/40 rounded-[40px] p-12 flex gap-12 max-w-5xl shadow-2xl">
               <img src={selectedMovie.poster} className="w-80 rounded-3xl object-cover shadow-2xl" />
               <div className="flex flex-col flex-1">

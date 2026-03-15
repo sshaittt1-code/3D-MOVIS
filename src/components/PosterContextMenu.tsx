@@ -15,6 +15,7 @@ export const PosterContextMenu = ({ item, isFavorite, onToggleFavorite, onClose 
         initial={{ opacity: 0, scale: 0.96, x: 12 }}
         animate={{ opacity: 1, scale: 1, x: 0 }}
         exit={{ opacity: 0, scale: 0.96, x: 12 }}
+        data-tv-scope="ui"
         className="absolute left-1/2 top-1/2 z-40 ml-14 -mt-32 w-80 rounded-[28px] border border-[#00ffcc]/25 bg-[linear-gradient(180deg,rgba(5,12,16,0.92),rgba(5,8,12,0.78))] p-5 text-right shadow-[0_0_40px_rgba(0,255,204,0.14)] backdrop-blur-xl"
       >
         <div className="mb-5 flex items-start justify-between gap-3">
