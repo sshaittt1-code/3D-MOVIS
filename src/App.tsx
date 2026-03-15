@@ -18,13 +18,19 @@ import { CinemaGate } from './components/CinemaGate';
 import { TelegramConsolePanel } from './components/TelegramConsolePanel';
 import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
 import { safeGetJson, safeGetString, safeParseJson, safeRemove, safeSetJson, safeSetString } from './utils/safeStorage';
-import { buildCategoryCacheKey, getCategoryCacheEntry, writeCategoryCacheEntry } from './utils/categoryCache';
+import {
+  buildCategoryCacheKey,
+  compactCategoryCacheStorage,
+  getCategoryCacheEntry,
+  writeCategoryCacheEntry
+} from './utils/categoryCache';
 import { DEFAULT_POSTER_BATCH_SIZE, POSTER_BATCH_SIZE_OPTIONS, readPosterBatchSize, writePosterBatchSize } from './utils/posterBatchSettings';
 import { LONG_PRESS_DURATION_MS, classifyPressDuration } from './utils/longPress';
 import { applyEditingKeyToInput, isEditableTextTarget } from './utils/keyboardActions';
 import { normalizeSearchText, rankSearchResults, shouldTriggerPredictiveSearch } from './utils/searchNormalize';
 import { NativePlayer, type NativePlayerErrorEvent, type NativePlayerProgressEvent } from './utils/nativePlayer';
 import {
+  compactPlaybackCacheStorage,
   isPlayableFromCache,
   readPlaybackCacheMap,
   removePlaybackCacheEntry,
@@ -92,6 +98,10 @@ import {
   type TelegramSourceInfo,
   type TelegramSubtitleResult
 } from './utils/telegramPlayer';
+import {
+  resolveRuntimePerformanceProfile,
+  shouldRunBackgroundWarmup
+} from './utils/runtimePerformance';
 
 // --- API Helpers ---
 const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://threed-movis.onrender.com';
@@ -358,12 +368,19 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const [showText, setShowText] = useState(false);
   const groupRef = useRef<THREE.Group>(null!);
-  const fetchAttempted = useRef(false);
+  const previewFetchAttempted = useRef(false);
+  const fullFetchAttempted = useRef(false);
+  const previewUrl = movie.posterThumb || movie.poster;
+  const fullUrl = movie.poster || movie.posterThumb;
 
   useEffect(() => {
-    fetchAttempted.current = false;
-    setTexture(movie.poster ? textureManager.getTexture(movie.poster) : null);
-  }, [movie.poster]);
+    previewFetchAttempted.current = false;
+    fullFetchAttempted.current = false;
+    setTexture(fullUrl ? textureManager.getTexture(fullUrl) : null);
+    if (!textureManager.getTexture(fullUrl) && previewUrl) {
+      setTexture(textureManager.getTexture(previewUrl));
+    }
+  }, [fullUrl, previewUrl]);
 
   useFrame((state) => { 
     if (!groupRef.current) return;
@@ -374,9 +391,19 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
     const isTextVisible = isVisible && distZ < 15;
     groupRef.current.visible = isVisible;
     if (showText !== isTextVisible) setShowText(isTextVisible);
-    if (isVisible && !fetchAttempted.current) {
-      fetchAttempted.current = true;
-      textureManager.loadTexture(movie.poster).then(tex => setTexture(tex)).catch(() => null);
+
+    if (isVisible && previewUrl && !previewFetchAttempted.current) {
+      previewFetchAttempted.current = true;
+      textureManager.loadTexture(previewUrl).then(tex => setTexture(tex)).catch(() => null);
+    }
+
+    const shouldUpgradeToFull = isFocused || distZ < 12;
+    if (isVisible && shouldUpgradeToFull && fullUrl && fullUrl !== previewUrl && !fullFetchAttempted.current) {
+      fullFetchAttempted.current = true;
+      textureManager.loadTexture(fullUrl).then(tex => setTexture(tex)).catch(() => null);
+    } else if (isVisible && fullUrl === previewUrl && fullUrl && !fullFetchAttempted.current) {
+      fullFetchAttempted.current = true;
+      textureManager.loadTexture(fullUrl).then(tex => setTexture(tex)).catch(() => null);
     }
   });
 
@@ -468,7 +495,7 @@ export default function App() {
 
   const [tgStatus, setTgStatus] = useState<TelegramAuthStatus>('checking');
   const [activeMedia, setActiveMedia] = useState<ActivePlayback | null>(null);
-  const [playbackCacheMap, setPlaybackCacheMap] = useState(() => readPlaybackCacheMap(localStorage));
+  const [playbackCacheMap, setPlaybackCacheMap] = useState(() => compactPlaybackCacheStorage(localStorage));
   const [tgConfigured, setTgConfigured] = useState(true);
   const [tgBusy, setTgBusy] = useState(false);
   const [tgError, setTgError] = useState<string | null>(null);
@@ -491,6 +518,9 @@ export default function App() {
   const [isSearchingTmdb, setIsSearchingTmdb] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [posterContextMovie, setPosterContextMovie] = useState<any>(null);
+  const [appVisible, setAppVisible] = useState(
+    () => typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'
+  );
 
   const predictiveSearchRequestRef = useRef(0);
   const predictiveSearchAbortRef = useRef<AbortController | null>(null);
@@ -506,11 +536,23 @@ export default function App() {
   const nextEpisodePreparePromiseRef = useRef<Promise<void> | null>(null);
   const telegramContextKeyRef = useRef('');
   const telegramStatusRequestRef = useRef(0);
+  const runtimePerformanceProfile = useMemo(() => resolveRuntimePerformanceProfile(), []);
 
   useEffect(() => { mediaStateMapRef.current = mediaStateMap; safeSetJson(localStorage, MEDIA_STATE_STORAGE_KEY, mediaStateMap); }, [mediaStateMap]);
   useEffect(() => { playbackCacheMapRef.current = playbackCacheMap; writePlaybackCacheMap(localStorage, playbackCacheMap); }, [playbackCacheMap]);
   useEffect(() => { activeMediaRef.current = activeMedia; }, [activeMedia]);
   useEffect(() => { preparedNextPlaybackRef.current = preparedNextPlayback; }, [preparedNextPlayback]);
+  useEffect(() => {
+    compactCategoryCacheStorage(localStorage);
+  }, []);
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      setAppVisible(document.visibilityState !== 'hidden');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
 
   const favorites = useMemo(() => Object.values(mediaStateMap).filter(e => e.favorite).map(e => e.snapshot), [mediaStateMap]);
   const watchHistory = useMemo(() => Object.values(mediaStateMap).filter(e => e.lastWatchedAt).sort((a,b) => (b.lastWatchedAt||0) - (a.lastWatchedAt||0)).map(e => e.snapshot), [mediaStateMap]);
@@ -1408,16 +1450,38 @@ export default function App() {
   }, [getCategorySeed, posterBatchSize]);
 
   const prefetchPostersForItems = useCallback((items: CorridorItem[], priorityCount = 10) => {
+    if (!appVisible) return;
     const validItems = items.filter((item) => item?.poster);
     if (validItems.length === 0) return;
 
-    const priorityUrls = validItems.slice(0, priorityCount).map((item) => item.poster);
-    const secondaryUrls = validItems
-      .slice(priorityCount, priorityCount + Math.max(10, Math.ceil(posterBatchSize / 2)))
-      .map((item) => item.poster);
+    const priorityLimit = Math.min(
+      validItems.length,
+      Math.max(priorityCount, runtimePerformanceProfile.priorityPosterCount)
+    );
+    const secondaryLimit = runtimePerformanceProfile.allowSecondaryPosterPrefetch
+      ? runtimePerformanceProfile.secondaryPosterCount
+      : 0;
+    const priorityItems = validItems.slice(0, priorityLimit);
 
-    void textureManager.prefetchPriority(priorityUrls, secondaryUrls, 6);
-  }, [posterBatchSize]);
+    const priorityUrls = priorityItems.map((item) => item.posterThumb || item.poster);
+    const fullUpgradeUrls = priorityItems
+      .map((item) => item.poster)
+      .filter((url, index) => url && url !== priorityUrls[index]);
+    const secondaryUrls = [
+      ...fullUpgradeUrls,
+      ...(secondaryLimit > 0
+        ? validItems
+            .slice(priorityLimit, priorityLimit + secondaryLimit)
+            .map((item) => item.posterThumb || item.poster)
+        : [])
+    ];
+
+    void textureManager.prefetchPriority(
+      priorityUrls,
+      secondaryUrls,
+      runtimePerformanceProfile.texturePrefetchConcurrency
+    );
+  }, [appVisible, runtimePerformanceProfile]);
 
   const hydrateTargetFromLocalSources = useCallback((
     target: FeedTarget,
@@ -1515,9 +1579,9 @@ export default function App() {
   const prefetchNextCategoryPage = useCallback(async (
     target: FeedTarget,
     category: FeedCategory,
-    options: { genreId?: number | null; year?: YearFilter; page: number }
+    options: { genreId?: number | null; year?: YearFilter; page: number; prefetchPosters?: boolean }
   ) => {
-    const { genreId, year, page } = options;
+    const { genreId, year, page, prefetchPosters = runtimePerformanceProfile.prefetchPostersForNextPage } = options;
     const seed = getCategorySeed(category, page);
     const cacheKey = buildCategoryCacheKey({
       target,
@@ -1535,13 +1599,13 @@ export default function App() {
     prefetchedPageKeysRef.current.add(cacheKey);
 
     try {
-      await fetchCategoryContent(target, category, { genreId, year, page, prefetchPosters: true });
+      await fetchCategoryContent(target, category, { genreId, year, page, prefetchPosters });
     } catch (error: any) {
       if (error?.name !== 'AbortError') {
         prefetchedPageKeysRef.current.delete(cacheKey);
       }
     }
-  }, [fetchCategoryContent, getCategorySeed, posterBatchSize]);
+  }, [fetchCategoryContent, getCategorySeed, posterBatchSize, runtimePerformanceProfile.prefetchPostersForNextPage]);
 
   const getCurrentRootContext = useCallback(() => {
     const target = getFeedTargetForSection(librarySection);
@@ -1628,9 +1692,12 @@ export default function App() {
 
   useEffect(() => {
     if (showSearch || navContext || isLoadingContent) return;
+    if (!shouldRunBackgroundWarmup(runtimePerformanceProfile, appVisible)) return;
     const activeTarget = getFeedTargetForSection(librarySection);
     const targets = (['movies', 'series', 'israeli'] as FeedTarget[]).filter((target) => target !== activeTarget);
-    const pendingTargets = targets.filter((target) => !backgroundWarmupTargetsRef.current.has(target));
+    const pendingTargets = targets
+      .filter((target) => !backgroundWarmupTargetsRef.current.has(target))
+      .slice(0, runtimePerformanceProfile.backgroundWarmupTargets);
     if (pendingTargets.length === 0) return;
 
     const timer = window.setTimeout(() => {
@@ -1641,10 +1708,10 @@ export default function App() {
           throw error;
         })
       ));
-    }, 500);
+    }, runtimePerformanceProfile.backgroundWarmupDelayMs);
 
     return () => window.clearTimeout(timer);
-  }, [showSearch, navContext, isLoadingContent, librarySection, fetchCategoryContent]);
+  }, [appVisible, showSearch, navContext, isLoadingContent, librarySection, fetchCategoryContent, runtimePerformanceProfile]);
 
   useEffect(() => {
     loadMoreAbortRef.current?.abort();

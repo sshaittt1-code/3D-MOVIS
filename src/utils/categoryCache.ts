@@ -32,7 +32,7 @@ export const buildCategoryCacheKey = ({
   category: string;
   genreId?: number | null;
   genreLabel?: string | null;
-  year?: string | null;
+  year?: string | number | null;
   israeliOnly?: boolean;
   page: number;
   batchSize: number;
@@ -74,6 +74,50 @@ export const getCacheTTL = ({
 
   if (['popular', 'top_rated'].includes(category)) return THIRTY_MINUTES_MS;
   return CATEGORY_CACHE_TTL_MS;
+};
+
+export const parseCategoryCacheKey = (cacheKey: string) => {
+  const [target, category, genreId, genreLabel, year, language, pageToken, batchToken, seedToken] = cacheKey.split('|');
+  if (!target || !category || !pageToken || !batchToken) return null;
+  return {
+    target,
+    category,
+    genreId,
+    genreLabel,
+    year: year === 'all' ? null : year,
+    language,
+    pageToken,
+    batchToken,
+    seedToken
+  };
+};
+
+export const pruneCategoryCacheMap = <T>(
+  cache: CategoryCacheMap<T>,
+  now = Date.now()
+) => {
+  const entries = Object.entries(cache)
+    .filter(([, entry]) => Array.isArray(entry?.items))
+    .filter(([cacheKey, entry]) => {
+      const parsedKey = parseCategoryCacheKey(cacheKey);
+      if (!parsedKey) return false;
+      const ttl = getCacheTTL({ category: parsedKey.category, year: parsedKey.year });
+      if (ttl === 0) return false;
+      return now - entry.storedAt <= ttl;
+    })
+    .sort((left, right) => right[1].storedAt - left[1].storedAt)
+    .slice(0, MAX_CATEGORY_CACHE_ENTRIES);
+
+  return entries.reduce<CategoryCacheMap<T>>((acc, [cacheKey, entry]) => {
+    acc[cacheKey] = entry;
+    return acc;
+  }, {});
+};
+
+export const compactCategoryCacheStorage = <T>(storage: StorageLike, now = Date.now()) => {
+  const next = pruneCategoryCacheMap(readCategoryCacheMap<T>(storage), now);
+  writeCategoryCacheMap(storage, next);
+  return next;
 };
 
 export const getCategoryCacheEntry = <T>(
@@ -119,6 +163,10 @@ export const writeCategoryCacheEntry = <T>(
   cacheKey: string,
   entry: Omit<CachedCategoryPage<T>, 'storedAt'> & { storedAt?: number }
 ) => {
-  const cache = readCategoryCacheMap<T>(storage);
+  const parsedKey = parseCategoryCacheKey(cacheKey);
+  if (parsedKey && getCacheTTL({ category: parsedKey.category, year: parsedKey.year }) === 0) {
+    return;
+  }
+  const cache = pruneCategoryCacheMap(readCategoryCacheMap<T>(storage));
   writeCategoryCacheMap(storage, upsertCategoryCacheEntry(cache, cacheKey, entry));
 };

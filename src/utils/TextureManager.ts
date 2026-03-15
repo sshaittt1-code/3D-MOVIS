@@ -4,6 +4,8 @@ class TextureManager {
   private loader: THREE.TextureLoader;
   private cache: Map<string, THREE.Texture>;
   private pending: Map<string, Promise<THREE.Texture>>;
+  private idlePrefetchQueue: Set<string>;
+  private idlePrefetchTimer: ReturnType<typeof setTimeout> | null;
   private readonly maxCacheSize: number;
 
   constructor() {
@@ -11,6 +13,8 @@ class TextureManager {
     this.loader.setCrossOrigin('anonymous');
     this.cache = new Map();
     this.pending = new Map();
+    this.idlePrefetchQueue = new Set();
+    this.idlePrefetchTimer = null;
     this.maxCacheSize = 200;
   }
 
@@ -104,15 +108,56 @@ class TextureManager {
     }
   }
 
+  private scheduleIdlePrefetch(concurrency = 2) {
+    if (this.idlePrefetchTimer || this.idlePrefetchQueue.size === 0) return;
+
+    const runner = async () => {
+      this.idlePrefetchTimer = null;
+      const queue = Array.from(this.idlePrefetchQueue);
+      this.idlePrefetchQueue.clear();
+      await this.prefetch(queue, concurrency);
+      if (this.idlePrefetchQueue.size > 0) {
+        this.scheduleIdlePrefetch(concurrency);
+      }
+    };
+
+    this.idlePrefetchTimer = setTimeout(() => {
+      void runner();
+    }, 120);
+  }
+
   async prefetchPriority(priorityUrls: string[], secondaryUrls: string[] = [], concurrency = 6) {
-    const queue = [...new Set([...priorityUrls, ...secondaryUrls].filter(Boolean))]
+    const priorityQueue = [...new Set(priorityUrls.filter(Boolean))]
       .filter((url) => !this.cache.has(url));
-    if (queue.length === 0) return;
-    await this.prefetch(queue, concurrency);
+    const secondaryQueue = [...new Set(secondaryUrls.filter(Boolean))]
+      .filter((url) => !this.cache.has(url) && !priorityQueue.includes(url));
+
+    if (priorityQueue.length > 0) {
+      await this.prefetch(priorityQueue, Math.max(2, Math.min(concurrency, 4)));
+    }
+
+    if (secondaryQueue.length > 0) {
+      secondaryQueue.forEach((url) => this.idlePrefetchQueue.add(url));
+      this.scheduleIdlePrefetch(Math.max(1, concurrency - 2));
+    }
+  }
+
+  getStats() {
+    return {
+      cached: this.cache.size,
+      pending: this.pending.size,
+      idleQueued: this.idlePrefetchQueue.size,
+      maxCacheSize: this.maxCacheSize
+    };
   }
   
   // Optional: clear cache if memory gets too high
   clearCache() {
+      if (this.idlePrefetchTimer) {
+        clearTimeout(this.idlePrefetchTimer);
+        this.idlePrefetchTimer = null;
+      }
+      this.idlePrefetchQueue.clear();
       this.cache.forEach(texture => texture.dispose());
       this.cache.clear();
       this.pending.clear();

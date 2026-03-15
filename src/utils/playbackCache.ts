@@ -4,6 +4,9 @@ type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 export const PLAYBACK_CACHE_STORAGE_KEY = 'playback_cache_v1';
 export const PREBUFFER_BYTES = 50 * 1024 * 1024;
+export const INCOMPLETE_PLAYBACK_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
+export const COMPLETE_PLAYBACK_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+export const MAX_PLAYBACK_CACHE_ENTRIES = 24;
 
 export interface PlaybackCacheEntry {
   sourceKey: string;
@@ -43,7 +46,7 @@ export const upsertPlaybackCacheEntry = (
   current: PlaybackCacheMap,
   sourceKey: string,
   patch: Partial<PlaybackCacheEntry> & Pick<PlaybackCacheEntry, 'sourceKey' | 'mediaKey' | 'title' | 'mediaType' | 'peerId' | 'messageId' | 'streamUrl' | 'downloadUrl' | 'cachePath' | 'fileSizeBytes'>
-) => ({
+) => prunePlaybackCacheMap({
   ...current,
   [sourceKey]: {
     bytesDownloaded: 0,
@@ -59,6 +62,31 @@ export const upsertPlaybackCacheEntry = (
 export const removePlaybackCacheEntry = (current: PlaybackCacheMap, sourceKey: string) => {
   const next = { ...current };
   delete next[sourceKey];
+  return next;
+};
+
+export const prunePlaybackCacheMap = (
+  current: PlaybackCacheMap,
+  now = Date.now()
+) => {
+  const sortedEntries = Object.entries(current)
+    .filter(([, entry]) => !!entry?.sourceKey && !!entry?.mediaKey)
+    .filter(([, entry]) => {
+      const ttl = entry.isComplete ? COMPLETE_PLAYBACK_CACHE_TTL_MS : INCOMPLETE_PLAYBACK_CACHE_TTL_MS;
+      return now - entry.lastUpdatedAt <= ttl;
+    })
+    .sort((left, right) => right[1].lastUpdatedAt - left[1].lastUpdatedAt)
+    .slice(0, MAX_PLAYBACK_CACHE_ENTRIES);
+
+  return sortedEntries.reduce<PlaybackCacheMap>((acc, [sourceKey, entry]) => {
+    acc[sourceKey] = entry;
+    return acc;
+  }, {});
+};
+
+export const compactPlaybackCacheStorage = (storage: StorageLike, now = Date.now()) => {
+  const next = prunePlaybackCacheMap(readPlaybackCacheMap(storage), now);
+  writePlaybackCacheMap(storage, next);
   return next;
 };
 
