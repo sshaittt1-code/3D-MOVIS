@@ -318,10 +318,10 @@ app.post('/api/tg/startLogin', async (req, res) => {
     if (!phone) return res.status(400).json({ error: 'Phone number is required' });
     const loginId = crypto.randomUUID();
     const { apiId, apiHash } = getTelegramApiConfig();
-    
+
     const client = new TelegramClient(new StringSession(''), apiId, apiHash, { connectionRetries: 5 });
     await client.connect();
-    
+
     const sessionObj: LoginSession = {
       client,
       resolveCode: null,
@@ -376,7 +376,7 @@ app.post('/api/tg/submitCode', async (req, res) => {
 
   if (sessionObj.resolveCode) {
     sessionObj.resolveCode(code);
-    
+
     // Wait for the signInUser promise to progress to either success, error, or password state
     let attempts = 0;
     while (sessionObj.stage === 'pending_code' && attempts < 30) {
@@ -409,7 +409,7 @@ app.post('/api/tg/submitPassword', async (req, res) => {
 
   if (sessionObj.resolvePassword) {
     sessionObj.resolvePassword(password);
-    
+
     let attempts = 0;
     while (sessionObj.stage === 'pending_password' && attempts < 30) {
       await new Promise(r => setTimeout(r, 200));
@@ -464,10 +464,10 @@ app.get('/api/tg/search', async (req, res) => {
   try {
     const query = readStringValue(req.query.query);
     if (!query) return res.status(400).json({ error: 'Missing query' });
-    
+
     const sessionStr = readStringValue(req.headers['x-tg-session']);
     const client = await getClientParam(sessionStr);
-    
+
     // Search globally across all dialogs for video files matching the query
     const result = await client.invoke(new Api.messages.SearchGlobal({
       q: query,
@@ -480,7 +480,7 @@ app.get('/api/tg/search', async (req, res) => {
 
     const messages = (result as Api.messages.Messages).messages;
     const chats = (result as Api.messages.Messages).chats;
-    
+
     // Map chat info for easier lookup
     const chatMap = new Map();
     chats.forEach(c => {
@@ -491,7 +491,7 @@ app.get('/api/tg/search', async (req, res) => {
       const peerId = m.peerId?.channelId || m.peerId?.chatId || m.peerId?.userId;
       const chat = chatMap.get(peerId?.toString());
       const info = extractTelegramDocumentInfo(m);
-      
+
       // Try to extract a meaningful title from the message text or document attributes
       let title = m.message || 'Video File';
       if (m.media && m.media.document) {
@@ -628,10 +628,10 @@ app.get('/api/tg/search-subtitles', async (req, res) => {
   try {
     const query = readStringValue(req.query.query);
     if (!query) return res.status(400).json({ error: 'Missing query' });
-    
+
     const sessionStr = readStringValue(req.headers['x-tg-session']);
     const client = await getClientParam(sessionStr);
-    
+
     // Search globally for Hebrew .srt files matching the movie
     const result = await client.invoke(new Api.messages.SearchGlobal({
       q: `${query} תרגום`,

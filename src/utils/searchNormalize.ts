@@ -38,25 +38,12 @@ const flattenAltTitles = (value: unknown): string[] => {
           record.name,
           record.localizedTitle,
           record.originalTitle,
-          record.iso_3166_1,
-          record.iso_639_1
         ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
       }
       return [];
     });
   }
   return typeof value === 'string' ? [value] : [];
-};
-
-const isSubsequenceMatch = (query: string, candidate: string) => {
-  if (!query || !candidate || query.length > candidate.length) return false;
-  let queryIndex = 0;
-  for (let candidateIndex = 0; candidateIndex < candidate.length && queryIndex < query.length; candidateIndex += 1) {
-    if (candidate[candidateIndex] === query[queryIndex]) {
-      queryIndex += 1;
-    }
-  }
-  return queryIndex === query.length;
 };
 
 export const normalizeSearchText = (value: string) =>
@@ -68,30 +55,8 @@ export const normalizeSearchText = (value: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-export const shouldTriggerPredictiveSearch = (query: string, minChars = 3) =>
+export const shouldTriggerPredictiveSearch = (query: string, minChars = 2) =>
   normalizeCompact(query).length >= minChars;
-
-export const getSearchAliases = (item: any): string[] => {
-  const aliases: SearchAlias[] = [];
-  const seen = new Set<string>();
-
-  [
-    item?.localizedTitle,
-    item?.hebrewTitle,
-    item?.title,
-    item?.name
-  ].forEach((value) => pushAlias(aliases, seen, value, 'localized'));
-
-  [
-    item?.originalTitle,
-    item?.originalName,
-    item?.seriesTitle
-  ].forEach((value) => pushAlias(aliases, seen, value, 'original'));
-
-  flattenAltTitles(item?.alternateTitles).forEach((value) => pushAlias(aliases, seen, value, 'alternate'));
-
-  return aliases.map((alias) => alias.value);
-};
 
 const getStructuredAliases = (item: any) => {
   const aliases: SearchAlias[] = [];
@@ -123,7 +88,7 @@ const getSearchIdentity = (item: any) =>
   `${item?.mediaType || 'unknown'}:${item?.id ?? item?.uniqueId ?? item?.title ?? 'unknown'}`;
 
 const getAliasBoost = (kind: SearchAliasKind) =>
-  kind === 'localized' ? 20 : kind === 'original' ? 12 : kind === 'alternate' ? 8 : 0;
+  kind === 'localized' ? 30 : kind === 'original' ? 20 : kind === 'alternate' ? 10 : 0;
 
 export const scoreSearchCandidate = (item: any, query: string) => {
   const normalizedQuery = normalizeSearchText(query);
@@ -137,50 +102,62 @@ export const scoreSearchCandidate = (item: any, query: string) => {
     const aliasBoost = getAliasBoost(alias.kind);
     const aliasTokens = alias.normalized.split(' ').filter(Boolean);
 
+    // 1. Exact match (Highest)
     if (alias.normalized === normalizedQuery || alias.compact === compactQuery) {
-      bestScore = Math.max(bestScore, 180 + aliasBoost);
+      bestScore = Math.max(bestScore, 200 + aliasBoost);
       continue;
     }
 
+    // 2. Starts with (High)
     if (alias.normalized.startsWith(normalizedQuery) || alias.compact.startsWith(compactQuery)) {
-      bestScore = Math.max(bestScore, 148 + aliasBoost);
+      bestScore = Math.max(bestScore, 150 + aliasBoost);
       continue;
     }
 
-    if (aliasTokens.some((token) => token.startsWith(normalizedQuery) || token.startsWith(compactQuery))) {
-      bestScore = Math.max(bestScore, 126 + aliasBoost);
+    // 3. Any token starts with (Medium-High)
+    if (aliasTokens.some((token) => token.startsWith(normalizedQuery))) {
+      bestScore = Math.max(bestScore, 130 + aliasBoost);
       continue;
     }
 
+    // 4. All query tokens present in alias (Medium)
     if (queryTokens.every((token) => alias.normalized.includes(token))) {
-      bestScore = Math.max(bestScore, 104 + aliasBoost);
+      bestScore = Math.max(bestScore, 110 + aliasBoost);
       continue;
     }
 
-    if (alias.normalized.includes(normalizedQuery) || alias.compact.includes(compactQuery)) {
-      bestScore = Math.max(bestScore, 88 + aliasBoost);
+    // 5. Alias contains query (Low-Medium)
+    if (alias.normalized.includes(normalizedQuery)) {
+      bestScore = Math.max(bestScore, 90 + aliasBoost);
       continue;
-    }
-
-    if (isSubsequenceMatch(compactQuery, alias.compact)) {
-      bestScore = Math.max(bestScore, 58 + aliasBoost);
     }
   }
 
   if (bestScore === 0) return 0;
-  return bestScore + Math.min(18, Number(item?.popularity || 0) / 40) + Math.min(12, Number(item?.rating || 0));
+
+  // Tiny tie-breakers for popularity/rating
+  const popularityScore = Math.min(10, Number(item?.popularity || 0) / 100);
+  const ratingScore = Math.min(5, Number(item?.rating || 0) / 2);
+
+  return bestScore + popularityScore + ratingScore;
 };
 
 export const rankSearchResults = (items: any[], query: string) => {
   const seen = new Set<string>();
-  return [...items]
-    .map((item) => ({ item, score: scoreSearchCandidate(item, query) }))
-    .filter(({ item, score }) => {
-      const identity = getSearchIdentity(item);
-      if (score <= 0 || seen.has(identity)) return false;
+  const results = [];
+
+  for (const item of items) {
+    const identity = getSearchIdentity(item);
+    if (seen.has(identity)) continue;
+
+    const score = scoreSearchCandidate(item, query);
+    if (score > 0) {
       seen.add(identity);
-      return true;
-    })
+      results.push({ item, score });
+    }
+  }
+
+  return results
     .sort((left, right) => right.score - left.score)
-    .map(({ item }) => item);
+    .map((r) => r.item);
 };
