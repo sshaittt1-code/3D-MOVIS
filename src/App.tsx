@@ -30,6 +30,15 @@ import {
   shouldAdvanceContentPage
 } from './utils/corridorPagination';
 import {
+  buildPosterLayout,
+  CORRIDOR_INITIAL_CAMERA_Z,
+  decorateCorridorItems,
+  getCorridorRenderAheadCount,
+  getLastPosterZ,
+  getNearEndTriggerZ,
+  getRenderedPosterLayout
+} from './utils/corridorEngine';
+import {
   FALLBACK_LIBRARY,
   buildRootRequestKey,
   getActiveGenreFilterForSection,
@@ -197,13 +206,12 @@ const toBase64 = (buffer: ArrayBuffer) => {
 // --- 3D Components ---
 const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPress, onHeartToggle, setFocusedId, setFocusedHeartId, isAnyModalOpen, selectedMovie, lastPosterZ, nearEndTriggerKey, cameraResetKey, onNearEnd, onCameraMove }: any) => {
   const { camera } = useThree();
-  const [targetPos, setTargetPos] = useState(new THREE.Vector3(0, 1.6, 2));
+  const [targetPos, setTargetPos] = useState(new THREE.Vector3(0, 1.6, CORRIDOR_INITIAL_CAMERA_Z));
   const focusedMovieRef = useRef<any>(null);
   const focusedHeartRef = useRef<string | null>(null);
   const lastNearEndTriggerKeyRef = useRef<string | null>(null);
   const STEP_SIZE = 0.8;
   const ROTATION_SPEED = 0.012;
-  const INITIAL_CAMERA_Z = 2;
   
   const keys = useRef<{ left: boolean; right: boolean }>({ left: false, right: false });
   const targetRotY = useRef(0);
@@ -240,7 +248,7 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
         setTargetPos(p => new THREE.Vector3(p.x, p.y, p.z - STEP_SIZE));
         targetRotY.current = 0;
       } else if (e.key === 'ArrowDown') {
-        setTargetPos(p => new THREE.Vector3(p.x, p.y, Math.min(p.z + STEP_SIZE, 5)));
+        setTargetPos(p => new THREE.Vector3(p.x, p.y, Math.min(p.z + STEP_SIZE, CORRIDOR_INITIAL_CAMERA_Z + 3)));
         targetRotY.current = 0;
       } else if (e.key === 'ArrowLeft') {
         keys.current.left = true;
@@ -289,7 +297,7 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
   }, [clearLongPress, isLocked, onPosterLongPress, onPosterSelect, onHeartToggle, isAnyModalOpen, selectedMovie]);
 
   useEffect(() => {
-    setTargetPos(new THREE.Vector3(0, 1.6, 2));
+    setTargetPos(new THREE.Vector3(0, 1.6, CORRIDOR_INITIAL_CAMERA_Z));
     targetRotY.current = 0;
   }, [cameraResetKey]);
 
@@ -309,9 +317,9 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
       camera.quaternion.slerp(targetQuat, 0.15);
       onCameraMove?.(camera.position.z);
 
-      if (nearEndTriggerKey && lastPosterZ !== undefined && lastPosterZ < INITIAL_CAMERA_Z) {
-        const nearEndTriggerZ = INITIAL_CAMERA_Z + (lastPosterZ - INITIAL_CAMERA_Z) * 0.75;
-        if (camera.position.z <= nearEndTriggerZ && lastNearEndTriggerKeyRef.current !== nearEndTriggerKey) {
+      if (nearEndTriggerKey) {
+        const nearEndTriggerZ = getNearEndTriggerZ(lastPosterZ);
+        if (nearEndTriggerZ !== null && camera.position.z <= nearEndTriggerZ && lastNearEndTriggerKeyRef.current !== nearEndTriggerKey) {
           lastNearEndTriggerKeyRef.current = nearEndTriggerKey;
           onNearEnd?.();
         }
@@ -854,6 +862,7 @@ export default function App() {
     loadMoreAbortRef.current?.abort();
     loadMoreAbortRef.current = null;
     activeLoadMorePageKeyRef.current = null;
+    setCameraZ(CORRIDOR_INITIAL_CAMERA_Z);
     setContentPage(1);
     setHasMore(true);
     setIsLoadingMore(false);
@@ -1113,32 +1122,29 @@ export default function App() {
   }, [hasMore, isLoadingMore, showSearch, navContext, librarySection, currentRootRequestKey, contentPage, nearEndGeneration]);
 
   const displayMovies = useMemo(() => {
-    if (showSearch) return searchResults.map((m, i) => ({ ...m, uniqueId: `s-${m.id}-${i}` }));
-    if (navContext?.type === 'seasons') return navContext.seasons;
-    if (navContext?.type === 'episodes') return navContext.episodes;
-    if (librarySection === 'favorites') return favorites.map((m, i) => ({ ...m, uniqueId: `f-${m.id}-${i}` }));
-    if (librarySection === 'history') return watchHistory.map((m, i) => ({ ...m, uniqueId: `h-${m.id}-${i}` }));
+    if (showSearch) return decorateCorridorItems(searchResults, 'search');
+    if (navContext?.type === 'seasons') return decorateCorridorItems(navContext.seasons, `seasons:${navContext.seriesId}`);
+    if (navContext?.type === 'episodes') return decorateCorridorItems(navContext.episodes, `episodes:${navContext.seriesId}:${navContext.seasonNum}`);
+    if (librarySection === 'favorites') return decorateCorridorItems(favorites, 'favorites');
+    if (librarySection === 'history') return decorateCorridorItems(watchHistory, 'history');
 
     let base = librarySection === 'series' ? seriesItems : librarySection === 'israeli' ? israeliItems : baseMovies;
-    return applyCatalogFilters(base, { sortMode, yearFilter, genreFilter: activeGenreFilter, randomSeed: shuffleSeed })
-      .map((m, i) => ({ ...m, uniqueId: `${librarySection}-${m.id}-${i}` }));
-  }, [showSearch, searchResults, navContext, librarySection, favorites, watchHistory, seriesItems, israeliItems, baseMovies, sortMode, yearFilter, activeGenreFilter, shuffleSeed]);
+    return decorateCorridorItems(
+      applyCatalogFilters(base, { sortMode, yearFilter, genreFilter: activeGenreFilter, randomSeed: shuffleSeed }),
+      currentRootRequestKey
+    );
+  }, [showSearch, searchResults, navContext, librarySection, favorites, watchHistory, seriesItems, israeliItems, baseMovies, sortMode, yearFilter, activeGenreFilter, shuffleSeed, currentRootRequestKey]);
 
   const displayMoviesRef = useRef(displayMovies);
   useEffect(() => { displayMoviesRef.current = displayMovies; }, [displayMovies]);
 
-  const posterLayout = useMemo(() => displayMovies.map((movie, index) => {
-    const zIndex = Math.floor(index / 2);
-    const isLeft = index % 2 === 0;
-    return { movie, position: [isLeft ? -4.9 : 4.9, 3.2, -zIndex * 5 - 2], rotation: [0, isLeft ? Math.PI / 2.2 : -Math.PI / 2.2, 0] };
-  }), [displayMovies]);
+  const posterLayout = useMemo(() => buildPosterLayout(displayMovies), [displayMovies]);
 
   const renderedPosterLayout = useMemo(() => {
-    const currentIdx = Math.max(0, Math.floor((2 - cameraZ) / 5) * 2);
-    return posterLayout.slice(Math.max(0, currentIdx - 6), currentIdx + 20);
-  }, [cameraZ, posterLayout]);
+    return getRenderedPosterLayout(posterLayout, cameraZ, getCorridorRenderAheadCount(posterBatchSize));
+  }, [cameraZ, posterLayout, posterBatchSize]);
 
-  const lastPosterZ = posterLayout.length > 0 ? posterLayout[posterLayout.length-1].position[2] : -2;
+  const lastPosterZ = useMemo(() => getLastPosterZ(posterLayout), [posterLayout]);
 
   useEffect(() => {
     prefetchPostersForItems(displayMovies.slice(0, posterBatchSize));
