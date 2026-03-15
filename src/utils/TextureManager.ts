@@ -11,7 +11,7 @@ class TextureManager {
     this.loader.setCrossOrigin('anonymous');
     this.cache = new Map();
     this.pending = new Map();
-    this.maxCacheSize = 140;
+    this.maxCacheSize = 200;
   }
 
   private rememberTexture(url: string, texture: THREE.Texture) {
@@ -88,7 +88,7 @@ class TextureManager {
     return promise;
   }
 
-  async prefetch(urls: string[], concurrency = 4) {
+  async prefetch(urls: string[], concurrency = 6) {
     const queue = [...new Set(urls.filter(Boolean))].filter((url) => !this.cache.has(url));
     if (queue.length === 0) return;
 
@@ -96,6 +96,13 @@ class TextureManager {
       const batch = queue.slice(index, index + concurrency);
       await Promise.all(batch.map((url) => this.loadTexture(url).catch(() => null)));
     }
+  }
+
+  async prefetchPriority(priorityUrls: string[], secondaryUrls: string[] = [], concurrency = 6) {
+    const queue = [...new Set([...priorityUrls, ...secondaryUrls].filter(Boolean))]
+      .filter((url) => !this.cache.has(url));
+    if (queue.length === 0) return;
+    await this.prefetch(queue, concurrency);
   }
   
   // Optional: clear cache if memory gets too high
