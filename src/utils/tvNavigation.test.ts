@@ -19,14 +19,14 @@ test('shouldHandleGlobalTvBack ignores editable targets', () => {
 
 test('shouldHandleGlobalTvBack ignores ui scope targets', () => {
   assert.equal(
-    shouldHandleGlobalTvBack({ key: 'Escape' }, { isUiScopeTarget: true }),
+    shouldHandleGlobalTvBack({ key: 'Escape' }, { hasLocalBackHandler: true }),
     false
   );
 });
 
 test('shouldHandleGlobalTvBack accepts corridor-level back keys', () => {
   assert.equal(
-    shouldHandleGlobalTvBack({ key: 'Escape' }, { isEditableTarget: false, isUiScopeTarget: false }),
+    shouldHandleGlobalTvBack({ key: 'Escape' }, { isEditableTarget: false, hasLocalBackHandler: false }),
     true
   );
 });

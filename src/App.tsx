@@ -3,11 +3,9 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Text, SpotLight } from '@react-three/drei';
 import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Play, Search, LogOut, Settings, Film, X, Loader2, Eye, Clock3, Heart, HeartOff, SkipForward } from 'lucide-react';
+import { Search, Settings, Film, X, Loader2, Eye, Clock3 } from 'lucide-react';
 import { App as CapApp } from '@capacitor/app';
 import { textureManager } from './utils/TextureManager';
-import { Filesystem, Directory } from '@capacitor/filesystem';
-import { Capacitor, registerPlugin } from '@capacitor/core';
 import { applyCatalogFilters, getApiYearFilter, getUniqueGenres, type LibrarySection, type SortMode, type YearFilter } from './utils/catalog';
 import { isRemoteVersionNewer } from './utils/version';
 import { buildMediaKey, createDefaultMediaStateEntry, MEDIA_STATE_STORAGE_KEY, migrateLegacyMediaState, type MediaStateEntry, type WatchStatus, updateProgressState } from './utils/mediaState';
@@ -15,10 +13,10 @@ import { findNextEpisodeInSeason, findNextSeason, shouldPrepareNextEpisode } fro
 import { readAutoPlayNextEpisode, writeAutoPlayNextEpisode } from './utils/playerSettings';
 import { SideMenu } from './components/SideMenu';
 import { PosterContextMenu } from './components/PosterContextMenu';
+import { AppSettingsPanel } from './components/AppSettingsPanel';
+import { CinemaGate } from './components/CinemaGate';
 import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
 import { safeGetJson, safeGetString, safeParseJson, safeRemove, safeSetJson, safeSetString } from './utils/safeStorage';
-import { buildPlaybackSourceKey } from './utils/sourceKey';
-import { getPrebufferTargetBytes, isPlayableFromCache, PLAYBACK_CACHE_STORAGE_KEY, readPlaybackCacheMap, removePlaybackCacheEntry, shouldDeleteCompletedCache, type PlaybackCacheEntry, type PlaybackCacheMap, upsertPlaybackCacheEntry, writePlaybackCacheMap } from './utils/playbackCache';
 import { buildCategoryCacheKey, getCategoryCacheEntry, writeCategoryCacheEntry } from './utils/categoryCache';
 import { DEFAULT_POSTER_BATCH_SIZE, POSTER_BATCH_SIZE_OPTIONS, readPosterBatchSize, writePosterBatchSize } from './utils/posterBatchSettings';
 import { LONG_PRESS_DURATION_MS, classifyPressDuration } from './utils/longPress';
@@ -44,8 +42,11 @@ import {
   type FeedTarget
 } from './utils/corridorFeed';
 import { shouldHandleGlobalTvBack } from './utils/tvNavigation';
-
-const ApkInstaller = registerPlugin<any>('ApkInstaller');
+import {
+  DEFAULT_ROOT_CATALOG_STATE,
+  resolveAppBackAction,
+  resolveAppShellLayer
+} from './utils/appShell';
 
 // --- API Helpers ---
 const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://threed-movis.onrender.com';
@@ -70,8 +71,8 @@ const stopTvEvent = (e: KeyboardEvent) => {
 const isUiScopeTarget = (target: EventTarget | null) =>
   typeof Element !== 'undefined' && target instanceof Element && !!target.closest('[data-tv-scope="ui"]');
 
-const isTelegramAuthScreen = (status: string) =>
-  status === 'phoneInput' || status === 'codeInput' || status === 'passwordInput';
+const hasLocalBackHandlerTarget = (target: EventTarget | null) =>
+  typeof Element !== 'undefined' && target instanceof Element && !!target.closest('[data-tv-back-scope="local"]');
 
 const fetchApiJson = async <T = any>(path: string, init: RequestInit = {}): Promise<T> => {
   const sessionStr = safeGetString(localStorage, 'tg_session');
@@ -435,21 +436,18 @@ export default function App() {
   const [focusedHeartId, setFocusedHeartId] = useState<string | null>(null);
   const [showCinemaScreen, setShowCinemaScreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [tgSearchResults, setTgSearchResults] = useState<any[]>([]);
-  const [isSearchingTg, setIsSearchingTg] = useState(false);
   const [navContext, setNavContext] = useState<NavCtx>(null);
-  const [librarySection, setLibrarySection] = useState<LibrarySection>('all');
-  const [sortMode, setSortMode] = useState<SortMode>('feed');
-  const [yearFilter, setYearFilter] = useState<YearFilter>('all');
-  const [seriesGenreFilter, setSeriesGenreFilter] = useState<string | null>(null);
-  const [movieGenreId, setMovieGenreId] = useState<number | null>(null);
-  const [movieCategory, setMovieCategory] = useState<FeedCategory>('popular');
-  const [seriesCategory, setSeriesCategory] = useState<FeedCategory>('popular');
-  const [israeliCategory, setIsraeliCategory] = useState<FeedCategory>('popular');
+  const [librarySection, setLibrarySection] = useState<LibrarySection>(DEFAULT_ROOT_CATALOG_STATE.librarySection);
+  const [sortMode, setSortMode] = useState<SortMode>(DEFAULT_ROOT_CATALOG_STATE.sortMode);
+  const [yearFilter, setYearFilter] = useState<YearFilter>(DEFAULT_ROOT_CATALOG_STATE.yearFilter);
+  const [seriesGenreFilter, setSeriesGenreFilter] = useState<string | null>(DEFAULT_ROOT_CATALOG_STATE.seriesGenreFilter);
+  const [movieGenreId, setMovieGenreId] = useState<number | null>(DEFAULT_ROOT_CATALOG_STATE.movieGenreId);
+  const [movieCategory, setMovieCategory] = useState<FeedCategory>(DEFAULT_ROOT_CATALOG_STATE.movieCategory);
+  const [seriesCategory, setSeriesCategory] = useState<FeedCategory>(DEFAULT_ROOT_CATALOG_STATE.seriesCategory);
+  const [israeliCategory, setIsraeliCategory] = useState<FeedCategory>(DEFAULT_ROOT_CATALOG_STATE.israeliCategory);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>('general');
   const [shuffleSeed, setShuffleSeed] = useState(() => Date.now());
   const [cameraZ, setCameraZ] = useState(2);
-  const [transitionLabel, setTransitionLabel] = useState<string | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
 
   const [contentPage, setContentPage] = useState(1);
@@ -460,24 +458,13 @@ export default function App() {
   const [mediaStateMap, setMediaStateMap] = useState<Record<string, MediaStateEntry>>(() => safeGetJson(localStorage, MEDIA_STATE_STORAGE_KEY, {}));
   const [autoPlayNextEpisode, setAutoPlayNextEpisode] = useState<boolean>(() => readAutoPlayNextEpisode(localStorage, true));
   const [posterBatchSize, setPosterBatchSize] = useState<number>(() => readPosterBatchSize(localStorage, DEFAULT_POSTER_BATCH_SIZE));
-  const [playbackCacheMap, setPlaybackCacheMap] = useState<PlaybackCacheMap>(() => readPlaybackCacheMap(localStorage));
-  const [isBuffering, setIsBuffering] = useState(false);
-  const [bufferProgress, setBufferProgress] = useState(0);
-  const [bufferingSourceKey, setBufferingSourceKey] = useState<string | null>(null);
 
   const [apiBase, setApiBase] = useState(() => safeGetString(localStorage, 'api_base', API_BASE));
   const normalizedApiBase = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase]);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   const [tgStatus, setTgStatus] = useState<'checking' | 'loggedOut' | 'phoneInput' | 'codeInput' | 'passwordInput' | 'loggedIn'>('checking');
-  const [phone, setPhone] = useState('+972');
-  const [code, setCode] = useState('');
-  const [password, setPassword] = useState('');
-  const [loginError, setLoginError] = useState('');
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [activeMedia, setActiveMedia] = useState<ActivePlayback | null>(null);
-  const [preparedNextMedia, setPreparedNextMedia] = useState<PreparedPlayback | null>(null);
-  const [nextEpisodeOverlay, setNextEpisodeOverlay] = useState<any>(null);
 
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -489,14 +476,53 @@ export default function App() {
   const predictiveSearchRequestRef = useRef(0);
   const predictiveSearchAbortRef = useRef<AbortController | null>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchReturnToSidebarRef = useRef(false);
+  const settingsReturnToSidebarRef = useRef(false);
   const mediaStateMapRef = useRef(mediaStateMap);
-  const downloadAbortRef = useRef<AbortController | null>(null);
-  const prebufferResolverRef = useRef<(() => void) | null>(null);
 
   useEffect(() => { mediaStateMapRef.current = mediaStateMap; safeSetJson(localStorage, MEDIA_STATE_STORAGE_KEY, mediaStateMap); }, [mediaStateMap]);
 
   const favorites = useMemo(() => Object.values(mediaStateMap).filter(e => e.favorite).map(e => e.snapshot), [mediaStateMap]);
   const watchHistory = useMemo(() => Object.values(mediaStateMap).filter(e => e.lastWatchedAt).sort((a,b) => (b.lastWatchedAt||0) - (a.lastWatchedAt||0)).map(e => e.snapshot), [mediaStateMap]);
+  const shellSnapshot = useMemo(() => ({
+    hasActiveMedia: Boolean(activeMedia),
+    hasPosterContextMovie: Boolean(posterContextMovie),
+    hasSelectedMovie: Boolean(selectedMovie),
+    showCinemaScreen,
+    showSearch,
+    hasNavContext: Boolean(navContext),
+    showSettings,
+    isSidebarOpen: !isLocked
+  }), [activeMedia, posterContextMovie, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings, isLocked]);
+  const activeShellLayer = useMemo(() => resolveAppShellLayer(shellSnapshot), [shellSnapshot]);
+  const isAnyShellOverlayOpen = activeShellLayer !== 'corridor' && activeShellLayer !== 'sidebar';
+
+  const handlePosterBatchSizeChange = useCallback((value: number) => {
+    setPosterBatchSize(value);
+    writePosterBatchSize(localStorage, value);
+  }, []);
+
+  const handleAutoPlayNextEpisodeChange = useCallback((value: boolean) => {
+    setAutoPlayNextEpisode(value);
+    writeAutoPlayNextEpisode(localStorage, value);
+  }, []);
+
+  const closeSettingsSurface = useCallback(() => {
+    const shouldReturnToSidebar = settingsReturnToSidebarRef.current;
+    settingsReturnToSidebarRef.current = false;
+    setShowSettings(false);
+    if (shouldReturnToSidebar) {
+      setIsLocked(false);
+    }
+  }, []);
+
+  const openSettingsPanel = useCallback((panel: SettingsPanel, options: { returnToSidebar?: boolean } = {}) => {
+    setSettingsPanel(panel);
+    setShowCinemaScreen(false);
+    setShowSettings(true);
+    settingsReturnToSidebarRef.current = Boolean(options.returnToSidebar);
+    setIsLocked(true);
+  }, []);
 
   const toggleFavoriteForItem = useCallback((item: any, force?: boolean) => {
     const key = buildMediaKey(item);
@@ -512,18 +538,8 @@ export default function App() {
   };
 
   const closePlayer = async () => {
-    stopBackgroundDownload();
     await NativePlayer.close().catch(() => null);
     setActiveMedia(null);
-    setPreparedNextMedia(null);
-    setNextEpisodeOverlay(null);
-    setIsBuffering(false);
-  };
-
-  const stopBackgroundDownload = () => {
-    downloadAbortRef.current?.abort();
-    downloadAbortRef.current = null;
-    prebufferResolverRef.current = null;
   };
 
   // --- CONTENT LOADING ENGINE ---
@@ -924,8 +940,14 @@ export default function App() {
     const route = item.route;
     setNavContext(null);
     setShowSearch(false);
+    setShowSettings(false);
+    setShowCinemaScreen(false);
+    setPosterContextMovie(null);
+    searchReturnToSidebarRef.current = false;
+    settingsReturnToSidebarRef.current = false;
 
     if (route.target === 'search') {
+      searchReturnToSidebarRef.current = true;
       setShowSearch(true);
       setIsLocked(true);
       return;
@@ -977,6 +999,15 @@ export default function App() {
     setIsSearchingTmdb(false);
     setSearchError(null);
   }, [abortPendingSearch]);
+
+  const closeSearchSurface = useCallback(() => {
+    const shouldReturnToSidebar = searchReturnToSidebarRef.current;
+    searchReturnToSidebarRef.current = false;
+    resetSearchState(true);
+    if (shouldReturnToSidebar) {
+      setIsLocked(false);
+    }
+  }, [resetSearchState]);
 
   useEffect(() => {
     if (!showSearch) {
@@ -1119,15 +1150,38 @@ export default function App() {
 
   // --- Remote Control logic ---
   const performBackAction = useCallback(() => {
-    if (activeMedia) { void closePlayer(); return; }
-    if (posterContextMovie) { setPosterContextMovie(null); return; }
-    if (selectedMovie) { setSelectedMovie(null); return; }
-    if (showCinemaScreen) { setShowCinemaScreen(false); return; }
-    if (showSearch) { resetSearchState(true); return; }
-    if (navContext) { setNavContext(null); return; }
-    if (showSettings) { setShowSettings(false); return; }
-    setIsLocked(false);
-  }, [activeMedia, closePlayer, posterContextMovie, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings, resetSearchState]);
+    switch (resolveAppBackAction(shellSnapshot)) {
+      case 'closePlayer':
+        void closePlayer();
+        return;
+      case 'closePosterContext':
+        setPosterContextMovie(null);
+        return;
+      case 'closeSettings':
+        closeSettingsSurface();
+        return;
+      case 'closeCinemaScreen':
+        setShowCinemaScreen(false);
+        return;
+      case 'closeSelectedMovie':
+        setSelectedMovie(null);
+        return;
+      case 'closeSearch':
+        closeSearchSurface();
+        return;
+      case 'clearNavContext':
+        setNavContext(null);
+        return;
+      case 'closeSidebar':
+        setIsLocked(true);
+        return;
+      case 'openSidebar':
+        setIsLocked(false);
+        return;
+      default:
+        return;
+    }
+  }, [closePlayer, closeSearchSurface, closeSettingsSurface, shellSnapshot]);
 
   useEffect(() => {
     const sub = CapApp.addListener('backButton', performBackAction);
@@ -1138,7 +1192,7 @@ export default function App() {
     const handleGlobalBackKey = (event: KeyboardEvent) => {
       if (!shouldHandleGlobalTvBack(event, {
         isEditableTarget: isEditableTextTarget(event.target),
-        isUiScopeTarget: isUiScopeTarget(event.target)
+        hasLocalBackHandler: hasLocalBackHandlerTarget(event.target)
       })) {
         return;
       }
@@ -1151,6 +1205,17 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalBackKey, true);
   }, [performBackAction]);
 
+  const telegramStatusLabel = tgStatus === 'loggedIn'
+    ? 'מחובר לחשבון Telegram'
+    : tgStatus === 'checking'
+      ? 'בודק חיבור Telegram'
+      : 'עדיין לא מחובר ל-Telegram';
+  const telegramStatusTone = tgStatus === 'loggedIn'
+    ? 'bg-emerald-400'
+    : tgStatus === 'checking'
+      ? 'bg-amber-400'
+      : 'bg-white/40';
+
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative text-white" dir="rtl">
       <Canvas camera={{ position: [0, 1.6, 2], fov: 75 }}>
@@ -1162,7 +1227,7 @@ export default function App() {
               <Poster key={p.movie.uniqueId} movie={p.movie} isFocused={focusedId === p.movie.uniqueId} isFavorited={!!mediaStateMap[buildMediaKey(p.movie)]?.favorite} isHeartFocused={focusedHeartId === p.movie.uniqueId} watchStatus={mediaStateMap[buildMediaKey(p.movie)]?.watchStatus} position={p.position} rotation={p.rotation} />
             ))}
           </group>
-          <TVController posterLayout={posterLayout} isLocked={isLocked} onPosterSelect={setSelectedMovie} onPosterLongPress={setPosterContextMovie} onHeartToggle={handleHeartToggle} setFocusedId={setFocusedId} setFocusedHeartId={setFocusedHeartId} isAnyModalOpen={!!selectedMovie || showSearch || showSettings || showCinemaScreen} lastPosterZ={lastPosterZ} nearEndTriggerKey={nearEndTriggerKey} cameraResetKey={currentRootRequestKey} onNearEnd={loadMoreContent} onCameraMove={setCameraZ} />
+          <TVController posterLayout={posterLayout} isLocked={isLocked} onPosterSelect={setSelectedMovie} onPosterLongPress={setPosterContextMovie} onHeartToggle={handleHeartToggle} setFocusedId={setFocusedId} setFocusedHeartId={setFocusedHeartId} isAnyModalOpen={isAnyShellOverlayOpen} lastPosterZ={lastPosterZ} nearEndTriggerKey={nearEndTriggerKey} cameraResetKey={currentRootRequestKey} onNearEnd={loadMoreContent} onCameraMove={setCameraZ} />
         </Suspense>
       </Canvas>
 
@@ -1189,7 +1254,7 @@ export default function App() {
               <div className="bg-[#00ffcc]/20 p-4 rounded-full text-[#00ffcc]"><Search size={24} /></div>
               <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="חפש סרט או סדרה..." className="flex-1 bg-transparent border-none text-2xl outline-none" />
               {isSearchingTmdb && <Loader2 className="animate-spin text-[#00ffcc]" />}
-              <button onClick={() => resetSearchState(true)} className="p-2 opacity-50"><X /></button>
+              <button onClick={closeSearchSurface} className="p-2 opacity-50"><X /></button>
             </div>
             {searchError && (
               <div className="mt-6 text-center text-red-400">{searchError}</div>
@@ -1200,6 +1265,40 @@ export default function App() {
             {!searchError && searchResults.length === 0 && searchQuery.trim().length >= 3 && !isSearchingTmdb && (
               <div className="mt-6 text-center text-gray-500">לא נמצאו תוצאות</div>
             )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {selectedMovie && showCinemaScreen && (
+          <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }}>
+            <CinemaGate
+              title={selectedMovie.title}
+              onOpenTelegramPanel={() => openSettingsPanel('telegram')}
+              onOpenGeneralSettings={() => openSettingsPanel('general')}
+              onBackToDetails={() => setShowCinemaScreen(false)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showSettings && (
+          <motion.div initial={{ opacity: 0, scale: 0.985 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.985 }}>
+            <AppSettingsPanel
+              panel={settingsPanel}
+              tabs={SETTINGS_TABS}
+              onPanelChange={setSettingsPanel}
+              onClose={closeSettingsSurface}
+              posterBatchSize={posterBatchSize}
+              posterBatchOptions={POSTER_BATCH_SIZE_OPTIONS}
+              onPosterBatchSizeChange={handlePosterBatchSizeChange}
+              autoPlayNextEpisode={autoPlayNextEpisode}
+              onAutoPlayNextEpisodeChange={handleAutoPlayNextEpisodeChange}
+              telegramStatusLabel={telegramStatusLabel}
+              telegramStatusTone={telegramStatusTone}
+              apiBase={normalizedApiBase}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -1229,8 +1328,7 @@ export default function App() {
           if (item.kind === 'route') {
             handleCategoryNavigation(item);
           } else if (item.kind === 'settings') {
-            setSettingsPanel(item.panel);
-            setShowSettings(true);
+            openSettingsPanel(item.panel, { returnToSidebar: true });
           } else if (item.kind === 'action' && item.action === 'exit') {
             CapApp.exitApp();
           }
@@ -1247,7 +1345,7 @@ export default function App() {
               <p className="text-2xl text-gray-400 leading-relaxed mb-10">{selectedMovie.desc}</p>
               <div className="flex gap-6 mt-auto">
                 <button onClick={() => setShowCinemaScreen(true)} className="flex-1 py-6 bg-[#2AABEE] text-white text-3xl font-bold rounded-3xl">צפייה</button>
-                <button onClick={() => setSelectedMovie(null)} className="px-12 py-6 bg-white/10 text-2xl rounded-3xl">סגור</button>
+                <button onClick={() => { setShowCinemaScreen(false); setSelectedMovie(null); }} className="px-12 py-6 bg-white/10 text-2xl rounded-3xl">סגור</button>
               </div>
             </div>
           </div>

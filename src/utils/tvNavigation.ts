@@ -6,7 +6,7 @@ export type TvKeyEventLike = {
 
 export type TvBackContext = {
   isEditableTarget?: boolean;
-  isUiScopeTarget?: boolean;
+  hasLocalBackHandler?: boolean;
 };
 
 const TV_BACK_KEYS = new Set(['Escape', 'Backspace', 'GoBack', 'BrowserBack']);
@@ -24,6 +24,6 @@ export const shouldHandleGlobalTvBack = (
 ) => {
   if (!isTvBackKey(event)) return false;
   if (context.isEditableTarget) return false;
-  if (context.isUiScopeTarget) return false;
+  if (context.hasLocalBackHandler) return false;
   return true;
 };
