@@ -427,10 +427,12 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearchingTmdb, setIsSearchingTmdb] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [posterContextMovie, setPosterContextMovie] = useState<any>(null);
 
   const predictiveSearchRequestRef = useRef(0);
   const predictiveSearchAbortRef = useRef<AbortController | null>(null);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaStateMapRef = useRef(mediaStateMap);
   const downloadAbortRef = useRef<AbortController | null>(null);
   const prebufferResolverRef = useRef<(() => void) | null>(null);
@@ -470,63 +472,111 @@ export default function App() {
 
   // --- SEARCH ENGINE ---
 
-  const resetSearchState = (shouldHide = false) => {
-    predictiveSearchRequestRef.current += 1;
+  const abortPendingSearch = useCallback(() => {
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = null;
+    }
     predictiveSearchAbortRef.current?.abort();
     predictiveSearchAbortRef.current = null;
+  }, []);
+
+  const resetSearchState = useCallback((shouldHide = false) => {
+    predictiveSearchRequestRef.current += 1;
+    abortPendingSearch();
     if (shouldHide) setShowSearch(false);
     setSearchQuery('');
     setSearchResults([]);
     setIsSearchingTmdb(false);
-  };
+    setSearchError(null);
+  }, [abortPendingSearch]);
 
-  const runPredictiveSearch = useCallback(async (query: string) => {
-    const normalized = normalizeSearchText(query);
-    const requestId = ++predictiveSearchRequestRef.current;
+  useEffect(() => {
+    if (!showSearch) {
+      abortPendingSearch();
+    }
+    return () => abortPendingSearch();
+  }, [showSearch, abortPendingSearch]);
 
-    // 1. Instant Local Search
-    const localMatches = rankSearchResults([...favorites, ...watchHistory, ...baseMovies, ...seriesItems, ...israeliItems], query);
+  const runPredictiveSearch = useCallback(async (query: string, requestId: number) => {
+    const trimmedQuery = query.trim();
+    const normalized = normalizeSearchText(trimmedQuery);
+
+    if (!trimmedQuery) {
+      setSearchResults([]);
+      setIsSearchingTmdb(false);
+      setSearchError(null);
+      return;
+    }
+
+    const localMatches = rankSearchResults([...favorites, ...watchHistory, ...baseMovies, ...seriesItems, ...israeliItems], trimmedQuery);
     setSearchResults(localMatches.slice(0, 15));
+    setSearchError(null);
 
     if (!shouldTriggerPredictiveSearch(normalized)) {
       setIsSearchingTmdb(false);
       return;
     }
 
-    // 2. Fetch Remote Search
-    predictiveSearchAbortRef.current?.abort();
+    abortPendingSearch();
     const controller = new AbortController();
     predictiveSearchAbortRef.current = controller;
     setIsSearchingTmdb(true);
 
     try {
-      const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/search?q=${encodeURIComponent(query)}`), { signal: controller.signal });
+      const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/search?q=${encodeURIComponent(trimmedQuery)}`), { signal: controller.signal });
+
       if (requestId !== predictiveSearchRequestRef.current) return;
 
       const remoteResults = Array.isArray(data.results) ? data.results : [];
-      // Boost results that exist in local history or favorites
-      const combined = rankSearchResults([...localMatches, ...remoteResults], query);
+      const combined = rankSearchResults([...localMatches, ...remoteResults], trimmedQuery);
       setSearchResults(combined.slice(0, 30));
+      setSearchError(null);
     } catch (e: any) {
-      if (e.name !== 'AbortError' && requestId === predictiveSearchRequestRef.current) {
-        console.error('Search failed', e);
-      }
+      if (e.name === 'AbortError') return;
+      if (requestId !== predictiveSearchRequestRef.current) return;
+      console.error('Search failed', e);
+      setSearchError('שגיאה בחיפוש');
     } finally {
       if (requestId === predictiveSearchRequestRef.current) {
         setIsSearchingTmdb(false);
-        predictiveSearchAbortRef.current = null;
+        if (predictiveSearchAbortRef.current === controller) {
+          predictiveSearchAbortRef.current = null;
+        }
       }
     }
-  }, [favorites, watchHistory, baseMovies, seriesItems, israeliItems, normalizedApiBase]);
+  }, [favorites, watchHistory, baseMovies, seriesItems, israeliItems, normalizedApiBase, abortPendingSearch]);
 
   useEffect(() => {
-    if (!showSearch || !searchQuery.trim()) {
-      if (showSearch && !searchQuery.trim()) setSearchResults([]);
+    if (!showSearch) return;
+
+    const requestId = ++predictiveSearchRequestRef.current;
+    const trimmedQuery = searchQuery.trim();
+
+    if (!trimmedQuery) {
+      abortPendingSearch();
+      setSearchResults([]);
+      setIsSearchingTmdb(false);
+      setSearchError(null);
       return;
     }
-    const timer = setTimeout(() => runPredictiveSearch(searchQuery), 350);
-    return () => clearTimeout(timer);
-  }, [searchQuery, showSearch, runPredictiveSearch]);
+
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+
+    searchDebounceRef.current = setTimeout(() => {
+      searchDebounceRef.current = null;
+      runPredictiveSearch(searchQuery, requestId);
+    }, 350);
+
+    return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+        searchDebounceRef.current = null;
+      }
+    };
+  }, [searchQuery, showSearch, runPredictiveSearch, abortPendingSearch]);
 
   const displayMovies = useMemo(() => {
     if (showSearch) return searchResults.map((m, i) => ({ ...m, uniqueId: `s-${m.id}-${i}` }));
@@ -596,7 +646,13 @@ export default function App() {
               {isSearchingTmdb && <Loader2 className="animate-spin text-[#00ffcc]" />}
               <button onClick={() => resetSearchState(true)} className="p-2 opacity-50"><X /></button>
             </div>
-            {searchResults.length === 0 && searchQuery.length > 1 && !isSearchingTmdb && (
+            {searchError && (
+              <div className="mt-6 text-center text-red-400">{searchError}</div>
+            )}
+            {!searchError && searchQuery.trim().length > 0 && searchQuery.trim().length < 3 && !isSearchingTmdb && (
+              <div className="mt-6 text-center text-gray-500">הקלד לפחות 3 תווים לחיפוש</div>
+            )}
+            {!searchError && searchResults.length === 0 && searchQuery.trim().length >= 3 && !isSearchingTmdb && (
               <div className="mt-6 text-center text-gray-500">לא נמצאו תוצאות</div>
             )}
           </motion.div>

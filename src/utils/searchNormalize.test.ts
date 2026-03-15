@@ -10,7 +10,9 @@ test('normalizeSearchText handles Hebrew, punctuation, and case folding', () => 
 
 test('shouldTriggerPredictiveSearch starts at 3 visible characters', () => {
   assert.equal(shouldTriggerPredictiveSearch('ri'), false);
+  assert.equal(shouldTriggerPredictiveSearch('ric'), true);
   assert.equal(shouldTriggerPredictiveSearch('rick'), true);
+  assert.equal(shouldTriggerPredictiveSearch('רי'), false);
   assert.equal(shouldTriggerPredictiveSearch('ריק'), true);
 });
 

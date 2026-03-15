@@ -55,8 +55,23 @@ export const normalizeSearchText = (value: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-export const shouldTriggerPredictiveSearch = (query: string, minChars = 2) =>
+export const shouldTriggerPredictiveSearch = (query: string, minChars = 3) =>
   normalizeCompact(query).length >= minChars;
+
+export const getSearchAliases = (item: any): string[] => {
+  const aliases: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: unknown) => {
+    const rawValue = String(value || '').trim();
+    if (!rawValue || seen.has(rawValue)) return;
+    seen.add(rawValue);
+    aliases.push(rawValue);
+  };
+  [item?.title, item?.localizedTitle, item?.hebrewTitle].forEach(add);
+  [item?.originalTitle, item?.originalName].forEach(add);
+  flattenAltTitles(item?.alternateTitles).forEach(add);
+  return aliases;
+};
 
 const getStructuredAliases = (item: any) => {
   const aliases: SearchAlias[] = [];
