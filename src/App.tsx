@@ -24,6 +24,7 @@ import { DEFAULT_POSTER_BATCH_SIZE, POSTER_BATCH_SIZE_OPTIONS, readPosterBatchSi
 import { LONG_PRESS_DURATION_MS, classifyPressDuration } from './utils/longPress';
 import { applyEditingKeyToInput, isEditableTextTarget } from './utils/keyboardActions';
 import { normalizeSearchText, rankSearchResults, shouldTriggerPredictiveSearch } from './utils/searchNormalize';
+import { NativePlayer } from './utils/nativePlayer';
 
 const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
@@ -54,7 +55,7 @@ const isUiScopeTarget = (target: EventTarget | null) =>
 const isTelegramAuthScreen = (status: string) =>
   status === 'phoneInput' || status === 'codeInput' || status === 'passwordInput';
 
-// Native Video Player replaced MX Player requirement
+// Native Android player bridge
 
 // --- Mock Data ---
 const BASE_MOVIES: any[] = [
@@ -474,9 +475,11 @@ export default function App() {
   const [playbackCacheMap, setPlaybackCacheMap] = useState<PlaybackCacheMap>(() =>
     readPlaybackCacheMap(localStorage)
   );
+  const mediaStateMapRef = useRef<Record<string, MediaStateEntry>>(mediaStateMap);
 
   useEffect(() => {
     safeSetJson(localStorage, MEDIA_STATE_STORAGE_KEY, mediaStateMap);
+    mediaStateMapRef.current = mediaStateMap;
   }, [mediaStateMap]);
 
   useEffect(() => {
@@ -523,6 +526,7 @@ export default function App() {
     .map((entry) => entry.snapshot), [mediaStateMap]);
 
   const getMediaEntry = (item: any) => mediaStateMap[buildMediaKey(item)] ?? createDefaultMediaStateEntry(item);
+  const getMediaEntryFromRef = (item: any) => mediaStateMapRef.current[buildMediaKey(item)] ?? createDefaultMediaStateEntry(item);
 
   const upsertMediaState = (item: any, updater: (current: MediaStateEntry) => MediaStateEntry) => {
     const key = buildMediaKey(item);
@@ -590,6 +594,35 @@ export default function App() {
   };
 
   const getPlaybackCacheEntry = (sourceKey: string) => playbackCacheMapRef.current[sourceKey] ?? null;
+
+  const persistPlaybackSnapshot = useCallback((playback: ActivePlayback | null, currentTime: number, duration: number) => {
+    if (!playback?.mediaItem) return;
+    const safeCurrentTime = Math.max(0, currentTime || 0);
+    const safeDuration = Math.max(0, duration || playback.durationSeconds || 0);
+    if (safeDuration > 0) {
+      const nextEntry = updateProgressState(playback.mediaItem, getMediaEntryFromRef(playback.mediaItem), safeCurrentTime, safeDuration);
+      upsertMediaState(playback.mediaItem, () => nextEntry);
+    }
+    upsertPlaybackCache(playback.sourceKey, {
+      sourceKey: playback.sourceKey,
+      mediaKey: buildMediaKey(playback.mediaItem),
+      title: playback.title,
+      mediaType: playback.mediaItem.mediaType,
+      peerId: playback.peerId,
+      messageId: playback.messageId,
+      streamUrl: playback.streamUrl,
+      downloadUrl: playback.downloadUrl,
+      cachePath: playback.cachePath,
+      cacheUri: playback.cacheUri,
+      fileName: playback.fileName,
+      mimeType: playback.mimeType,
+      fileSizeBytes: playback.fileSizeBytes,
+      bytesDownloaded: getPlaybackCacheEntry(playback.sourceKey)?.bytesDownloaded || 0,
+      durationSeconds: safeDuration,
+      lastPositionSeconds: safeCurrentTime,
+      isComplete: getPlaybackCacheEntry(playback.sourceKey)?.isComplete || false
+    });
+  }, []);
 
   const buildPreparedPlayback = async (telegramResult: any, mediaItem: any): Promise<PreparedPlayback> => {
     const sessionStr = safeGetString(localStorage, 'tg_session');
@@ -843,51 +876,51 @@ export default function App() {
     setSelectedMovie(null);
     setIsBuffering(false);
     setBufferingSourceKey(null);
-    setActiveMedia({
+    const nextActiveMedia = {
       ...prepared,
       url,
       cacheUri: latestEntry?.cacheUri || prepared.cacheUri,
       resumePositionSeconds: latestEntry?.lastPositionSeconds || prepared.resumePositionSeconds || 0
-    });
+    };
+    playerPositionRef.current = nextActiveMedia.resumePositionSeconds || 0;
+    playerDurationRef.current = latestEntry?.durationSeconds || prepared.durationSeconds || 0;
+    setActiveMedia(nextActiveMedia);
+    try {
+      await NativePlayer.open({
+        url: nextActiveMedia.url,
+        title: nextActiveMedia.title,
+        sourceKey: nextActiveMedia.sourceKey,
+        subtitleUrl: nextActiveMedia.subtitleUrl,
+        startPositionMs: Math.round((nextActiveMedia.resumePositionSeconds || 0) * 1000)
+      });
+    } catch (error) {
+      setActiveMedia(null);
+      throw error instanceof Error ? error : new Error('Native player failed to open');
+    }
   };
 
   const closePlayer = async (completedPlayback = false) => {
     stopBackgroundDownload();
-    if (bufferIntervalRef.current !== null) {
-      window.clearInterval(bufferIntervalRef.current);
-      bufferIntervalRef.current = null;
+    const playback = activeMediaRef.current;
+    const currentTime = completedPlayback
+      ? Math.max(playerDurationRef.current || playback?.durationSeconds || 0, playerPositionRef.current)
+      : playerPositionRef.current;
+    const duration = Math.max(playerDurationRef.current || playback?.durationSeconds || 0, currentTime);
+    if (playback) {
+      persistPlaybackSnapshot(playback, currentTime, duration);
     }
-    if (activeMedia?.mediaItem && videoRef.current) {
-      const currentTime = videoRef.current.currentTime || 0;
-      const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : 0;
-      upsertMediaState(activeMedia.mediaItem, (entry) => updateProgressState(activeMedia.mediaItem, entry, currentTime, duration));
-      upsertPlaybackCache(activeMedia.sourceKey, {
-        sourceKey: activeMedia.sourceKey,
-        mediaKey: buildMediaKey(activeMedia.mediaItem),
-        title: activeMedia.title,
-        mediaType: activeMedia.mediaItem.mediaType,
-        peerId: activeMedia.peerId,
-        messageId: activeMedia.messageId,
-        streamUrl: activeMedia.streamUrl,
-        downloadUrl: activeMedia.downloadUrl,
-        cachePath: activeMedia.cachePath,
-        cacheUri: activeMedia.cacheUri,
-        fileName: activeMedia.fileName,
-        mimeType: activeMedia.mimeType,
-        fileSizeBytes: activeMedia.fileSizeBytes,
-        bytesDownloaded: getPlaybackCacheEntry(activeMedia.sourceKey)?.bytesDownloaded || 0,
-        durationSeconds: duration || activeMedia.durationSeconds,
-        lastPositionSeconds: currentTime,
-        isComplete: getPlaybackCacheEntry(activeMedia.sourceKey)?.isComplete || false
-      });
-    }
+    await NativePlayer.close().catch(() => undefined);
 
-    const cacheEntry = activeMedia ? getPlaybackCacheEntry(activeMedia.sourceKey) : null;
-    const watched = activeMedia ? getMediaEntry(activeMedia.mediaItem).watchStatus === 'watched' || completedPlayback : completedPlayback;
+    const cacheEntry = playback ? getPlaybackCacheEntry(playback.sourceKey) : null;
+    const watched = playback
+      ? (duration > 0 && updateProgressState(playback.mediaItem, getMediaEntryFromRef(playback.mediaItem), currentTime, duration).watchStatus === 'watched') || completedPlayback
+      : completedPlayback;
     if (shouldDeleteCompletedCache(cacheEntry, watched)) {
       await deletePlaybackCacheFile(cacheEntry);
       setPlaybackCacheMap((current) => removePlaybackCacheEntry(current, cacheEntry!.sourceKey));
     }
+    playerPositionRef.current = 0;
+    playerDurationRef.current = 0;
     setActiveMedia(null);
     setPreparedNextMedia(null);
     setNextEpisodeOverlay(null);
@@ -932,19 +965,26 @@ export default function App() {
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackProgressRef = useRef(0);
+  const playerPositionRef = useRef(0);
+  const playerDurationRef = useRef(0);
   const preloadAttemptKeyRef = useRef<string | null>(null);
   const dismissedAutoPlayRef = useRef<string | null>(null);
   const displayMoviesRef = useRef<any[]>([]);
-  const bufferIntervalRef = useRef<number | null>(null);
   const downloadAbortRef = useRef<AbortController | null>(null);
   const prebufferResolverRef = useRef<(() => void) | null>(null);
   const playbackCacheMapRef = useRef<PlaybackCacheMap>(playbackCacheMap);
+  const activeMediaRef = useRef<ActivePlayback | null>(null);
+  const preparedNextMediaRef = useRef<PreparedPlayback | null>(null);
   const categoryRequestMapRef = useRef<Map<string, Promise<{ items: any[]; hasMore: boolean }>>>(new Map());
   const categoryPrefetchRef = useRef<Set<string>>(new Set());
   const currentBrowseRequestKeyRef = useRef('');
   const predictiveSearchCacheRef = useRef<Map<string, any[]>>(new Map());
   const predictiveSearchRequestRef = useRef(0);
   const predictiveSearchAbortRef = useRef<AbortController | null>(null);
+  const prepareUpcomingEpisodeRef = useRef<(episode: any) => Promise<void>>(async () => undefined);
+  const dismissUpcomingAutoplayRef = useRef<() => void>(() => undefined);
+  const closePlayerRef = useRef<(completedPlayback?: boolean) => Promise<void>>(async () => undefined);
+  const activatePreparedPlaybackRef = useRef<(prepared: PreparedPlayback) => Promise<void>>(async () => undefined);
   const [posterContextMovie, setPosterContextMovie] = useState<any>(null);
 
   const saveToHistory = (movie: any) => {
@@ -1022,37 +1062,18 @@ export default function App() {
     setNextEpisodeOverlay(null);
   }, [activeMedia?.mediaItem?.id, activeMedia?.mediaItem?.season_number, activeMedia?.mediaItem?.episode_number]);
 
-  useEffect(() => () => {
-    if (bufferIntervalRef.current !== null) {
-      window.clearInterval(bufferIntervalRef.current);
-      bufferIntervalRef.current = null;
-    }
-  }, []);
+  useEffect(() => {
+    activeMediaRef.current = activeMedia;
+  }, [activeMedia]);
+
+  useEffect(() => {
+    preparedNextMediaRef.current = preparedNextMedia;
+  }, [preparedNextMedia]);
 
   useEffect(() => {
     const persistCurrentPlayback = () => {
-      if (!activeMedia || !videoRef.current) return;
-      const currentTime = videoRef.current.currentTime || 0;
-      const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : activeMedia.durationSeconds || 0;
-      upsertPlaybackCache(activeMedia.sourceKey, {
-        sourceKey: activeMedia.sourceKey,
-        mediaKey: buildMediaKey(activeMedia.mediaItem),
-        title: activeMedia.title,
-        mediaType: activeMedia.mediaItem.mediaType,
-        peerId: activeMedia.peerId,
-        messageId: activeMedia.messageId,
-        streamUrl: activeMedia.streamUrl,
-        downloadUrl: activeMedia.downloadUrl,
-        cachePath: activeMedia.cachePath,
-        cacheUri: activeMedia.cacheUri,
-        fileName: activeMedia.fileName,
-        mimeType: activeMedia.mimeType,
-        fileSizeBytes: activeMedia.fileSizeBytes,
-        bytesDownloaded: getPlaybackCacheEntry(activeMedia.sourceKey)?.bytesDownloaded || 0,
-        durationSeconds: duration,
-        lastPositionSeconds: currentTime,
-        isComplete: getPlaybackCacheEntry(activeMedia.sourceKey)?.isComplete || false
-      });
+      if (!activeMediaRef.current) return;
+      persistPlaybackSnapshot(activeMediaRef.current, playerPositionRef.current, playerDurationRef.current || activeMediaRef.current.durationSeconds || 0);
     };
 
     const onBeforeUnload = () => persistCurrentPlayback();
@@ -1069,7 +1090,7 @@ export default function App() {
       window.removeEventListener('beforeunload', onBeforeUnload);
       appStateHandle?.remove();
     };
-  }, [activeMedia]);
+  }, [persistPlaybackSnapshot]);
 
   const loadSeriesSeasons = async (seriesId: number, seriesTitle: string) => {
     const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/series/${seriesId}`));
@@ -1961,104 +1982,133 @@ export default function App() {
     }
   };
 
-  const handleVideoTimeUpdate = () => {
-    if (!activeMedia?.mediaItem || !videoRef.current) return;
-    const video = videoRef.current;
-    const currentTime = video.currentTime || 0;
-    const duration = Number.isFinite(video.duration) ? video.duration : 0;
-    if (duration <= 0) return;
-
-    const now = Date.now();
-    if (now - playbackProgressRef.current > 1500) {
-      playbackProgressRef.current = now;
-      upsertMediaState(activeMedia.mediaItem, (entry) => updateProgressState(activeMedia.mediaItem, entry, currentTime, duration));
-      upsertPlaybackCache(activeMedia.sourceKey, {
-        sourceKey: activeMedia.sourceKey,
-        mediaKey: buildMediaKey(activeMedia.mediaItem),
-        title: activeMedia.title,
-        mediaType: activeMedia.mediaItem.mediaType,
-        peerId: activeMedia.peerId,
-        messageId: activeMedia.messageId,
-        streamUrl: activeMedia.streamUrl,
-        downloadUrl: activeMedia.downloadUrl,
-        cachePath: activeMedia.cachePath,
-        cacheUri: activeMedia.cacheUri,
-        fileName: activeMedia.fileName,
-        mimeType: activeMedia.mimeType,
-        fileSizeBytes: activeMedia.fileSizeBytes,
-        bytesDownloaded: getPlaybackCacheEntry(activeMedia.sourceKey)?.bytesDownloaded || 0,
-        durationSeconds: duration || activeMedia.durationSeconds,
-        lastPositionSeconds: currentTime,
-        isComplete: getPlaybackCacheEntry(activeMedia.sourceKey)?.isComplete || false
-      });
-    }
-
-    const currentKey = buildMediaKey(activeMedia.mediaItem);
-    if (activeMedia.mediaItem.mediaType === 'episode' && shouldPrepareNextEpisode(currentTime, duration, !!preparedNextMedia || preloadAttemptKeyRef.current === currentKey, autoPlayNextEpisode) && dismissedAutoPlayRef.current !== currentKey) {
-      void prepareUpcomingEpisode(activeMedia.mediaItem);
-    }
-
-    if (preparedNextMedia && dismissedAutoPlayRef.current !== currentKey) {
-      const remainingSeconds = Math.max(1, Math.ceil(duration - currentTime));
-      setNextEpisodeOverlay((current) =>
-        current?.title === preparedNextMedia.mediaItem.title && current.remainingSeconds === remainingSeconds
-          ? current
-          : {
-              title: preparedNextMedia.mediaItem.title,
-              remainingSeconds
-            }
-      );
-    }
-  };
+  const handleVideoTimeUpdate = () => undefined;
+  const handleVideoLoadedMetadata = () => undefined;
+  const handleVideoEnded = () => undefined;
 
   const dismissUpcomingAutoplay = () => {
-    if (!activeMedia?.mediaItem) return;
-    const activeKey = buildMediaKey(activeMedia.mediaItem);
+    if (!activeMediaRef.current?.mediaItem) return;
+    const activeKey = buildMediaKey(activeMediaRef.current.mediaItem);
     dismissedAutoPlayRef.current = activeKey;
     setPreparedNextMedia(null);
     setNextEpisodeOverlay(null);
   };
 
-  const handleVideoLoadedMetadata = () => {
-    if (!activeMedia || !videoRef.current) return;
-    const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : activeMedia.durationSeconds;
-    upsertPlaybackCache(activeMedia.sourceKey, {
-      sourceKey: activeMedia.sourceKey,
-      mediaKey: buildMediaKey(activeMedia.mediaItem),
-      title: activeMedia.title,
-      mediaType: activeMedia.mediaItem.mediaType,
-      peerId: activeMedia.peerId,
-      messageId: activeMedia.messageId,
-      streamUrl: activeMedia.streamUrl,
-      downloadUrl: activeMedia.downloadUrl,
-      cachePath: activeMedia.cachePath,
-      cacheUri: activeMedia.cacheUri,
-      fileName: activeMedia.fileName,
-      mimeType: activeMedia.mimeType,
-      fileSizeBytes: activeMedia.fileSizeBytes,
-      bytesDownloaded: getPlaybackCacheEntry(activeMedia.sourceKey)?.bytesDownloaded || 0,
-      durationSeconds: duration || 0,
-      lastPositionSeconds: activeMedia.resumePositionSeconds || 0,
-      isComplete: getPlaybackCacheEntry(activeMedia.sourceKey)?.isComplete || false
-    });
-    if (activeMedia.resumePositionSeconds > 0) {
-      videoRef.current.currentTime = activeMedia.resumePositionSeconds;
-    }
-  };
+  useEffect(() => {
+    prepareUpcomingEpisodeRef.current = prepareUpcomingEpisode;
+  }, [prepareUpcomingEpisode]);
 
-  const handleVideoEnded = () => {
-    if (activeMedia?.mediaItem && videoRef.current) {
-      const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : activeMedia.mediaItem.durationSeconds || 0;
-      upsertMediaState(activeMedia.mediaItem, (entry) => updateProgressState(activeMedia.mediaItem, entry, duration, duration));
-    }
+  useEffect(() => {
+    dismissUpcomingAutoplayRef.current = dismissUpcomingAutoplay;
+  }, [dismissUpcomingAutoplay]);
 
-    if (autoPlayNextEpisode && preparedNextMedia) {
-      void closePlayer(true).then(() => activatePreparedPlayback(preparedNextMedia)).catch(() => undefined);
+  useEffect(() => {
+    closePlayerRef.current = closePlayer;
+  }, [closePlayer]);
+
+  useEffect(() => {
+    activatePreparedPlaybackRef.current = activatePreparedPlayback;
+  }, [activatePreparedPlayback]);
+
+  useEffect(() => {
+    const listenerHandles: Array<{ remove: () => void }> = [];
+
+    const attach = async () => {
+      listenerHandles.push(await NativePlayer.addListener('progress', (event) => {
+        const playback = activeMediaRef.current;
+        if (!playback?.mediaItem) return;
+
+        const currentTime = Math.max(0, (event.positionMs || 0) / 1000);
+        const duration = Math.max(0, (event.durationMs || 0) / 1000 || playback.durationSeconds || 0);
+        playerPositionRef.current = currentTime;
+        playerDurationRef.current = duration;
+        if (duration <= 0) return;
+
+        const now = Date.now();
+        if (now - playbackProgressRef.current > 1500) {
+          playbackProgressRef.current = now;
+          persistPlaybackSnapshot(playback, currentTime, duration);
+        }
+
+        const currentKey = buildMediaKey(playback.mediaItem);
+        if (
+          playback.mediaItem.mediaType === 'episode'
+          && shouldPrepareNextEpisode(
+            currentTime,
+            duration,
+            !!preparedNextMediaRef.current || preloadAttemptKeyRef.current === currentKey,
+            autoPlayNextEpisode
+          )
+          && dismissedAutoPlayRef.current !== currentKey
+        ) {
+          void prepareUpcomingEpisodeRef.current(playback.mediaItem);
+        }
+
+        if (preparedNextMediaRef.current && dismissedAutoPlayRef.current !== currentKey) {
+          const remainingSeconds = Math.max(1, Math.ceil(duration - currentTime));
+          setNextEpisodeOverlay((current) =>
+            current?.title === preparedNextMediaRef.current?.mediaItem.title && current.remainingSeconds === remainingSeconds
+              ? current
+              : {
+                  title: preparedNextMediaRef.current?.mediaItem.title || '',
+                  remainingSeconds
+                }
+          );
+        } else {
+          setNextEpisodeOverlay(null);
+        }
+      }));
+
+      listenerHandles.push(await NativePlayer.addListener('ended', () => {
+        if (autoPlayNextEpisode && preparedNextMediaRef.current) {
+          const nextPrepared = preparedNextMediaRef.current;
+          void closePlayerRef.current(true)
+            .then(() => activatePreparedPlaybackRef.current(nextPrepared))
+            .catch(() => undefined);
+          return;
+        }
+        void closePlayerRef.current(true);
+      }));
+
+      listenerHandles.push(await NativePlayer.addListener('backRequest', () => {
+        void closePlayerRef.current(false);
+      }));
+
+      listenerHandles.push(await NativePlayer.addListener('autoplayDismissed', () => {
+        dismissUpcomingAutoplayRef.current();
+      }));
+
+      listenerHandles.push(await NativePlayer.addListener('error', (event) => {
+        setFetchError(event.message || 'Native playback failed.');
+        void closePlayerRef.current(false);
+      }));
+    };
+
+    void attach().catch(() => undefined);
+    return () => {
+      for (const handle of listenerHandles) {
+        handle.remove();
+      }
+    };
+  }, [autoPlayNextEpisode, persistPlaybackSnapshot]);
+
+  useEffect(() => {
+    if (!activeMedia) {
+      void NativePlayer.updateAutoplayOverlay({ visible: false }).catch(() => undefined);
       return;
     }
 
-    void closePlayer(true);
-  };
+    if (!autoPlayNextEpisode || !nextEpisodeOverlay) {
+      void NativePlayer.updateAutoplayOverlay({ visible: false }).catch(() => undefined);
+      return;
+    }
+
+    void NativePlayer.updateAutoplayOverlay({
+      visible: true,
+      title: nextEpisodeOverlay.title,
+      remainingSeconds: nextEpisodeOverlay.remainingSeconds
+    }).catch(() => undefined);
+  }, [activeMedia, autoPlayNextEpisode, nextEpisodeOverlay]);
 
   const selectedMediaEntry = selectedMovie ? getMediaEntry(selectedMovie) : null;
   const posterContextEntry = posterContextMovie ? getMediaEntry(posterContextMovie) : null;
@@ -2466,7 +2516,7 @@ export default function App() {
       </AnimatePresence>
 
       <AnimatePresence>
-        {activeMedia && (
+        {false && activeMedia && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[100] bg-black" data-tv-scope="ui">
             <AnimatePresence>
               {nextEpisodeOverlay && autoPlayNextEpisode && (

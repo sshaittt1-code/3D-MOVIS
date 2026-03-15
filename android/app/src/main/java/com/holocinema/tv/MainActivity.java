@@ -17,6 +17,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(ApkInstallerPlugin.class);
+        registerPlugin(NativePlayerPlugin.class);
         super.onCreate(savedInstanceState);
 
         WebView webView = getBridge().getWebView();
