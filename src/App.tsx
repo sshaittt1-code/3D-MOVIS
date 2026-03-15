@@ -26,6 +26,12 @@ import { applyEditingKeyToInput, isEditableTextTarget } from './utils/keyboardAc
 import { normalizeSearchText, rankSearchResults, shouldTriggerPredictiveSearch } from './utils/searchNormalize';
 import { NativePlayer } from './utils/nativePlayer';
 import {
+  buildLoadMorePageKey,
+  canTriggerLoadMoreForPage,
+  isCurrentLoadMoreRequest,
+  shouldAdvanceContentPage
+} from './utils/corridorPagination';
+import {
   FALLBACK_LIBRARY,
   buildRootRequestKey,
   getActiveGenreFilterForSection,
@@ -37,6 +43,7 @@ import {
   type CorridorItem,
   type FeedTarget
 } from './utils/corridorFeed';
+import { shouldHandleGlobalTvBack } from './utils/tvNavigation';
 
 const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
@@ -47,7 +54,7 @@ const isTvSelectKey = (e: KeyboardEvent) =>
   e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
 
 const isTvNavigationKey = (e: KeyboardEvent) =>
-  ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || isTvSelectKey(e) || e.key === 'Escape' || e.key === 'Backspace';
+  ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || isTvSelectKey(e);
 
 const blurActiveElement = () => {
   const activeElement = document.activeElement as HTMLElement | null;
@@ -187,12 +194,12 @@ const toBase64 = (buffer: ArrayBuffer) => {
 };
 
 // --- 3D Components ---
-const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPress, onHeartToggle, setFocusedId, setFocusedHeartId, isAnyModalOpen, selectedMovie, lastPosterZ, onNearEnd, onCameraMove }: any) => {
+const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPress, onHeartToggle, setFocusedId, setFocusedHeartId, isAnyModalOpen, selectedMovie, lastPosterZ, nearEndTriggerKey, cameraResetKey, onNearEnd, onCameraMove }: any) => {
   const { camera } = useThree();
   const [targetPos, setTargetPos] = useState(new THREE.Vector3(0, 1.6, 2));
   const focusedMovieRef = useRef<any>(null);
   const focusedHeartRef = useRef<string | null>(null);
-  const nearEndFired = useRef(false);
+  const lastNearEndTriggerKeyRef = useRef<string | null>(null);
   const STEP_SIZE = 0.8;
   const ROTATION_SPEED = 0.012;
   const INITIAL_CAMERA_Z = 2;
@@ -283,8 +290,13 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
   useEffect(() => {
     setTargetPos(new THREE.Vector3(0, 1.6, 2));
     targetRotY.current = 0;
-    nearEndFired.current = false;
-  }, [lastPosterZ]);
+  }, [cameraResetKey]);
+
+  useEffect(() => {
+    if (!nearEndTriggerKey) {
+      lastNearEndTriggerKeyRef.current = null;
+    }
+  }, [nearEndTriggerKey]);
 
   useFrame((state) => {
     if (isLocked && !isAnyModalOpen && !selectedMovie) {
@@ -296,10 +308,10 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
       camera.quaternion.slerp(targetQuat, 0.15);
       onCameraMove?.(camera.position.z);
 
-      if (lastPosterZ !== undefined && lastPosterZ < INITIAL_CAMERA_Z && !nearEndFired.current) {
+      if (nearEndTriggerKey && lastPosterZ !== undefined && lastPosterZ < INITIAL_CAMERA_Z) {
         const nearEndTriggerZ = INITIAL_CAMERA_Z + (lastPosterZ - INITIAL_CAMERA_Z) * 0.75;
-        if (camera.position.z <= nearEndTriggerZ) {
-          nearEndFired.current = true;
+        if (camera.position.z <= nearEndTriggerZ && lastNearEndTriggerKeyRef.current !== nearEndTriggerKey) {
+          lastNearEndTriggerKeyRef.current = nearEndTriggerKey;
           onNearEnd?.();
         }
       }
@@ -443,6 +455,7 @@ export default function App() {
   const [contentPage, setContentPage] = useState(1);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [nearEndGeneration, setNearEndGeneration] = useState(0);
 
   const [mediaStateMap, setMediaStateMap] = useState<Record<string, MediaStateEntry>>(() => safeGetJson(localStorage, MEDIA_STATE_STORAGE_KEY, {}));
   const [autoPlayNextEpisode, setAutoPlayNextEpisode] = useState<boolean>(() => readAutoPlayNextEpisode(localStorage, true));
@@ -516,7 +529,9 @@ export default function App() {
   // --- CONTENT LOADING ENGINE ---
 
   const contentFetchAbortRef = useRef<AbortController | null>(null);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
   const activeRootRequestKeyRef = useRef('');
+  const activeLoadMorePageKeyRef = useRef<string | null>(null);
   const prefetchedPageKeysRef = useRef<Set<string>>(new Set());
   const pendingCategoryRequestsRef = useRef<Map<string, Promise<CatalogPageResult>>>(new Map());
   const backgroundWarmupTargetsRef = useRef<Set<FeedTarget>>(new Set());
@@ -727,15 +742,25 @@ export default function App() {
     return { target, category: israeliCategory, genreId: null, year: yearFilter };
   }, [librarySection, movieCategory, movieGenreId, seriesCategory, israeliCategory, yearFilter]);
 
+  const getCurrentRootRequestKey = useCallback(() => {
+    const { target, category, genreId, year } = getCurrentRootContext();
+    const currentSeed = category === 'random' ? getCategorySeed(category) : undefined;
+    return buildRootRequestKey({ target, category, genreId, year, seed: currentSeed });
+  }, [getCategorySeed, getCurrentRootContext]);
+
   const loadContentForCurrentSection = useCallback(async () => {
     if (showSearch || navContext) return;
     if (librarySection === 'favorites' || librarySection === 'history') return;
 
     const { target, category, genreId, year } = getCurrentRootContext();
-    const currentSeed = category === 'random' ? getCategorySeed(category) : undefined;
-    const rootRequestKey = buildRootRequestKey({ target, category, genreId, year, seed: currentSeed });
+    const rootRequestKey = getCurrentRootRequestKey();
     activeRootRequestKeyRef.current = rootRequestKey;
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    activeLoadMorePageKeyRef.current = null;
     prefetchedPageKeysRef.current.clear();
+    setIsLoadingMore(false);
+    setNearEndGeneration((current) => current + 1);
 
     let visibleItems = getItemsForTarget(target);
     if (visibleItems.length === 0) {
@@ -780,7 +805,7 @@ export default function App() {
         setIsLoadingContent(false);
       }
     }
-  }, [showSearch, navContext, librarySection, getCurrentRootContext, getCategorySeed, getItemsForTarget, hydrateTargetFromLocalSources, fetchCategoryContent, setItemsForTarget, prefetchNextCategoryPage]);
+  }, [showSearch, navContext, librarySection, getCurrentRootContext, getCurrentRootRequestKey, getItemsForTarget, hydrateTargetFromLocalSources, fetchCategoryContent, setItemsForTarget, prefetchNextCategoryPage]);
 
   useEffect(() => {
     loadContentForCurrentSection();
@@ -810,8 +835,13 @@ export default function App() {
   }, [showSearch, navContext, isLoadingContent, librarySection, fetchCategoryContent]);
 
   useEffect(() => {
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    activeLoadMorePageKeyRef.current = null;
     setContentPage(1);
     setHasMore(true);
+    setIsLoadingMore(false);
+    setNearEndGeneration((current) => current + 1);
     setFetchError(null);
     setFocusedId(null);
     setFocusedHeartId(null);
@@ -822,19 +852,32 @@ export default function App() {
     if (librarySection === 'favorites' || librarySection === 'history') return;
 
     const { target, category, genreId, year } = getCurrentRootContext();
-    const currentSeed = category === 'random' ? getCategorySeed(category) : undefined;
-    const rootRequestKey = buildRootRequestKey({ target, category, genreId, year, seed: currentSeed });
+    const rootRequestKey = getCurrentRootRequestKey();
     if (activeRootRequestKeyRef.current && activeRootRequestKeyRef.current !== rootRequestKey) return;
 
     const nextPage = contentPage + 1;
+    const nextPageKey = buildLoadMorePageKey(rootRequestKey, nextPage);
+    if (!canTriggerLoadMoreForPage(null, activeLoadMorePageKeyRef.current, nextPageKey)) return;
+
+    const controller = new AbortController();
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = controller;
+    activeLoadMorePageKeyRef.current = nextPageKey;
     setIsLoadingMore(true);
 
     try {
-      const result = await fetchCategoryContent(target, category, { genreId, year, page: nextPage });
-      if (activeRootRequestKeyRef.current && activeRootRequestKeyRef.current !== rootRequestKey) {
+      const result = await fetchCategoryContent(target, category, { genreId, year, page: nextPage, signal: controller.signal });
+      if (!isCurrentLoadMoreRequest({
+        activeRootRequestKey: activeRootRequestKeyRef.current,
+        requestRootRequestKey: rootRequestKey,
+        activeLoadMorePageKey: activeLoadMorePageKeyRef.current,
+        requestPageKey: nextPageKey
+      })) {
         return;
       }
-      if (result.items.length > 0) {
+
+      const appendedCount = result.items.length;
+      if (appendedCount > 0) {
         if (target === 'movies') {
           setBaseMovies((prev) => mergeCorridorItems(prev, result.items));
         } else if (target === 'series') {
@@ -843,19 +886,37 @@ export default function App() {
           setIsraeliItems((prev) => mergeCorridorItems(prev, result.items));
         }
       }
+
       setHasMore(result.hasMore);
-      setContentPage(nextPage);
-      if (result.hasMore) {
+
+      if (shouldAdvanceContentPage(appendedCount)) {
+        setContentPage(nextPage);
+      } else if (result.hasMore) {
+        setNearEndGeneration((current) => current + 1);
+      }
+
+      activeLoadMorePageKeyRef.current = null;
+
+      if (result.hasMore && shouldAdvanceContentPage(appendedCount)) {
         void prefetchNextCategoryPage(target, category, { genreId, year, page: nextPage + 1 });
       }
     } catch (e: any) {
       if (e.name !== 'AbortError') {
         console.error('Load more failed:', e);
+        if (activeLoadMorePageKeyRef.current === nextPageKey) {
+          activeLoadMorePageKeyRef.current = null;
+        }
+        setNearEndGeneration((current) => current + 1);
+      } else if (activeLoadMorePageKeyRef.current === nextPageKey) {
+        activeLoadMorePageKeyRef.current = null;
       }
     } finally {
+      if (loadMoreAbortRef.current === controller) {
+        loadMoreAbortRef.current = null;
+      }
       setIsLoadingMore(false);
     }
-  }, [isLoadingMore, hasMore, showSearch, navContext, librarySection, contentPage, getCurrentRootContext, getCategorySeed, fetchCategoryContent, prefetchNextCategoryPage]);
+  }, [isLoadingMore, hasMore, showSearch, navContext, librarySection, contentPage, getCurrentRootContext, getCurrentRootRequestKey, fetchCategoryContent, prefetchNextCategoryPage]);
 
   const handleCategoryNavigation = useCallback((item: SideMenuItem) => {
     if (item.kind !== 'route') return;
@@ -1009,6 +1070,17 @@ export default function App() {
     [librarySection, seriesGenreFilter]
   );
 
+  const currentRootRequestKey = useMemo(
+    () => getCurrentRootRequestKey(),
+    [getCurrentRootRequestKey]
+  );
+
+  const nearEndTriggerKey = useMemo(() => {
+    if (!hasMore || isLoadingMore || showSearch || navContext) return null;
+    if (librarySection === 'favorites' || librarySection === 'history') return null;
+    return `${buildLoadMorePageKey(currentRootRequestKey, contentPage + 1)}::retry:${nearEndGeneration}`;
+  }, [hasMore, isLoadingMore, showSearch, navContext, librarySection, currentRootRequestKey, contentPage, nearEndGeneration]);
+
   const displayMovies = useMemo(() => {
     if (showSearch) return searchResults.map((m, i) => ({ ...m, uniqueId: `s-${m.id}-${i}` }));
     if (navContext?.type === 'seasons') return navContext.seasons;
@@ -1046,20 +1118,38 @@ export default function App() {
   }, [renderedPosterLayout, prefetchPostersForItems]);
 
   // --- Remote Control logic ---
+  const performBackAction = useCallback(() => {
+    if (activeMedia) { void closePlayer(); return; }
+    if (posterContextMovie) { setPosterContextMovie(null); return; }
+    if (selectedMovie) { setSelectedMovie(null); return; }
+    if (showCinemaScreen) { setShowCinemaScreen(false); return; }
+    if (showSearch) { resetSearchState(true); return; }
+    if (navContext) { setNavContext(null); return; }
+    if (showSettings) { setShowSettings(false); return; }
+    setIsLocked(false);
+  }, [activeMedia, closePlayer, posterContextMovie, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings, resetSearchState]);
+
   useEffect(() => {
-    const handleBack = () => {
-      if (activeMedia) { closePlayer(); return; }
-      if (posterContextMovie) { setPosterContextMovie(null); return; }
-      if (selectedMovie) { setSelectedMovie(null); return; }
-      if (showCinemaScreen) { setShowCinemaScreen(false); return; }
-      if (showSearch) { resetSearchState(true); return; }
-      if (navContext) { setNavContext(null); return; }
-      if (showSettings) { setShowSettings(false); return; }
-      setIsLocked(false);
+    const sub = CapApp.addListener('backButton', performBackAction);
+    return () => { sub.then((listener) => listener.remove()); };
+  }, [performBackAction]);
+
+  useEffect(() => {
+    const handleGlobalBackKey = (event: KeyboardEvent) => {
+      if (!shouldHandleGlobalTvBack(event, {
+        isEditableTarget: isEditableTextTarget(event.target),
+        isUiScopeTarget: isUiScopeTarget(event.target)
+      })) {
+        return;
+      }
+
+      stopTvEvent(event);
+      performBackAction();
     };
-    const sub = CapApp.addListener('backButton', handleBack);
-    return () => { sub.then(s => s.remove()); };
-  }, [activeMedia, posterContextMovie, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings]);
+
+    window.addEventListener('keydown', handleGlobalBackKey, true);
+    return () => window.removeEventListener('keydown', handleGlobalBackKey, true);
+  }, [performBackAction]);
 
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative text-white" dir="rtl">
@@ -1072,7 +1162,7 @@ export default function App() {
               <Poster key={p.movie.uniqueId} movie={p.movie} isFocused={focusedId === p.movie.uniqueId} isFavorited={!!mediaStateMap[buildMediaKey(p.movie)]?.favorite} isHeartFocused={focusedHeartId === p.movie.uniqueId} watchStatus={mediaStateMap[buildMediaKey(p.movie)]?.watchStatus} position={p.position} rotation={p.rotation} />
             ))}
           </group>
-          <TVController posterLayout={posterLayout} isLocked={isLocked} onPosterSelect={setSelectedMovie} onPosterLongPress={setPosterContextMovie} onHeartToggle={handleHeartToggle} setFocusedId={setFocusedId} setFocusedHeartId={setFocusedHeartId} isAnyModalOpen={!!selectedMovie || showSearch || showSettings || showCinemaScreen} lastPosterZ={lastPosterZ} onNearEnd={loadMoreContent} onCameraMove={setCameraZ} />
+          <TVController posterLayout={posterLayout} isLocked={isLocked} onPosterSelect={setSelectedMovie} onPosterLongPress={setPosterContextMovie} onHeartToggle={handleHeartToggle} setFocusedId={setFocusedId} setFocusedHeartId={setFocusedHeartId} isAnyModalOpen={!!selectedMovie || showSearch || showSettings || showCinemaScreen} lastPosterZ={lastPosterZ} nearEndTriggerKey={nearEndTriggerKey} cameraResetKey={currentRootRequestKey} onNearEnd={loadMoreContent} onCameraMove={setCameraZ} />
         </Suspense>
       </Canvas>
 
