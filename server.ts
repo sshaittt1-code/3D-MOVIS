@@ -5,6 +5,7 @@ import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import cors from 'cors';
 import path from 'node:path';
+import { normalizeSearchText, rankSearchResults } from './src/utils/searchNormalize';
 
 const app = express();
 app.use(cors());
@@ -21,6 +22,8 @@ app.use('/apk', express.static(path.join(process.cwd(), 'android', 'app', 'build
 // Active Connected Clients
 const activeClients = new Map<string, TelegramClient>();
 const telegramAccessTokens = new Map<string, { sessionStr: string; peerId: string; messageId: number; expiresAt: number }>();
+const tmdbSearchCache = new Map<string, { storedAt: number; results: any[] }>();
+let searchCorpusCache: { storedAt: number; items: any[] } | null = null;
 
 // Login Sessions
 interface LoginSession {
@@ -39,6 +42,7 @@ const DEFAULT_PAGE_SIZE = 20;
 const MIN_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 40;
 const TELEGRAM_ACCESS_TOKEN_TTL_MS = 1000 * 60 * 60 * 8;
+const SEARCH_CACHE_TTL_MS = 1000 * 60 * 10;
 const TVMAZE_GENRE_MAP: Record<number, string[]> = {
   28: ['Action'],
   35: ['Comedy'],
@@ -978,55 +982,182 @@ async function startServer() {
 
 startServer();
 
+const dedupeSearchItems = (items: any[]) => {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = `${item?.mediaType || 'unknown'}:${item?.id ?? item?.title ?? 'unknown'}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const mapTmdbMovieSearchResult = (movie: any, alternateTitles: string[] = []) => ({
+  id: movie.id,
+  title: movie.title || movie.original_title,
+  localizedTitle: movie.title || movie.original_title,
+  originalTitle: movie.original_title || movie.title,
+  hebrewTitle: movie.title || movie.original_title,
+  alternateTitles,
+  genre: 'סרט',
+  rating: movie.vote_average,
+  poster: `https://image.tmdb.org/t/p/w500${movie.poster_path}`,
+  desc: movie.overview || '',
+  mediaType: 'movie',
+  popularity: movie.popularity,
+  year: movie.release_date ? Number.parseInt(String(movie.release_date).slice(0, 4), 10) : null
+});
+
+const mapTmdbSeriesSearchResult = (series: any, alternateTitles: string[] = []) => ({
+  id: series.id,
+  title: series.name || series.original_name,
+  localizedTitle: series.name || series.original_name,
+  originalTitle: series.original_name || series.name,
+  hebrewTitle: series.name || series.original_name,
+  alternateTitles,
+  genre: 'סדרה',
+  rating: series.vote_average,
+  poster: `https://image.tmdb.org/t/p/w500${series.poster_path}`,
+  desc: series.overview || '',
+  mediaType: 'tv',
+  popularity: series.popularity,
+  year: series.first_air_date ? Number.parseInt(String(series.first_air_date).slice(0, 4), 10) : null
+});
+
+const getCachedSearchEntry = (cacheKey: string) => {
+  const cached = tmdbSearchCache.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() - cached.storedAt > SEARCH_CACHE_TTL_MS) {
+    tmdbSearchCache.delete(cacheKey);
+    return null;
+  }
+  return cached.results;
+};
+
+const setCachedSearchEntry = (cacheKey: string, results: any[]) => {
+  tmdbSearchCache.set(cacheKey, { storedAt: Date.now(), results });
+};
+
+const enrichTmdbAliases = async (tmdbKey: string, mediaType: 'movie' | 'tv', id: number) => {
+  const cacheKey = `aliases:${mediaType}:${id}`;
+  const cached = getCachedSearchEntry(cacheKey);
+  if (cached) return cached;
+
+  const endpoint = mediaType === 'movie'
+    ? `https://api.themoviedb.org/3/movie/${id}/alternative_titles?api_key=${tmdbKey}`
+    : `https://api.themoviedb.org/3/tv/${id}/alternative_titles?api_key=${tmdbKey}`;
+
+  try {
+    const data = await fetch(endpoint).then((response) => response.json());
+    const titles = Array.isArray(data?.titles)
+      ? data.titles.map((item: any) => item?.title).filter(Boolean)
+      : Array.isArray(data?.results)
+        ? data.results.map((item: any) => item?.title || item?.name).filter(Boolean)
+        : [];
+    const deduped = Array.from(new Set(titles.map((title: string) => String(title).trim()).filter(Boolean)));
+    setCachedSearchEntry(cacheKey, deduped);
+    return deduped;
+  } catch {
+    return [];
+  }
+};
+
+const getSearchCorpus = async (tmdbKey: string) => {
+  if (searchCorpusCache && Date.now() - searchCorpusCache.storedAt <= SEARCH_CACHE_TTL_MS) {
+    return searchCorpusCache.items;
+  }
+
+  const endpoints = [
+    `https://api.themoviedb.org/3/movie/popular?api_key=${tmdbKey}&language=he-IL&page=1`,
+    `https://api.themoviedb.org/3/trending/movie/week?api_key=${tmdbKey}&language=he-IL&page=1`,
+    `https://api.themoviedb.org/3/tv/popular?api_key=${tmdbKey}&language=he-IL&page=1`,
+    `https://api.themoviedb.org/3/trending/tv/week?api_key=${tmdbKey}&language=he-IL&page=1`,
+    `https://api.themoviedb.org/3/discover/movie?api_key=${tmdbKey}&language=he-IL&with_original_language=he&sort_by=popularity.desc&page=1`,
+    `https://api.themoviedb.org/3/discover/tv?api_key=${tmdbKey}&language=he-IL&with_original_language=he&sort_by=popularity.desc&page=1`
+  ];
+
+  const payloads = await Promise.all(endpoints.map((endpoint) => fetch(endpoint).then((response) => response.json()).catch(() => ({ results: [] }))));
+  const items = dedupeSearchItems([
+    ...((payloads[0].results || []) as any[]).filter((item: any) => item.poster_path).map((item: any) => mapTmdbMovieSearchResult(item)),
+    ...((payloads[1].results || []) as any[]).filter((item: any) => item.poster_path).map((item: any) => mapTmdbMovieSearchResult(item)),
+    ...((payloads[2].results || []) as any[]).filter((item: any) => item.poster_path).map((item: any) => mapTmdbSeriesSearchResult(item)),
+    ...((payloads[3].results || []) as any[]).filter((item: any) => item.poster_path).map((item: any) => mapTmdbSeriesSearchResult(item)),
+    ...((payloads[4].results || []) as any[]).filter((item: any) => item.poster_path).map((item: any) => mapTmdbMovieSearchResult(item)),
+    ...((payloads[5].results || []) as any[]).filter((item: any) => item.poster_path).map((item: any) => mapTmdbSeriesSearchResult(item))
+  ]);
+
+  searchCorpusCache = { storedAt: Date.now(), items };
+  return items;
+};
+
 // TMDB Multi-Search
 app.get('/api/search', async (req, res) => {
   try {
     const tmdbKey = process.env.TMDB_API_KEY;
     const query = readStringValue(req.query.q);
     if (!query) return res.json({ results: [] });
-    const q = encodeURIComponent(query);
+    const normalizedQuery = normalizeSearchText(query);
+    if (!normalizedQuery) return res.json({ results: [] });
+
     const type = readStringValue(req.query.type) || 'all';
+    const cacheKey = `search:${type}:${normalizedQuery}`;
+    const cached = getCachedSearchEntry(cacheKey);
+    if (cached) {
+      return res.json({ results: cached });
+    }
+
     if (!tmdbKey) {
-      const tvMazeResults = await fetch(`https://api.tvmaze.com/search/shows?q=${q}`).then((response) => response.json());
-      const results = (Array.isArray(tvMazeResults) ? tvMazeResults : [])
+      const tvMazeResults = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`).then((response) => response.json());
+      const results = rankSearchResults((Array.isArray(tvMazeResults) ? tvMazeResults : [])
         .map((entry: any) => entry.show)
         .filter((show: any) => show?.image?.original)
-        .map((show: any) => mapTvMazeShow(show))
-        .slice(0, 40);
+        .map((show: any) => ({
+          ...mapTvMazeShow(show),
+          alternateTitles: Array.isArray(show.akas) ? show.akas : []
+        })), query).slice(0, 40);
+      setCachedSearchEntry(cacheKey, results);
       return res.json({ results });
     }
-    const [movieRes, tvRes] = await Promise.all([
-      type !== 'tv' ? fetch(`https://api.themoviedb.org/3/search/movie?api_key=${tmdbKey}&language=he-IL&query=${q}&page=1`).then(r => r.json()) : Promise.resolve({ results: [] }),
-      type !== 'movie' ? fetch(`https://api.themoviedb.org/3/search/tv?api_key=${tmdbKey}&language=he-IL&query=${q}&page=1`).then(r => r.json()) : Promise.resolve({ results: [] }),
+
+    const [movieHe, movieEn, tvHe, tvEn, corpus] = await Promise.all([
+      type !== 'tv'
+        ? fetch(`https://api.themoviedb.org/3/search/movie?api_key=${tmdbKey}&language=he-IL&query=${encodeURIComponent(query)}&page=1`).then((response) => response.json()).catch(() => ({ results: [] }))
+        : Promise.resolve({ results: [] }),
+      type !== 'tv'
+        ? fetch(`https://api.themoviedb.org/3/search/movie?api_key=${tmdbKey}&language=en-US&query=${encodeURIComponent(query)}&page=1`).then((response) => response.json()).catch(() => ({ results: [] }))
+        : Promise.resolve({ results: [] }),
+      type !== 'movie'
+        ? fetch(`https://api.themoviedb.org/3/search/tv?api_key=${tmdbKey}&language=he-IL&query=${encodeURIComponent(query)}&page=1`).then((response) => response.json()).catch(() => ({ results: [] }))
+        : Promise.resolve({ results: [] }),
+      type !== 'movie'
+        ? fetch(`https://api.themoviedb.org/3/search/tv?api_key=${tmdbKey}&language=en-US&query=${encodeURIComponent(query)}&page=1`).then((response) => response.json()).catch(() => ({ results: [] }))
+        : Promise.resolve({ results: [] }),
+      getSearchCorpus(tmdbKey)
     ]);
-    const movies = (movieRes.results || []).filter((m: any) => m.poster_path).map((m: any) => ({
-      id: m.id,
-      title: m.title || m.original_title,
-      localizedTitle: m.title || m.original_title,
-      originalTitle: m.original_title || m.title,
-      genre: 'סרט',
-      rating: m.vote_average,
-      poster: `https://image.tmdb.org/t/p/w500${m.poster_path}`,
-      desc: m.overview || '', mediaType: 'movie', popularity: m.popularity
-    }));
-    const series = (tvRes.results || []).filter((s: any) => s.poster_path).map((s: any) => ({
-      id: s.id,
-      title: s.name || s.original_name,
-      localizedTitle: s.name || s.original_name,
-      originalTitle: s.original_name || s.name,
-      genre: 'סדרה',
-      rating: s.vote_average,
-      poster: `https://image.tmdb.org/t/p/w500${s.poster_path}`,
-      desc: s.overview || '', mediaType: 'tv', popularity: s.popularity
-    }));
-    // Interleave results for variety
-    const merged: any[] = [];
-    const max = Math.max(movies.length, series.length);
-    for (let i = 0; i < max; i++) {
-      if (movies[i]) merged.push(movies[i]);
-      if (series[i]) merged.push(series[i]);
-    }
-    res.json({ results: merged.slice(0, 40) });
+
+    const rawMovies = dedupeSearchItems([
+      ...((movieHe.results || []) as any[]),
+      ...((movieEn.results || []) as any[])
+    ]).filter((item: any) => item.poster_path);
+
+    const rawSeries = dedupeSearchItems([
+      ...((tvHe.results || []) as any[]),
+      ...((tvEn.results || []) as any[])
+    ]).filter((item: any) => item.poster_path);
+
+    const [movies, series] = await Promise.all([
+      Promise.all(rawMovies.slice(0, 10).map(async (item: any) => mapTmdbMovieSearchResult(item, await enrichTmdbAliases(tmdbKey, 'movie', item.id)))),
+      Promise.all(rawSeries.slice(0, 10).map(async (item: any) => mapTmdbSeriesSearchResult(item, await enrichTmdbAliases(tmdbKey, 'tv', item.id))))
+    ]);
+
+    const ranked = rankSearchResults(dedupeSearchItems([
+      ...movies,
+      ...series,
+      ...corpus
+    ]), query).slice(0, 40);
+
+    setCachedSearchEntry(cacheKey, ranked);
+    res.json({ results: ranked });
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });
   }

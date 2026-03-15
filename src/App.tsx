@@ -944,6 +944,7 @@ export default function App() {
   const currentBrowseRequestKeyRef = useRef('');
   const predictiveSearchCacheRef = useRef<Map<string, any[]>>(new Map());
   const predictiveSearchRequestRef = useRef(0);
+  const predictiveSearchAbortRef = useRef<AbortController | null>(null);
   const [posterContextMovie, setPosterContextMovie] = useState<any>(null);
 
   const saveToHistory = (movie: any) => {
@@ -1360,6 +1361,8 @@ export default function App() {
 
   function resetSearchState(shouldHide = false) {
     predictiveSearchRequestRef.current += 1;
+    predictiveSearchAbortRef.current?.abort();
+    predictiveSearchAbortRef.current = null;
     if (shouldHide) {
       setShowSearch(false);
     }
@@ -1703,6 +1706,8 @@ export default function App() {
     const normalizedQuery = normalizeSearchText(query);
     if (!force && !shouldTriggerPredictiveSearch(normalizedQuery)) {
       predictiveSearchRequestRef.current += 1;
+      predictiveSearchAbortRef.current?.abort();
+      predictiveSearchAbortRef.current = null;
       setIsSearchingTmdb(false);
       setSearchResults([]);
       return;
@@ -1717,22 +1722,31 @@ export default function App() {
       return;
     }
 
+    predictiveSearchAbortRef.current?.abort();
+    const controller = new AbortController();
+    predictiveSearchAbortRef.current = controller;
     const requestId = predictiveSearchRequestRef.current + 1;
     predictiveSearchRequestRef.current = requestId;
     setIsSearchingTmdb(true);
 
     try {
-      const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/search?q=${encodeURIComponent(query)}&type=all`));
+      const data = await fetchApiJson(buildApiUrl(normalizedApiBase, `/api/search?q=${encodeURIComponent(query)}&type=all`), {
+        signal: controller.signal
+      });
       if (predictiveSearchRequestRef.current !== requestId) return;
       const remoteResults = Array.isArray(data.results) ? data.results : [];
       cachePredictiveResults(normalizedQuery, remoteResults);
       setSearchResults(rankSearchResults([...localResults, ...remoteResults], query).slice(0, 20));
-    } catch {
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return;
       if (predictiveSearchRequestRef.current === requestId) {
         setSearchResults(localResults);
       }
     } finally {
       if (predictiveSearchRequestRef.current === requestId) {
+        if (predictiveSearchAbortRef.current === controller) {
+          predictiveSearchAbortRef.current = null;
+        }
         setIsSearchingTmdb(false);
       }
     }
@@ -1743,12 +1757,16 @@ export default function App() {
     const trimmedQuery = searchQuery.trim();
     if (!trimmedQuery) {
       predictiveSearchRequestRef.current += 1;
+      predictiveSearchAbortRef.current?.abort();
+      predictiveSearchAbortRef.current = null;
       setSearchResults([]);
       setIsSearchingTmdb(false);
       return;
     }
     if (!shouldTriggerPredictiveSearch(trimmedQuery)) {
       predictiveSearchRequestRef.current += 1;
+      predictiveSearchAbortRef.current?.abort();
+      predictiveSearchAbortRef.current = null;
       setSearchResults([]);
       setIsSearchingTmdb(false);
       return;
@@ -1758,6 +1776,10 @@ export default function App() {
     }, 280);
     return () => window.clearTimeout(timer);
   }, [runPredictiveSearch, searchQuery, showSearch]);
+
+  useEffect(() => () => {
+    predictiveSearchAbortRef.current?.abort();
+  }, []);
 
   const handleTmdbSearch = () => {
     if (!searchQuery.trim()) return;
