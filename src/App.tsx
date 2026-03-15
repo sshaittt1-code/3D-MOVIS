@@ -389,6 +389,7 @@ export default function App() {
   const [sortMode, setSortMode] = useState<SortMode>('feed');
   const [yearFilter, setYearFilter] = useState<YearFilter>('all');
   const [seriesGenreFilter, setSeriesGenreFilter] = useState<string | null>(null);
+  const [movieGenreId, setMovieGenreId] = useState<number | null>(null);
   const [movieCategory, setMovieCategory] = useState<FeedCategory>('popular');
   const [seriesCategory, setSeriesCategory] = useState<FeedCategory>('popular');
   const [israeliCategory, setIsraeliCategory] = useState<FeedCategory>('popular');
@@ -396,6 +397,7 @@ export default function App() {
   const [shuffleSeed, setShuffleSeed] = useState(() => Date.now());
   const [cameraZ, setCameraZ] = useState(2);
   const [transitionLabel, setTransitionLabel] = useState<string | null>(null);
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
 
   const [contentPage, setContentPage] = useState(1);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -469,6 +471,182 @@ export default function App() {
     downloadAbortRef.current = null;
     prebufferResolverRef.current = null;
   };
+
+  // --- CONTENT LOADING ENGINE ---
+
+  const contentFetchAbortRef = useRef<AbortController | null>(null);
+
+  const fetchCategoryContent = useCallback(async (
+    target: 'movies' | 'series' | 'israeli',
+    category: FeedCategory,
+    options: { genreId?: number | null; year?: YearFilter; page?: number } = {}
+  ) => {
+    const { genreId, year, page = 1 } = options;
+    const seed = category === 'random' ? shuffleSeed : undefined;
+
+    const cacheKey = buildCategoryCacheKey({
+      target,
+      category,
+      genreId,
+      genreLabel: null,
+      year: year !== 'all' ? year : null,
+      israeliOnly: target === 'israeli',
+      page,
+      batchSize: posterBatchSize,
+      seed
+    });
+
+    const cached = getCategoryCacheEntry(localStorage, cacheKey);
+    if (cached) {
+      return { items: cached.items, hasMore: cached.hasMore, fromCache: true };
+    }
+
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('page_size', String(posterBatchSize));
+    params.set('category', category);
+    if (genreId) params.set('genre_id', String(genreId));
+    if (year && year !== 'all') params.set('year', String(year).replace(/[^0-9]/g, '').slice(0, 4));
+    if (seed) params.set('seed', String(seed));
+
+    const endpoint = target === 'movies' ? '/api/movies' : target === 'series' ? '/api/series' : '/api/israeli';
+    const url = buildApiUrl(normalizedApiBase, `${endpoint}?${params.toString()}`);
+
+    contentFetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    contentFetchAbortRef.current = controller;
+
+    const data = await fetchApiJson(url, { signal: controller.signal });
+    const items = target === 'movies' ? data.movies : target === 'series' ? data.series : data.items;
+    const hasMore = Boolean(data.hasMore);
+
+    writeCategoryCacheEntry(localStorage, cacheKey, { items: items || [], hasMore });
+    return { items: items || [], hasMore, fromCache: false };
+  }, [normalizedApiBase, posterBatchSize, shuffleSeed]);
+
+  const loadContentForCurrentSection = useCallback(async () => {
+    if (showSearch || navContext) return;
+
+    const currentSection = librarySection;
+    if (currentSection === 'favorites' || currentSection === 'history') return;
+
+    setIsLoadingContent(true);
+    setFetchError(null);
+
+    try {
+      if (currentSection === 'all') {
+        const result = await fetchCategoryContent('movies', movieCategory, { genreId: movieGenreId, year: yearFilter });
+        setBaseMovies(result.items);
+        setHasMore(result.hasMore);
+      } else if (currentSection === 'series') {
+        const result = await fetchCategoryContent('series', seriesCategory, { year: yearFilter });
+        setSeriesItems(result.items);
+        setHasMore(result.hasMore);
+      } else if (currentSection === 'israeli') {
+        const result = await fetchCategoryContent('israeli', israeliCategory, { year: yearFilter });
+        setIsraeliItems(result.items);
+        setHasMore(result.hasMore);
+      }
+      setContentPage(1);
+    } catch (e: any) {
+      if (e.name !== 'AbortError') {
+        console.error('Content fetch failed:', e);
+        setFetchError(e.message || 'Failed to load content');
+      }
+    } finally {
+      setIsLoadingContent(false);
+    }
+  }, [showSearch, navContext, librarySection, movieCategory, seriesCategory, israeliCategory, movieGenreId, yearFilter, fetchCategoryContent]);
+
+  useEffect(() => {
+    loadContentForCurrentSection();
+    return () => {
+      contentFetchAbortRef.current?.abort();
+    };
+  }, [loadContentForCurrentSection]);
+
+  const loadMoreContent = useCallback(async () => {
+    if (isLoadingMore || !hasMore || showSearch || navContext) return;
+    if (librarySection === 'favorites' || librarySection === 'history') return;
+
+    const nextPage = contentPage + 1;
+    setIsLoadingMore(true);
+
+    try {
+      if (librarySection === 'all') {
+        const result = await fetchCategoryContent('movies', movieCategory, { genreId: movieGenreId, year: yearFilter, page: nextPage });
+        setBaseMovies(prev => [...prev, ...result.items]);
+        setHasMore(result.hasMore);
+      } else if (librarySection === 'series') {
+        const result = await fetchCategoryContent('series', seriesCategory, { year: yearFilter, page: nextPage });
+        setSeriesItems(prev => [...prev, ...result.items]);
+        setHasMore(result.hasMore);
+      } else if (librarySection === 'israeli') {
+        const result = await fetchCategoryContent('israeli', israeliCategory, { year: yearFilter, page: nextPage });
+        setIsraeliItems(prev => [...prev, ...result.items]);
+        setHasMore(result.hasMore);
+      }
+      setContentPage(nextPage);
+    } catch (e: any) {
+      if (e.name !== 'AbortError') {
+        console.error('Load more failed:', e);
+      }
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [isLoadingMore, hasMore, showSearch, navContext, librarySection, contentPage, movieCategory, seriesCategory, israeliCategory, movieGenreId, yearFilter, fetchCategoryContent]);
+
+  const handleCategoryNavigation = useCallback((item: SideMenuItem) => {
+    if (item.kind !== 'route') return;
+
+    const route = item.route;
+    setNavContext(null);
+    setShowSearch(false);
+
+    if (route.target === 'search') {
+      setShowSearch(true);
+      setIsLocked(true);
+      return;
+    }
+
+    if (route.target === 'favorites') {
+      setLibrarySection('favorites');
+      setIsLocked(true);
+      return;
+    }
+
+    if (route.target === 'movies') {
+      setLibrarySection('all');
+      if (route.category) setMovieCategory(route.category);
+      if (route.genreId !== undefined) setMovieGenreId(route.genreId ?? null);
+      if (route.year) setYearFilter(route.year);
+      else setYearFilter('all');
+      if (route.category === 'random') setShuffleSeed(Date.now());
+      setIsLocked(true);
+      return;
+    }
+
+    if (route.target === 'series') {
+      setLibrarySection('series');
+      if (route.category) setSeriesCategory(route.category);
+      if (route.genreLabel !== undefined) setSeriesGenreFilter(route.genreLabel ?? null);
+      if (route.year) setYearFilter(route.year);
+      else setYearFilter('all');
+      if (route.category === 'random') setShuffleSeed(Date.now());
+      setIsLocked(true);
+      return;
+    }
+
+    if (route.target === 'israeli') {
+      setLibrarySection('israeli');
+      if (route.category) setIsraeliCategory(route.category);
+      if (route.year) setYearFilter(route.year);
+      else setYearFilter('all');
+      if (route.category === 'random') setShuffleSeed(Date.now());
+      setIsLocked(true);
+      return;
+    }
+  }, []);
 
   // --- SEARCH ENGINE ---
 
@@ -633,9 +811,25 @@ export default function App() {
               <Poster key={p.movie.uniqueId} movie={p.movie} isFocused={focusedId === p.movie.uniqueId} isFavorited={!!mediaStateMap[buildMediaKey(p.movie)]?.favorite} isHeartFocused={focusedHeartId === p.movie.uniqueId} watchStatus={mediaStateMap[buildMediaKey(p.movie)]?.watchStatus} position={p.position} rotation={p.rotation} />
             ))}
           </group>
-          <TVController posterLayout={posterLayout} isLocked={isLocked} onPosterSelect={setSelectedMovie} onPosterLongPress={setPosterContextMovie} onHeartToggle={handleHeartToggle} setFocusedId={setFocusedId} setFocusedHeartId={setFocusedHeartId} isAnyModalOpen={!!selectedMovie || showSearch || showSettings || showCinemaScreen} lastPosterZ={lastPosterZ} onCameraMove={setCameraZ} />
+          <TVController posterLayout={posterLayout} isLocked={isLocked} onPosterSelect={setSelectedMovie} onPosterLongPress={setPosterContextMovie} onHeartToggle={handleHeartToggle} setFocusedId={setFocusedId} setFocusedHeartId={setFocusedHeartId} isAnyModalOpen={!!selectedMovie || showSearch || showSettings || showCinemaScreen} lastPosterZ={lastPosterZ} onNearEnd={loadMoreContent} onCameraMove={setCameraZ} />
         </Suspense>
       </Canvas>
+
+      {(isLoadingContent || isLoadingMore) && (
+        <div className="absolute top-6 left-6 z-30 flex items-center gap-3 rounded-full bg-black/70 px-5 py-3 backdrop-blur-md border border-[#00ffcc]/20">
+          <Loader2 className="animate-spin text-[#00ffcc]" size={20} />
+          <span className="text-sm text-white/80">{isLoadingContent ? 'טוען תוכן...' : 'טוען עוד...'}</span>
+        </div>
+      )}
+
+      {fetchError && !isLoadingContent && displayMovies.length === 0 && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-6">
+          <div className="text-red-400 text-xl">{fetchError}</div>
+          <button onClick={loadContentForCurrentSection} className="px-8 py-3 bg-[#00ffcc]/20 text-[#00ffcc] rounded-full border border-[#00ffcc]/30 hover:bg-[#00ffcc]/30">
+            נסה שוב
+          </button>
+        </div>
+      )}
 
       <AnimatePresence>
         {showSearch && isLocked && (
@@ -659,10 +853,39 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <SideMenu isOpen={!isLocked} groups={buildSideMenuGroups({ movieGenres: [], seriesGenres: [], favoritesCount: favorites.length })} activeItemId="" currentLabel="" onActivate={(item) => {
-        if (item.kind === 'route' && item.route.target === 'search') { setShowSearch(true); setIsLocked(true); }
-        else if (item.kind === 'settings') { setSettingsPanel(item.panel); setShowSettings(true); }
-      }} onClose={() => setIsLocked(true)} />
+      <SideMenu
+        isOpen={!isLocked}
+        groups={buildSideMenuGroups({ movieGenres: [], seriesGenres: [], favoritesCount: favorites.length })}
+        activeItemId={getActiveMenuItemId({
+          librarySection,
+          activeGenreId: movieGenreId,
+          seriesGenreFilter,
+          yearFilter,
+          movieCategory,
+          seriesCategory,
+          israeliCategory,
+          showSearch
+        })}
+        currentLabel={
+          showSearch ? 'חיפוש'
+            : librarySection === 'favorites' ? 'מועדפים'
+              : librarySection === 'history' ? 'היסטוריה'
+                : librarySection === 'series' ? 'סדרות'
+                  : librarySection === 'israeli' ? 'ישראלי'
+                    : 'סרטים'
+        }
+        onActivate={(item) => {
+          if (item.kind === 'route') {
+            handleCategoryNavigation(item);
+          } else if (item.kind === 'settings') {
+            setSettingsPanel(item.panel);
+            setShowSettings(true);
+          } else if (item.kind === 'action' && item.action === 'exit') {
+            CapApp.exitApp();
+          }
+        }}
+        onClose={() => setIsLocked(true)}
+      />
 
       {selectedMovie && (
         <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/90 p-10" data-tv-scope="ui">
