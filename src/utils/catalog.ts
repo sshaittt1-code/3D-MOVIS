@@ -1,4 +1,4 @@
-export type LibrarySection = 'all' | 'series' | 'favorites' | 'history';
+export type LibrarySection = 'all' | 'series' | 'israeli' | 'favorites' | 'history';
 export type SortMode = 'feed' | 'popular' | 'rating' | 'recent' | 'random';
 export type YearFilter = 'all' | '2024_plus' | '2020s' | '2010s' | '2000s' | `${number}`;
 

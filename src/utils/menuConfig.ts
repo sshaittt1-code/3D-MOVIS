@@ -4,8 +4,9 @@ export type FeedCategory = 'popular' | 'top_rated' | 'trending' | 'new_releases'
 export type SettingsPanel = 'general' | 'telegram' | 'updates';
 
 export type MenuRoute =
-  | { target: 'movies'; category?: FeedCategory; genreId?: number | null; year?: YearFilter; israeliOnly?: boolean }
+  | { target: 'movies'; category?: FeedCategory; genreId?: number | null; year?: YearFilter }
   | { target: 'series'; category?: FeedCategory; genreLabel?: string | null; year?: YearFilter }
+  | { target: 'israeli'; category?: FeedCategory; year?: YearFilter }
   | { target: 'favorites' }
   | { target: 'search' };
 
@@ -52,7 +53,7 @@ const movieCategoryItem = (id: string, label: string, description: string, categ
   id,
   label,
   description,
-  icon: category === 'popular' ? '◉' : category === 'top_rated' ? '★' : category === 'trending' ? '↗' : category === 'new_releases' ? '✦' : '⟲',
+  icon: category === 'popular' ? '🎥' : category === 'top_rated' ? '★' : category === 'trending' ? '↗' : category === 'new_releases' ? '🆕' : '🎲',
   kind: 'route',
   route: { target: 'movies', category }
 });
@@ -61,9 +62,18 @@ const seriesCategoryItem = (id: string, label: string, description: string, cate
   id,
   label,
   description,
-  icon: category === 'popular' ? '◉' : category === 'top_rated' ? '★' : category === 'trending' ? '↗' : category === 'recently_active' ? '◷' : '⟲',
+  icon: category === 'popular' ? '📺' : category === 'top_rated' ? '★' : category === 'trending' ? '↗' : category === 'recently_active' ? '🕒' : '🎲',
   kind: 'route',
   route: { target: 'series', category }
+});
+
+const israeliCategoryItem = (id: string, label: string, description: string, category: FeedCategory): SideMenuItem => ({
+  id,
+  label,
+  description,
+  icon: category === 'popular' ? '🇮🇱' : category === 'top_rated' ? '★' : category === 'trending' ? '↗' : category === 'recently_active' ? '🕒' : '🎲',
+  kind: 'route',
+  route: { target: 'israeli', category }
 });
 
 export const buildSideMenuGroups = ({
@@ -121,9 +131,9 @@ export const buildSideMenuGroups = ({
       subtitle: 'החלפה מיידית של המסדרון',
       defaultExpanded: true,
       items: [
-        { id: 'quick-movies', label: 'סרטים', description: 'מסדרון הסרטים הראשי', icon: '◉', tone: 'accent', kind: 'route', route: { target: 'movies', category: 'popular' } },
-        { id: 'quick-series', label: 'סדרות', description: 'מסדרון סדרות פופולריות', icon: '◉', tone: 'accent', kind: 'route', route: { target: 'series', category: 'popular' } },
-        { id: 'quick-israeli', label: 'ישראלי', description: 'תוכן בעברית ויצירה מקומית', icon: '✦', kind: 'route', route: { target: 'movies', category: 'popular', israeliOnly: true } },
+        { id: 'quick-movies', label: 'סרטים', description: 'מסדרון הסרטים הראשי', icon: '🎥', tone: 'accent', kind: 'route', route: { target: 'movies', category: 'popular' } },
+        { id: 'quick-series', label: 'סדרות', description: 'מסדרון סדרות בלבד', icon: '📺', tone: 'accent', kind: 'route', route: { target: 'series', category: 'popular' } },
+        { id: 'quick-israeli', label: 'ישראלי', description: 'סרטים וסדרות ישראליים במסדרון עצמאי', icon: '🇮🇱', tone: 'accent', kind: 'route', route: { target: 'israeli', category: 'popular' } },
         { id: 'quick-favorites', label: `מועדפים (${favoritesCount})`, description: 'כל מה שסימנת במקום אחד', icon: '♥', kind: 'route', route: { target: 'favorites' } },
         { id: 'quick-search', label: 'חיפוש', description: 'חיפוש ישיר שמחליף את המסדרון', icon: '⌕', kind: 'route', route: { target: 'search' } }
       ]
@@ -146,15 +156,27 @@ export const buildSideMenuGroups = ({
     {
       id: 'series',
       title: 'סדרות',
-      subtitle: 'מעברים ישירים למסדרונות סדרות',
+      subtitle: 'מעברים ישירים למסדרונות סדרות בלבד',
       items: [
         seriesCategoryItem('series-popular', 'פופולרי', 'סדרות פופולריות כרגע', 'popular'),
         seriesCategoryItem('series-top-rated', 'הכי מדורג', 'לפי איכות והצבעות', 'top_rated'),
         seriesCategoryItem('series-trending', 'טרנדי', 'מה שחם השבוע', 'trending'),
-        seriesCategoryItem('series-active', 'פעילות לאחרונה', 'מסדרון סדרות עם פעילות חדשה', 'recently_active'),
+        seriesCategoryItem('series-active', 'פעילות לאחרונה', 'סדרות עם פעילות חדשה', 'recently_active'),
         seriesCategoryItem('series-random', 'מיקס אקראי', 'גילוי סדרות בצורה חופשית', 'random'),
         ...seriesGenreItems,
         ...seriesYearItems
+      ]
+    },
+    {
+      id: 'israeli',
+      title: 'ישראלי',
+      subtitle: 'קטגוריה עצמאית של סרטים וסדרות ישראליים',
+      items: [
+        israeliCategoryItem('israeli-popular', 'פופולרי', 'תוכן ישראלי בולט כרגע', 'popular'),
+        israeliCategoryItem('israeli-top-rated', 'הכי מדורג', 'דירוגים גבוהים בתוכן ישראלי', 'top_rated'),
+        israeliCategoryItem('israeli-trending', 'טרנדי', 'מה חם עכשיו בתוכן ישראלי', 'trending'),
+        israeliCategoryItem('israeli-recent', 'פעילות לאחרונה', 'יצירות ישראליות חדשות ורלוונטיות', 'recently_active'),
+        israeliCategoryItem('israeli-random', 'מיקס אקראי', 'גילוי אקראי של תוכן ישראלי', 'random')
       ]
     },
     {
@@ -163,7 +185,7 @@ export const buildSideMenuGroups = ({
       subtitle: 'הגדרות, טלגרם ועדכונים',
       items: [
         { id: 'settings-general', label: 'הגדרות כלליות', description: 'ניגון, ממשק והתנהגות כללית', icon: '⚙', tone: 'settings', kind: 'settings', panel: 'general' },
-        { id: 'settings-telegram', label: 'חיבור טלגרם', description: 'התחברות או ניתוק לחשבון', icon: '✉', tone: 'settings', kind: 'settings', panel: 'telegram' },
+        { id: 'settings-telegram', label: 'חיבור טלגרם', description: 'התחברות או ניתוק לחשבון', icon: '✈', tone: 'settings', kind: 'settings', panel: 'telegram' },
         { id: 'settings-updates', label: 'עדכוני APK', description: 'בדיקה, הורדה והתקנה של גרסאות', icon: '⬇', tone: 'settings', kind: 'settings', panel: 'updates' },
         { id: 'settings-exit', label: 'יציאה', description: 'סגירת האפליקציה מהמכשיר', icon: '⏻', tone: 'settings', kind: 'action', action: 'exit' }
       ]
@@ -178,7 +200,7 @@ export const getActiveMenuItemId = ({
   yearFilter,
   movieCategory,
   seriesCategory,
-  isIsraeliOnly,
+  israeliCategory,
   showSearch
 }: {
   librarySection: LibrarySection;
@@ -187,12 +209,23 @@ export const getActiveMenuItemId = ({
   yearFilter: YearFilter;
   movieCategory: FeedCategory;
   seriesCategory: FeedCategory;
-  isIsraeliOnly: boolean;
+  israeliCategory: FeedCategory;
   showSearch: boolean;
 }) => {
   if (showSearch) return 'quick-search';
   if (librarySection === 'favorites') return 'quick-favorites';
-  if (isIsraeliOnly) return 'quick-israeli';
+  if (librarySection === 'israeli') {
+    if (yearFilter !== 'all') return 'quick-israeli';
+    return israeliCategory === 'top_rated'
+      ? 'israeli-top-rated'
+      : israeliCategory === 'recently_active'
+        ? 'israeli-recent'
+        : israeliCategory === 'random'
+          ? 'israeli-random'
+          : israeliCategory === 'trending'
+            ? 'israeli-trending'
+            : 'israeli-popular';
+  }
   if (librarySection === 'series') {
     if (seriesGenreFilter) return `series-genre-${seriesGenreFilter}`;
     if (yearFilter !== 'all') return `series-year-${yearFilter}`;

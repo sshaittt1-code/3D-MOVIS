@@ -252,14 +252,18 @@ const sortLocalCatalog = (items: any[], category: string, year?: number, israeli
     || (item.premiered ? Number.parseInt(String(item.premiered).slice(0, 4), 10) : null);
   const resolveRating = (item: any) => item.rating ?? item.vote_average ?? item.rating?.average ?? 0;
   const resolvePopularity = (item: any) => item.popularity ?? item.weight ?? 0;
-  const resolveLanguage = (item: any) => item.language ?? item.original_language ?? '';
+  const resolveLanguage = (item: any) => String(item.language ?? item.original_language ?? '').toLowerCase();
+  const isIsraeliLanguage = (item: any) => {
+    const language = resolveLanguage(item);
+    return language === 'he' || language === 'heb' || language.includes('hebrew') || language.includes('עבר');
+  };
 
   if (year) {
     filtered = filtered.filter((item) => resolveYear(item) === year);
   }
 
   if (israeliOnly) {
-    filtered = filtered.filter((item) => resolveLanguage(item) === 'he');
+    filtered = filtered.filter((item) => isIsraeliLanguage(item));
   }
 
   if (category === 'top_rated') {
@@ -772,16 +776,18 @@ app.get('/api/series', async (req, res) => {
     const genreId = readOptionalInt(req.query.genre_id);
     const category = readStringValue(req.query.category) || 'popular';
     const year = readOptionalInt(req.query.year);
+    const israeliOnly = req.query.israeli === '1';
     const randomSeed = readPositiveInt(req.query.seed) ?? Date.now();
     if (!tmdbKey) {
       const fallback = await fetchTvMazeSeriesBatch(batchNum, genreId, pageSize);
-      return res.json({ ...fallback, series: sortLocalCatalog(fallback.series, category, year, false, randomSeed) });
+      return res.json({ ...fallback, series: sortLocalCatalog(fallback.series, category, year, israeliOnly, randomSeed) });
     }
     const sourcePagesPerBatch = getSourcePagesPerBatch(pageSize);
     const startTmdbPage = (batchNum - 1) * sourcePagesPerBatch + 1;
     const pages = Array.from({ length: sourcePagesPerBatch }, (_, i) => startTmdbPage + i);
     const genreParam = genreId ? `&with_genres=${genreId}` : '';
     const yearParam = year ? `&first_air_date_year=${year}` : '';
+    const israeliParam = israeliOnly ? '&with_original_language=he' : '';
     const sortBy = category === 'top_rated'
       ? 'vote_average.desc&vote_count.gte=80'
       : category === 'recently_active'
@@ -789,11 +795,11 @@ app.get('/api/series', async (req, res) => {
         : 'popularity.desc';
     const endpoint = category === 'trending'
       ? `https://api.themoviedb.org/3/trending/tv/week?api_key=${tmdbKey}&language=he-IL&page=`
-      : `https://api.themoviedb.org/3/discover/tv?sort_by=${sortBy}&api_key=${tmdbKey}&language=he-IL${genreParam}${yearParam}&page=`;
+      : `https://api.themoviedb.org/3/discover/tv?sort_by=${sortBy}&api_key=${tmdbKey}&language=he-IL${genreParam}${yearParam}${israeliParam}&page=`;
     const results = await Promise.all(pages.map(page =>
       fetch(`${endpoint}${page}`).then(r => r.json())
     ));
-    const allShows = sortLocalCatalog(results.flatMap(d => d.results || []), category, year, false, randomSeed);
+    const allShows = sortLocalCatalog(results.flatMap(d => d.results || []), category, year, israeliOnly, randomSeed);
     const series = allShows.filter((s: any) => s.poster_path).map((s: any) => ({
       id: s.id,
       title: s.name || s.original_name,
@@ -809,6 +815,39 @@ app.get('/api/series', async (req, res) => {
       language: s.original_language || 'en'
     })).slice(0, pageSize);
     return res.json({ series, hasMore: series.length >= pageSize });
+  } catch (e: any) {
+    res.status(500).json({ error: getErrorMessage(e) });
+  }
+});
+
+app.get('/api/israeli', async (req, res) => {
+  try {
+    const batchNum = readPositiveInt(req.query.page) ?? 1;
+    const pageSize = readBoundedInt(req.query.page_size, MIN_PAGE_SIZE, MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE);
+    const category = readStringValue(req.query.category) || 'popular';
+    const year = readOptionalInt(req.query.year);
+    const randomSeed = readPositiveInt(req.query.seed) ?? Date.now();
+    const normalizedCategory = category === 'new_releases' ? 'recently_active' : category;
+    const origin = `${req.protocol}://${req.get('host')}`;
+
+    const [moviesData, seriesData] = await Promise.all([
+      fetch(`${origin}/api/movies?page=${batchNum}&page_size=${pageSize}&category=${encodeURIComponent(category)}${year ? `&year=${year}` : ''}&israeli=1`)
+        .then((response) => response.json())
+        .catch(() => ({ movies: [], hasMore: false })),
+      fetch(`${origin}/api/series?page=${batchNum}&page_size=${pageSize}&category=${encodeURIComponent(normalizedCategory)}${year ? `&year=${year}` : ''}&israeli=1`)
+        .then((response) => response.json())
+        .catch(() => ({ series: [], hasMore: false }))
+    ]);
+
+    const items = sortLocalCatalog([
+      ...(Array.isArray(moviesData.movies) ? moviesData.movies : []),
+      ...(Array.isArray(seriesData.series) ? seriesData.series : [])
+    ], normalizedCategory, year, true, randomSeed).slice(0, pageSize);
+
+    res.json({
+      items,
+      hasMore: Boolean(moviesData.hasMore) || Boolean(seriesData.hasMore)
+    });
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });
   }

@@ -25,7 +25,7 @@ export const buildCategoryCacheKey = ({
   batchSize,
   seed
 }: {
-  target: 'movies' | 'series';
+  target: 'movies' | 'series' | 'israeli';
   category: string;
   genreId?: number | null;
   genreLabel?: string | null;
