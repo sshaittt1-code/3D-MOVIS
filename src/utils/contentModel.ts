@@ -47,6 +47,7 @@ export type EpisodesNavContext = {
   seriesTitle: string;
   seasonTitle: string;
   episodes: CorridorItem[];
+  parent: SeasonsNavContext;
 };
 
 export type NavContext = SeasonsNavContext | EpisodesNavContext | null;

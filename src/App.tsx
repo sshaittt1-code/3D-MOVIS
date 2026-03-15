@@ -43,9 +43,11 @@ import {
   getCatalogFallbackMediaType,
   mergeCorridorItems,
   normalizeCatalogPage,
+  normalizeEpisodePage,
   type CatalogPageResult,
   type CorridorItem,
   normalizeCatalogResponse,
+  normalizeSeasonPage,
   type FeedTarget,
   type NavContext
 } from './utils/contentModel';
@@ -55,6 +57,14 @@ import {
   getFeedTargetForSection,
   resolveRootRouteState
 } from './utils/corridorFeed';
+import {
+  buildEpisodesNavContext,
+  buildSeasonsNavContext,
+  getCorridorScopeKey,
+  getHierarchyMeta,
+  getSeriesSelectionAction,
+  stepOutOfNavContext
+} from './utils/seriesHierarchy';
 import { shouldHandleGlobalTvBack } from './utils/tvNavigation';
 import {
   DEFAULT_ROOT_CATALOG_STATE,
@@ -506,7 +516,7 @@ export default function App() {
     isSidebarOpen: !isLocked
   }), [activeMedia, posterContextMovie, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings, isLocked]);
   const activeShellLayer = useMemo(() => resolveAppShellLayer(shellSnapshot), [shellSnapshot]);
-  const isAnyShellOverlayOpen = activeShellLayer !== 'corridor' && activeShellLayer !== 'sidebar';
+  const isAnyShellOverlayOpen = activeShellLayer !== 'corridor' && activeShellLayer !== 'sidebar' && activeShellLayer !== 'navContext';
 
   const handlePosterBatchSizeChange = useCallback((value: number) => {
     setPosterBatchSize(value);
@@ -553,10 +563,110 @@ export default function App() {
     setActiveMedia(null);
   };
 
+  const fetchSeriesSeasons = useCallback(async (seriesItem: CorridorItem, signal?: AbortSignal) => {
+    const seriesId = Number(seriesItem.seriesId ?? seriesItem.id);
+    if (!Number.isFinite(seriesId)) {
+      throw new Error('Series is missing an id');
+    }
+
+    const data = await fetchApiJson<any>(buildApiUrl(normalizedApiBase, `/api/series/${seriesId}`), { signal });
+    const seriesTitle = String(data?.seriesTitle || seriesItem.seriesTitle || seriesItem.localizedTitle || seriesItem.title);
+    const seasons = normalizeSeasonPage(data?.seasons, { seriesId, seriesTitle });
+
+    return buildSeasonsNavContext(seriesItem, seasons, seriesTitle);
+  }, [normalizedApiBase]);
+
+  const fetchSeasonEpisodes = useCallback(async (seasonItem: CorridorItem, parentContext: NavContext, signal?: AbortSignal) => {
+    const inheritedParent = parentContext?.type === 'episodes' ? parentContext.parent : parentContext;
+    const seriesId = Number(seasonItem.seriesId ?? inheritedParent?.seriesId ?? seasonItem.id);
+    const seasonNum = Number(seasonItem.seasonNum ?? seasonItem.season_number);
+    if (!Number.isFinite(seriesId) || !Number.isFinite(seasonNum)) {
+      throw new Error('Season is missing identity');
+    }
+
+    const parent = inheritedParent && inheritedParent.type === 'seasons'
+      ? inheritedParent
+      : buildSeasonsNavContext(
+          {
+            ...seasonItem,
+            id: seriesId,
+            title: seasonItem.seriesTitle || 'Series',
+            localizedTitle: seasonItem.seriesTitle || seasonItem.localizedTitle || seasonItem.title,
+            originalTitle: seasonItem.seriesTitle || seasonItem.originalTitle || seasonItem.title,
+            mediaType: 'tv'
+          },
+          [],
+          seasonItem.seriesTitle || 'Series'
+        );
+
+    const data = await fetchApiJson<any>(buildApiUrl(normalizedApiBase, `/api/series/${seriesId}/season/${seasonNum}`), { signal });
+    const seasonTitle = String(data?.seasonTitle || seasonItem.seasonTitle || seasonItem.localizedTitle || seasonItem.title);
+    const episodes = normalizeEpisodePage(data?.episodes, {
+      seriesId,
+      seriesTitle: parent.seriesTitle,
+      seasonNum,
+      seasonTitle
+    });
+
+    return buildEpisodesNavContext(seasonItem, episodes, parent, seasonTitle);
+  }, [normalizedApiBase]);
+
+  const openPosterDetails = useCallback((item: CorridorItem) => {
+    setFetchError(null);
+    setShowCinemaScreen(false);
+    setSelectedMovie(item);
+    setIsLocked(true);
+  }, []);
+
+  const handlePosterSelect = useCallback(async (item: CorridorItem) => {
+    const selectionAction = getSeriesSelectionAction(item);
+    if (selectionAction === 'openDetails') {
+      openPosterDetails(item);
+      return;
+    }
+
+    hierarchyFetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    hierarchyFetchAbortRef.current = controller;
+    const requestId = ++hierarchyRequestIdRef.current;
+
+    setFetchError(null);
+    setShowCinemaScreen(false);
+    setSelectedMovie(null);
+    setPosterContextMovie(null);
+    setIsLoadingContent(true);
+    setIsLocked(true);
+
+    try {
+      const nextContext = selectionAction === 'openSeasons'
+        ? await fetchSeriesSeasons(item, controller.signal)
+        : await fetchSeasonEpisodes(item, navContext, controller.signal);
+
+      if (requestId !== hierarchyRequestIdRef.current) return;
+
+      setNavContext(nextContext);
+      setFocusedId(null);
+      setFocusedHeartId(null);
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return;
+      console.error('Series hierarchy fetch failed', error);
+      setFetchError(error?.message || 'Failed to open series corridor');
+    } finally {
+      if (requestId === hierarchyRequestIdRef.current) {
+        setIsLoadingContent(false);
+      }
+      if (hierarchyFetchAbortRef.current === controller) {
+        hierarchyFetchAbortRef.current = null;
+      }
+    }
+  }, [fetchSeasonEpisodes, fetchSeriesSeasons, navContext, openPosterDetails]);
+
   // --- CONTENT LOADING ENGINE ---
 
   const contentFetchAbortRef = useRef<AbortController | null>(null);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
+  const hierarchyFetchAbortRef = useRef<AbortController | null>(null);
+  const hierarchyRequestIdRef = useRef(0);
   const activeRootRequestKeyRef = useRef('');
   const activeLoadMorePageKeyRef = useRef<string | null>(null);
   const prefetchedPageKeysRef = useRef<Set<string>>(new Set());
@@ -862,6 +972,9 @@ export default function App() {
   useEffect(() => {
     loadMoreAbortRef.current?.abort();
     loadMoreAbortRef.current = null;
+    hierarchyFetchAbortRef.current?.abort();
+    hierarchyFetchAbortRef.current = null;
+    hierarchyRequestIdRef.current += 1;
     activeLoadMorePageKeyRef.current = null;
     setCameraZ(CORRIDOR_INITIAL_CAMERA_Z);
     setContentPage(1);
@@ -1116,6 +1229,32 @@ export default function App() {
     [getCurrentRootRequestKey]
   );
 
+  const corridorScopeKey = useMemo(
+    () => getCorridorScopeKey(currentRootRequestKey, navContext),
+    [currentRootRequestKey, navContext]
+  );
+
+  const hierarchyMeta = useMemo(
+    () => getHierarchyMeta(navContext),
+    [navContext]
+  );
+
+  const selectedMoviePrimaryActionLabel = selectedMovie?.mediaType === 'tv'
+    ? 'עונות'
+    : selectedMovie?.mediaType === 'season'
+      ? 'פרקים'
+      : 'צפייה';
+
+  const handleSelectedMoviePrimaryAction = useCallback(() => {
+    if (!selectedMovie) return;
+    const selectionAction = getSeriesSelectionAction(selectedMovie);
+    if (selectionAction === 'openDetails') {
+      setShowCinemaScreen(true);
+      return;
+    }
+    void handlePosterSelect(selectedMovie);
+  }, [handlePosterSelect, selectedMovie]);
+
   const nearEndTriggerKey = useMemo(() => {
     if (!hasMore || isLoadingMore || showSearch || navContext) return null;
     if (librarySection === 'favorites' || librarySection === 'history') return null;
@@ -1177,7 +1316,7 @@ export default function App() {
         closeSearchSurface();
         return;
       case 'clearNavContext':
-        setNavContext(null);
+        setNavContext((prev) => stepOutOfNavContext(prev));
         return;
       case 'closeSidebar':
         setIsLocked(true);
@@ -1234,7 +1373,7 @@ export default function App() {
               <Poster key={p.movie.uniqueId} movie={p.movie} isFocused={focusedId === p.movie.uniqueId} isFavorited={!!mediaStateMap[buildMediaKey(p.movie)]?.favorite} isHeartFocused={focusedHeartId === p.movie.uniqueId} watchStatus={mediaStateMap[buildMediaKey(p.movie)]?.watchStatus} position={p.position} rotation={p.rotation} />
             ))}
           </group>
-          <TVController posterLayout={posterLayout} isLocked={isLocked} onPosterSelect={setSelectedMovie} onPosterLongPress={setPosterContextMovie} onHeartToggle={handleHeartToggle} setFocusedId={setFocusedId} setFocusedHeartId={setFocusedHeartId} isAnyModalOpen={isAnyShellOverlayOpen} lastPosterZ={lastPosterZ} nearEndTriggerKey={nearEndTriggerKey} cameraResetKey={currentRootRequestKey} onNearEnd={loadMoreContent} onCameraMove={setCameraZ} />
+          <TVController posterLayout={posterLayout} isLocked={isLocked} onPosterSelect={handlePosterSelect} onPosterLongPress={setPosterContextMovie} onHeartToggle={handleHeartToggle} setFocusedId={setFocusedId} setFocusedHeartId={setFocusedHeartId} isAnyModalOpen={isAnyShellOverlayOpen} lastPosterZ={lastPosterZ} nearEndTriggerKey={nearEndTriggerKey} cameraResetKey={corridorScopeKey} onNearEnd={loadMoreContent} onCameraMove={setCameraZ} />
         </Suspense>
       </Canvas>
 
@@ -1242,6 +1381,18 @@ export default function App() {
         <div className="absolute top-6 left-6 z-30 flex items-center gap-3 rounded-full bg-black/70 px-5 py-3 backdrop-blur-md border border-[#00ffcc]/20">
           <Loader2 className="animate-spin text-[#00ffcc]" size={20} />
           <span className="text-sm text-white/80">{isLoadingContent ? 'טוען תוכן...' : 'טוען עוד...'}</span>
+        </div>
+      )}
+
+      {hierarchyMeta && (
+        <div className="absolute right-8 top-6 z-30 max-w-[34rem] rounded-[28px] border border-[#00ffcc]/18 bg-[linear-gradient(180deg,rgba(3,10,14,0.86),rgba(4,8,12,0.72))] px-6 py-4 text-right shadow-[0_0_40px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+          <div className="text-[11px] uppercase tracking-[0.34em] text-[#7debd6]">{hierarchyMeta.eyebrow}</div>
+          <div className="mt-2 text-2xl font-semibold text-white">{hierarchyMeta.title}</div>
+          <div className="mt-2 text-sm text-white/55">{hierarchyMeta.trail}</div>
+          <div className="mt-3 inline-flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm text-white/75">
+            <span>{hierarchyMeta.detail}</span>
+            <span className="text-[#7debd6]">Back לחזרה</span>
+          </div>
         </div>
       )}
 
@@ -1349,9 +1500,20 @@ export default function App() {
             <img src={selectedMovie.poster} className="w-96 rounded-[30px] shadow-2xl" />
             <div className="flex flex-col flex-1">
               <h2 className="text-6xl font-bold mb-6">{selectedMovie.title}</h2>
+              <div className="mb-5 text-lg text-[#7debd6]">
+                {selectedMovie.seriesTitle
+                  ? `${selectedMovie.seriesTitle}${selectedMovie.seasonTitle ? ` / ${selectedMovie.seasonTitle}` : ''}`
+                  : selectedMovie.mediaType === 'tv'
+                    ? 'Series Corridor'
+                    : selectedMovie.mediaType === 'season'
+                      ? 'Season Corridor'
+                      : selectedMovie.mediaType === 'episode'
+                        ? 'Episode Details'
+                        : 'Movie Details'}
+              </div>
               <p className="text-2xl text-gray-400 leading-relaxed mb-10">{selectedMovie.desc}</p>
               <div className="flex gap-6 mt-auto">
-                <button onClick={() => setShowCinemaScreen(true)} className="flex-1 py-6 bg-[#2AABEE] text-white text-3xl font-bold rounded-3xl">צפייה</button>
+                <button onClick={handleSelectedMoviePrimaryAction} className="flex-1 py-6 bg-[#2AABEE] text-white text-3xl font-bold rounded-3xl">{selectedMoviePrimaryActionLabel}</button>
                 <button onClick={() => { setShowCinemaScreen(false); setSelectedMovie(null); }} className="px-12 py-6 bg-white/10 text-2xl rounded-3xl">סגור</button>
               </div>
             </div>
