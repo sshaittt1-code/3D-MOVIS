@@ -48,6 +48,9 @@ const stopTvEvent = (e: KeyboardEvent) => {
   e.stopImmediatePropagation?.();
 };
 
+const isUiScopeTarget = (target: EventTarget | null) =>
+  typeof Element !== 'undefined' && target instanceof Element && !!target.closest('[data-tv-scope="ui"]');
+
 // Native Video Player replaced MX Player requirement
 
 // --- Mock Data ---
@@ -179,18 +182,28 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
   const selectKeyDownAtRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
   const longPressTimeoutRef = useRef<number | null>(null);
+  const clearLongPress = useCallback(() => {
+    if (longPressTimeoutRef.current) {
+      window.clearTimeout(longPressTimeoutRef.current);
+      longPressTimeoutRef.current = null;
+    }
+    selectKeyDownAtRef.current = null;
+    longPressTriggeredRef.current = false;
+  }, []);
 
   useEffect(() => {
-    const clearLongPress = () => {
-      if (longPressTimeoutRef.current) {
-        window.clearTimeout(longPressTimeoutRef.current);
-        longPressTimeoutRef.current = null;
-      }
-      selectKeyDownAtRef.current = null;
-      longPressTriggeredRef.current = false;
-    };
+    if (isLocked && !isAnyModalOpen && !selectedMovie) return;
+    keys.current = { left: false, right: false };
+    clearLongPress();
+  }, [clearLongPress, isAnyModalOpen, isLocked, selectedMovie]);
 
+  useEffect(() => {
     const handleInput = (e: KeyboardEvent) => {
+      if (isUiScopeTarget(e.target)) {
+        keys.current = { left: false, right: false };
+        clearLongPress();
+        return;
+      }
       if (!isLocked || isAnyModalOpen || !!selectedMovie) return;
       if (isTvNavigationKey(e)) stopTvEvent(e);
       if (e.key === 'ArrowUp') {
@@ -217,9 +230,17 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
       }
     };
     const handleInputUp = (e: KeyboardEvent) => {
+      if (isUiScopeTarget(e.target)) {
+        keys.current = { left: false, right: false };
+        clearLongPress();
+        return;
+      }
       if (e.key === 'ArrowLeft') keys.current.left = false;
       else if (e.key === 'ArrowRight') keys.current.right = false;
       else if (isTvSelectKey(e)) {
+        if (selectKeyDownAtRef.current === null) {
+          return;
+        }
         const duration = selectKeyDownAtRef.current ? Date.now() - selectKeyDownAtRef.current : 0;
         const pressKind = classifyPressDuration(duration);
         const didLongPress = longPressTriggeredRef.current || pressKind === 'long';
@@ -241,7 +262,7 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
       window.removeEventListener('keydown', handleInput, true);
       window.removeEventListener('keyup', handleInputUp, true);
     };
-  }, [isLocked, onPosterLongPress, onPosterSelect, onHeartToggle, isAnyModalOpen, selectedMovie]);
+  }, [clearLongPress, isLocked, onPosterLongPress, onPosterSelect, onHeartToggle, isAnyModalOpen, selectedMovie]);
 
   // Reset position when corridor changes (new navContext)
   useEffect(() => {
@@ -2126,20 +2147,10 @@ export default function App() {
       />
 
       {!isLocked && isRootCorridor && (
-        <div className="absolute left-8 top-8 z-20 max-w-md rounded-[28px] border border-[#00ffcc]/12 bg-black/25 px-5 py-4 text-white/80 shadow-[0_0_30px_rgba(0,255,204,0.06)] backdrop-blur-md">
+        <div className="absolute left-8 top-8 z-20 max-w-md rounded-[28px] border border-[#00ffcc]/12 bg-black/25 px-5 py-4 text-white/80 shadow-[0_0_30px_rgba(0,255,204,0.06)] backdrop-blur-md" data-tv-scope="ui">
           <p className="text-xs uppercase tracking-[0.3em] text-[#7debd6]">Root Corridor</p>
           <p className="mt-2 text-lg leading-8">בחירה בתפריט הימני מחליפה מיד את המסדרון. חזרה תסגור את המגירה ותשאיר אותך בתוך ה־3D.</p>
-          <button
-            onClick={() => {
-              setShowSearch(true);
-              resetSearchState();
-              setIsLocked(true);
-            }}
-            className="mt-4 inline-flex items-center gap-2 rounded-full border border-[#00ffcc]/25 bg-[#00ffcc]/10 px-4 py-2 text-sm font-semibold text-[#7debd6] transition hover:bg-[#00ffcc]/20"
-          >
-            <Search size={16} />
-            <span>פתח חיפוש</span>
-          </button>
+          <p className="mt-4 text-sm text-white/55">חיפוש זמין בתפריט הראשי בצד ימין, כפריט הראשון ברשימת המעבר המהיר.</p>
           {fetchError && <p className="mt-3 text-sm text-red-300">{fetchError}</p>}
         </div>
       )}

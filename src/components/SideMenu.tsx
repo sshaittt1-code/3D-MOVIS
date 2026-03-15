@@ -125,6 +125,7 @@ export const SideMenu = ({ isOpen, groups, activeItemId, currentLabel, onActivat
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 48 }}
             transition={{ type: 'spring', stiffness: 260, damping: 28 }}
+            data-tv-scope="ui"
             className="pointer-events-auto h-full w-[22rem] border-l border-[#00ffcc]/20 bg-[linear-gradient(180deg,rgba(4,16,20,0.92),rgba(2,6,10,0.74))] shadow-[-24px_0_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl"
             onKeyDown={handleKeyDown}
           >
