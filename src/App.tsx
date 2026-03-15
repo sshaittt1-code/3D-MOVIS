@@ -477,6 +477,32 @@ export default function App() {
   const contentFetchAbortRef = useRef<AbortController | null>(null);
   const warmupStartedRef = useRef(false);
   const prefetchedPageKeysRef = useRef<Set<string>>(new Set());
+  const pendingCategoryRequestsRef = useRef<Map<string, Promise<{ items: any[]; hasMore: boolean; fromCache: boolean }>>>(new Map());
+
+  const readCachedCategoryPage = useCallback((
+    target: 'movies' | 'series' | 'israeli',
+    category: FeedCategory,
+    options: { genreId?: number | null; year?: YearFilter; page?: number } = {}
+  ) => {
+    const { genreId, year, page = 1 } = options;
+    const seed = category === 'random' ? shuffleSeed + page : undefined;
+    const cacheKey = buildCategoryCacheKey({
+      target,
+      category,
+      genreId,
+      genreLabel: null,
+      year: year !== 'all' ? year : null,
+      israeliOnly: target === 'israeli',
+      page,
+      batchSize: posterBatchSize,
+      seed
+    });
+
+    return getCategoryCacheEntry(localStorage, cacheKey, Date.now(), undefined, {
+      category,
+      year: year !== 'all' ? year : null
+    });
+  }, [posterBatchSize, shuffleSeed]);
 
   const prefetchPostersForItems = useCallback((items: any[], priorityCount = 10) => {
     const validItems = items.filter((item) => item?.poster);
@@ -510,15 +536,20 @@ export default function App() {
       seed
     });
 
-    const cached = getCategoryCacheEntry(localStorage, cacheKey, Date.now(), undefined, {
-      category,
-      year: year !== 'all' ? year : null
-    });
+    const cached = readCachedCategoryPage(target, category, { genreId, year, page });
     if (cached) {
       if (prefetchPosters) {
         prefetchPostersForItems(cached.items);
       }
       return { items: cached.items, hasMore: cached.hasMore, fromCache: true };
+    }
+
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    if (pendingCategoryRequestsRef.current.has(cacheKey)) {
+      return pendingCategoryRequestsRef.current.get(cacheKey)!;
     }
 
     const params = new URLSearchParams();
@@ -532,16 +563,25 @@ export default function App() {
     const endpoint = target === 'movies' ? '/api/movies' : target === 'series' ? '/api/series' : '/api/israeli';
     const url = buildApiUrl(normalizedApiBase, `${endpoint}?${params.toString()}`);
 
-    const data = await fetchApiJson(url, { signal });
-    const items = target === 'movies' ? data.movies : target === 'series' ? data.series : data.items;
-    const hasMore = Boolean(data.hasMore);
+    const requestPromise = (async () => {
+      const data = await fetchApiJson(url, { signal });
+      const items = target === 'movies' ? data.movies : target === 'series' ? data.series : data.items;
+      const hasMore = Boolean(data.hasMore);
 
-    writeCategoryCacheEntry(localStorage, cacheKey, { items: items || [], hasMore });
-    if (prefetchPosters) {
-      prefetchPostersForItems(items || []);
+      writeCategoryCacheEntry(localStorage, cacheKey, { items: items || [], hasMore });
+      if (prefetchPosters) {
+        prefetchPostersForItems(items || []);
+      }
+      return { items: items || [], hasMore, fromCache: false };
+    })();
+
+    pendingCategoryRequestsRef.current.set(cacheKey, requestPromise);
+    try {
+      return await requestPromise;
+    } finally {
+      pendingCategoryRequestsRef.current.delete(cacheKey);
     }
-    return { items: items || [], hasMore, fromCache: false };
-  }, [normalizedApiBase, posterBatchSize, shuffleSeed, prefetchPostersForItems]);
+  }, [normalizedApiBase, posterBatchSize, shuffleSeed, prefetchPostersForItems, readCachedCategoryPage]);
 
   const prefetchNextCategoryPage = useCallback(async (
     target: 'movies' | 'series' | 'israeli',
@@ -580,7 +620,13 @@ export default function App() {
     const currentSection = librarySection;
     if (currentSection === 'favorites' || currentSection === 'history') return;
 
-    setIsLoadingContent(true);
+    const hasVisibleContent = (
+      (currentSection === 'all' && baseMovies.length > 0) ||
+      (currentSection === 'series' && seriesItems.length > 0) ||
+      (currentSection === 'israeli' && israeliItems.length > 0)
+    );
+
+    setIsLoadingContent(!hasVisibleContent);
     setFetchError(null);
     contentFetchAbortRef.current?.abort();
     const controller = new AbortController();
@@ -618,7 +664,7 @@ export default function App() {
     } finally {
       setIsLoadingContent(false);
     }
-  }, [showSearch, navContext, librarySection, movieCategory, seriesCategory, israeliCategory, movieGenreId, yearFilter, fetchCategoryContent, prefetchNextCategoryPage]);
+  }, [showSearch, navContext, librarySection, movieCategory, seriesCategory, israeliCategory, movieGenreId, yearFilter, fetchCategoryContent, prefetchNextCategoryPage, baseMovies.length, seriesItems.length, israeliItems.length]);
 
   useEffect(() => {
     loadContentForCurrentSection();
@@ -628,15 +674,37 @@ export default function App() {
   }, [loadContentForCurrentSection]);
 
   useEffect(() => {
+    const cachedMovies = readCachedCategoryPage('movies', 'popular', { page: 1 });
+    if (cachedMovies?.items?.length) {
+      setBaseMovies(cachedMovies.items);
+    }
+
+    const cachedSeries = readCachedCategoryPage('series', 'popular', { page: 1 });
+    if (cachedSeries?.items?.length) {
+      setSeriesItems(cachedSeries.items);
+    }
+
+    const cachedIsraeli = readCachedCategoryPage('israeli', 'popular', { page: 1 });
+    if (cachedIsraeli?.items?.length) {
+      setIsraeliItems(cachedIsraeli.items);
+    }
+  }, [readCachedCategoryPage]);
+
+  useEffect(() => {
     if (warmupStartedRef.current) return;
+    if (isLoadingContent) return;
     warmupStartedRef.current = true;
 
-    void Promise.allSettled([
-      fetchCategoryContent('movies', 'popular', { page: 1, prefetchPosters: true }),
-      fetchCategoryContent('series', 'popular', { page: 1, prefetchPosters: true }),
-      fetchCategoryContent('israeli', 'popular', { page: 1, prefetchPosters: true })
-    ]);
-  }, [fetchCategoryContent]);
+    const warmupTimer = window.setTimeout(() => {
+      void Promise.allSettled([
+        fetchCategoryContent('movies', 'popular', { page: 1, prefetchPosters: true }),
+        fetchCategoryContent('series', 'popular', { page: 1, prefetchPosters: true }),
+        fetchCategoryContent('israeli', 'popular', { page: 1, prefetchPosters: true })
+      ]);
+    }, 250);
+
+    return () => window.clearTimeout(warmupTimer);
+  }, [fetchCategoryContent, isLoadingContent]);
 
   const loadMoreContent = useCallback(async () => {
     if (isLoadingMore || !hasMore || showSearch || navContext) return;
