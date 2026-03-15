@@ -200,7 +200,7 @@ const fetchTvMazeFallbackBatch = async (
 
     const mappedShows = shows
       .filter((show: any) => show?.image?.original && matchesTvMazeGenre(show.genres || [], genreId))
-      .map((show: any) => ({
+      .map((show: any) => withPosterFields({
         id: show.id,
         title: show.name,
         localizedTitle: show.name,
@@ -209,12 +209,14 @@ const fetchTvMazeFallbackBatch = async (
         rating: show.rating?.average || 0,
         popularity: show.weight || 0,
         poster: show.image?.original || show.image?.medium,
+        posterThumb: show.image?.medium || show.image?.original,
         trailer: '',
         desc: stripHtml(show.summary) || 'No description available.',
         mediaType: 'movie',
         year: show.premiered ? Number.parseInt(String(show.premiered).slice(0, 4), 10) : null,
         language: show.language || 'en'
-      }));
+      }, 'movie'))
+      .filter(Boolean);
 
     collected.push(...mappedShows);
   }
@@ -222,6 +224,17 @@ const fetchTvMazeFallbackBatch = async (
   return {
     movies: collected.slice(0, batchSize),
     hasMore: collected.length >= batchSize
+  };
+};
+
+const withPosterFields = (item: any, fallbackMediaType: 'movie' | 'tv') => {
+  const poster = String(item?.poster || item?.posterThumb || item?.image?.original || item?.image?.medium || '').trim();
+  if (!poster) return null;
+  return {
+    ...item,
+    poster,
+    posterThumb: item?.posterThumb || poster,
+    mediaType: item?.mediaType || fallbackMediaType
   };
 };
 
@@ -234,16 +247,97 @@ const mapTvMazeShow = (show: any) => ({
   rating: show.rating?.average || 0,
   popularity: show.weight || 0,
   poster: show.image?.original || show.image?.medium,
+  posterThumb: show.image?.medium || show.image?.original,
   desc: stripHtml(show.summary) || 'No description available.',
   mediaType: 'tv',
   year: show.premiered ? Number.parseInt(String(show.premiered).slice(0, 4), 10) : null,
   language: show.language || 'en'
 });
 
+const ISRAELI_FALLBACK_CONTENT = [
+  {
+    id: 62852,
+    title: 'Fauda',
+    localizedTitle: 'Fauda',
+    originalTitle: 'Fauda',
+    genre: 'Action',
+    rating: 8.2,
+    popularity: 73,
+    poster: 'https://picsum.photos/seed/fauda-server/500/750',
+    posterThumb: 'https://picsum.photos/seed/fauda-server/342/513',
+    desc: 'An undercover team navigates escalating conflict and loyalty.',
+    mediaType: 'tv',
+    year: 2015,
+    language: 'he'
+  },
+  {
+    id: 72673,
+    title: 'Shtisel',
+    localizedTitle: 'Shtisel',
+    originalTitle: 'Shtisel',
+    genre: 'Drama',
+    rating: 8.5,
+    popularity: 66,
+    poster: 'https://picsum.photos/seed/shtisel-server/500/750',
+    posterThumb: 'https://picsum.photos/seed/shtisel-server/342/513',
+    desc: 'An intimate portrait of family and tradition in Jerusalem.',
+    mediaType: 'tv',
+    year: 2013,
+    language: 'he'
+  },
+  {
+    id: 130965,
+    title: 'Tehran',
+    localizedTitle: 'Tehran',
+    originalTitle: 'Tehran',
+    genre: 'Thriller',
+    rating: 7.5,
+    popularity: 69,
+    poster: 'https://picsum.photos/seed/tehran-server/500/750',
+    posterThumb: 'https://picsum.photos/seed/tehran-server/342/513',
+    desc: 'An Israeli agent goes undercover in a hostile capital.',
+    mediaType: 'tv',
+    year: 2020,
+    language: 'he'
+  },
+  {
+    id: 888,
+    title: 'Waltz with Bashir',
+    localizedTitle: 'Waltz with Bashir',
+    originalTitle: 'Waltz with Bashir',
+    genre: 'Animation',
+    rating: 8.0,
+    popularity: 61,
+    poster: 'https://picsum.photos/seed/bashir-server/500/750',
+    posterThumb: 'https://picsum.photos/seed/bashir-server/342/513',
+    desc: 'A veteran reconstructs lost memories from war.',
+    mediaType: 'movie',
+    year: 2008,
+    language: 'he'
+  },
+  {
+    id: 4122,
+    title: 'Beaufort',
+    localizedTitle: 'Beaufort',
+    originalTitle: 'Beaufort',
+    genre: 'War',
+    rating: 7.0,
+    popularity: 52,
+    poster: 'https://picsum.photos/seed/beaufort-server/500/750',
+    posterThumb: 'https://picsum.photos/seed/beaufort-server/342/513',
+    desc: 'Soldiers endure the final days of an isolated outpost.',
+    mediaType: 'movie',
+    year: 2007,
+    language: 'he'
+  }
+];
+
 const fetchTvMazeSeriesBatch = async (batchNum: number, genreId?: number, batchSize = FALLBACK_BATCH_SIZE) => {
   const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId, batchSize, getSourcePagesPerBatch(batchSize));
   return {
-    series: fallback.movies.map((item) => ({ ...item, mediaType: 'tv' })),
+    series: fallback.movies
+      .map((item) => withPosterFields({ ...item, mediaType: 'tv' }, 'tv'))
+      .filter(Boolean),
     hasMore: fallback.hasMore
   };
 };
@@ -743,6 +837,7 @@ app.get('/api/movies', async (req, res) => {
         rating: m.vote_average,
         popularity: m.popularity,
         poster: `https://image.tmdb.org/t/p/w500${m.poster_path}`,
+        posterThumb: `https://image.tmdb.org/t/p/w342${m.poster_path}`,
         trailer: '',
         desc: m.overview || 'אין תיאור זמין בעברית.',
         mediaType: 'movie',
@@ -759,7 +854,9 @@ app.get('/api/movies', async (req, res) => {
 
     // Fallback
     const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId, pageSize, getSourcePagesPerBatch(pageSize));
-    fallback.movies = sortLocalCatalog(fallback.movies, category, year, israeliOnly, randomSeed);
+    fallback.movies = sortLocalCatalog(fallback.movies, category, year, israeliOnly, randomSeed)
+      .map((item: any) => withPosterFields(item, 'movie'))
+      .filter(Boolean);
     /*
       { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: '', desc: 'גנב שגונב סודות תאגידיים.', mediaType: 'movie' },
       { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', trailer: '', desc: 'צוות חוקרים נוסע דרך חור תולעת.', mediaType: 'movie' },
@@ -784,7 +881,12 @@ app.get('/api/series', async (req, res) => {
     const randomSeed = readPositiveInt(req.query.seed) ?? Date.now();
     if (!tmdbKey) {
       const fallback = await fetchTvMazeSeriesBatch(batchNum, genreId, pageSize);
-      return res.json({ ...fallback, series: sortLocalCatalog(fallback.series, category, year, israeliOnly, randomSeed) });
+      return res.json({
+        ...fallback,
+        series: sortLocalCatalog(fallback.series, category, year, israeliOnly, randomSeed)
+          .map((item: any) => withPosterFields(item, 'tv'))
+          .filter(Boolean)
+      });
     }
     const sourcePagesPerBatch = getSourcePagesPerBatch(pageSize);
     const startTmdbPage = (batchNum - 1) * sourcePagesPerBatch + 1;
@@ -813,6 +915,7 @@ app.get('/api/series', async (req, res) => {
       rating: s.vote_average,
       popularity: s.popularity,
       poster: `https://image.tmdb.org/t/p/w500${s.poster_path}`,
+      posterThumb: `https://image.tmdb.org/t/p/w342${s.poster_path}`,
       desc: s.overview || '',
       mediaType: 'tv',
       year: s.first_air_date ? Number.parseInt(String(s.first_air_date).slice(0, 4), 10) : null,
@@ -846,11 +949,21 @@ app.get('/api/israeli', async (req, res) => {
     const items = sortLocalCatalog([
       ...(Array.isArray(moviesData.movies) ? moviesData.movies : []),
       ...(Array.isArray(seriesData.series) ? seriesData.series : [])
-    ], normalizedCategory, year, true, randomSeed).slice(0, pageSize);
+    ], normalizedCategory, year, true, randomSeed)
+      .map((item: any) => withPosterFields(item, item?.mediaType === 'tv' ? 'tv' : 'movie'))
+      .filter(Boolean)
+      .slice(0, pageSize);
+
+    const resolvedItems = items.length > 0
+      ? items
+      : sortLocalCatalog(ISRAELI_FALLBACK_CONTENT, normalizedCategory, year, true, randomSeed)
+          .map((item: any) => withPosterFields(item, item?.mediaType === 'tv' ? 'tv' : 'movie'))
+          .filter(Boolean)
+          .slice(0, pageSize);
 
     res.json({
-      items,
-      hasMore: Boolean(moviesData.hasMore) || Boolean(seriesData.hasMore)
+      items: resolvedItems,
+      hasMore: resolvedItems.length >= pageSize || Boolean(moviesData.hasMore) || Boolean(seriesData.hasMore)
     });
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });

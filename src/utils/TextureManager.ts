@@ -33,6 +33,12 @@ class TextureManager {
     return this.cache.has(url);
   }
 
+  getTexture(url: string) {
+    if (!this.cache.has(url)) return null;
+    this.touchTexture(url);
+    return this.cache.get(url)!;
+  }
+
   private touchTexture(url: string) {
     if (!this.cache.has(url)) return;
     const texture = this.cache.get(url)!;

@@ -25,11 +25,24 @@ import { LONG_PRESS_DURATION_MS, classifyPressDuration } from './utils/longPress
 import { applyEditingKeyToInput, isEditableTextTarget } from './utils/keyboardActions';
 import { normalizeSearchText, rankSearchResults, shouldTriggerPredictiveSearch } from './utils/searchNormalize';
 import { NativePlayer } from './utils/nativePlayer';
+import {
+  FALLBACK_LIBRARY,
+  buildRootRequestKey,
+  getActiveGenreFilterForSection,
+  getFeedTargetForSection,
+  mergeCorridorItems,
+  normalizeCatalogPage,
+  resolveRootRouteState,
+  type CatalogPageResult,
+  type CorridorItem,
+  type FeedTarget
+} from './utils/corridorFeed';
 
 const ApkInstaller = registerPlugin<any>('ApkInstaller');
 
 // --- API Helpers ---
 const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://threed-movis.onrender.com';
+const LAST_GOOD_FEED_STORAGE_KEY = 'last_good_feed_v1';
 const isTvSelectKey = (e: KeyboardEvent) =>
   e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
 
@@ -74,6 +87,34 @@ const fetchApiJson = async <T = any>(path: string, init: RequestInit = {}): Prom
 };
 
 const buildApiUrl = (base: string, path: string) => `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+
+type LastGoodFeedMap = Partial<Record<FeedTarget, CatalogPageResult>>;
+
+const readLastGoodFeedMap = (): LastGoodFeedMap => {
+  if (typeof localStorage === 'undefined') return {};
+  return safeGetJson<LastGoodFeedMap>(localStorage, LAST_GOOD_FEED_STORAGE_KEY, {});
+};
+
+const readInitialFeedItems = (target: FeedTarget): CorridorItem[] => {
+  const lastGood = readLastGoodFeedMap()[target];
+  if (Array.isArray(lastGood?.items) && lastGood.items.length > 0) {
+    return normalizeCatalogPage(lastGood.items, target === 'series' ? 'tv' : 'movie');
+  }
+  return FALLBACK_LIBRARY[target];
+};
+
+const writeLastGoodFeedPage = (target: FeedTarget, page: CatalogPageResult) => {
+  if (typeof localStorage === 'undefined' || !Array.isArray(page.items) || page.items.length === 0) return;
+  const current = readLastGoodFeedMap();
+  safeSetJson(localStorage, LAST_GOOD_FEED_STORAGE_KEY, {
+    ...current,
+    [target]: {
+      items: page.items,
+      hasMore: page.hasMore,
+      storedAt: Date.now()
+    }
+  });
+};
 
 const SETTINGS_TABS: Array<{ id: SettingsPanel; label: string }> = [
   { id: 'general', label: 'כללי' },
@@ -303,7 +344,7 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
 
   useEffect(() => {
     fetchAttempted.current = false;
-    setTexture((current) => (movie.poster && textureManager.hasTexture(movie.poster) ? current : null));
+    setTexture(movie.poster ? textureManager.getTexture(movie.poster) : null);
   }, [movie.poster]);
 
   useFrame((state) => { 
@@ -373,11 +414,11 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
 type NavCtx = null | { type: 'seasons'; seriesId: number; seriesTitle: string; seasons: any[] } | { type: 'episodes'; seriesId: number; seasonNum: number; seriesTitle: string; seasonTitle: string; episodes: any[] };
 
 export default function App() {
-  const [baseMovies, setBaseMovies] = useState<any[]>([]);
-  const [seriesItems, setSeriesItems] = useState<any[]>([]);
-  const [israeliItems, setIsraeliItems] = useState<any[]>([]);
+  const [baseMovies, setBaseMovies] = useState<CorridorItem[]>(() => readInitialFeedItems('movies'));
+  const [seriesItems, setSeriesItems] = useState<CorridorItem[]>(() => readInitialFeedItems('series'));
+  const [israeliItems, setIsraeliItems] = useState<CorridorItem[]>(() => readInitialFeedItems('israeli'));
   const [selectedMovie, setSelectedMovie] = useState<any>(null);
-  const [isLocked, setIsLocked] = useState(false);
+  const [isLocked, setIsLocked] = useState(true);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [focusedHeartId, setFocusedHeartId] = useState<string | null>(null);
   const [showCinemaScreen, setShowCinemaScreen] = useState(false);
@@ -475,17 +516,40 @@ export default function App() {
   // --- CONTENT LOADING ENGINE ---
 
   const contentFetchAbortRef = useRef<AbortController | null>(null);
-  const warmupStartedRef = useRef(false);
+  const activeRootRequestKeyRef = useRef('');
   const prefetchedPageKeysRef = useRef<Set<string>>(new Set());
-  const pendingCategoryRequestsRef = useRef<Map<string, Promise<{ items: any[]; hasMore: boolean; fromCache: boolean }>>>(new Map());
+  const pendingCategoryRequestsRef = useRef<Map<string, Promise<CatalogPageResult>>>(new Map());
+  const backgroundWarmupTargetsRef = useRef<Set<FeedTarget>>(new Set());
+
+  const setItemsForTarget = useCallback((target: FeedTarget, items: CorridorItem[]) => {
+    if (target === 'movies') {
+      setBaseMovies(items);
+      return;
+    }
+    if (target === 'series') {
+      setSeriesItems(items);
+      return;
+    }
+    setIsraeliItems(items);
+  }, []);
+
+  const getItemsForTarget = useCallback((target: FeedTarget) => {
+    if (target === 'movies') return baseMovies;
+    if (target === 'series') return seriesItems;
+    return israeliItems;
+  }, [baseMovies, seriesItems, israeliItems]);
+
+  const getCategorySeed = useCallback((category: FeedCategory, page = 1) => (
+    category === 'random' ? shuffleSeed + page : undefined
+  ), [shuffleSeed]);
 
   const readCachedCategoryPage = useCallback((
-    target: 'movies' | 'series' | 'israeli',
+    target: FeedTarget,
     category: FeedCategory,
     options: { genreId?: number | null; year?: YearFilter; page?: number } = {}
   ) => {
     const { genreId, year, page = 1 } = options;
-    const seed = category === 'random' ? shuffleSeed + page : undefined;
+    const seed = getCategorySeed(category, page);
     const cacheKey = buildCategoryCacheKey({
       target,
       category,
@@ -498,11 +562,21 @@ export default function App() {
       seed
     });
 
-    return getCategoryCacheEntry(localStorage, cacheKey, Date.now(), undefined, {
+    const cached = getCategoryCacheEntry(localStorage, cacheKey, Date.now(), undefined, {
       category,
       year: year !== 'all' ? year : null
     });
-  }, [posterBatchSize, shuffleSeed]);
+
+    if (!cached) return null;
+    const items = normalizeCatalogPage(cached.items, target === 'series' ? 'tv' : 'movie');
+    if (items.length === 0) return null;
+
+    return {
+      ...cached,
+      items,
+      hasMore: Boolean(cached.hasMore)
+    };
+  }, [getCategorySeed, posterBatchSize]);
 
   const prefetchPostersForItems = useCallback((items: any[], priorityCount = 10) => {
     const validItems = items.filter((item) => item?.poster);
@@ -516,13 +590,40 @@ export default function App() {
     void textureManager.prefetchPriority(priorityUrls, secondaryUrls, 6);
   }, [posterBatchSize]);
 
+  const hydrateTargetFromLocalSources = useCallback((
+    target: FeedTarget,
+    category: FeedCategory,
+    options: { genreId?: number | null; year?: YearFilter; page?: number } = {}
+  ) => {
+    const cached = readCachedCategoryPage(target, category, options);
+    if (cached?.items?.length) {
+      setItemsForTarget(target, cached.items);
+      return cached.items;
+    }
+
+    const lastGood = readLastGoodFeedMap()[target];
+    const lastGoodItems = normalizeCatalogPage(lastGood?.items ?? [], target === 'series' ? 'tv' : 'movie');
+    if (lastGoodItems.length > 0) {
+      setItemsForTarget(target, lastGoodItems);
+      return lastGoodItems;
+    }
+
+    const fallbackItems = FALLBACK_LIBRARY[target];
+    if (fallbackItems.length > 0) {
+      setItemsForTarget(target, fallbackItems);
+      return fallbackItems;
+    }
+
+    return [] as CorridorItem[];
+  }, [readCachedCategoryPage, setItemsForTarget]);
+
   const fetchCategoryContent = useCallback(async (
-    target: 'movies' | 'series' | 'israeli',
+    target: FeedTarget,
     category: FeedCategory,
     options: { genreId?: number | null; year?: YearFilter; page?: number; signal?: AbortSignal; prefetchPosters?: boolean } = {}
   ) => {
     const { genreId, year, page = 1, signal, prefetchPosters = true } = options;
-    const seed = category === 'random' ? shuffleSeed + page : undefined;
+    const seed = getCategorySeed(category, page);
 
     const cacheKey = buildCategoryCacheKey({
       target,
@@ -564,15 +665,16 @@ export default function App() {
     const url = buildApiUrl(normalizedApiBase, `${endpoint}?${params.toString()}`);
 
     const requestPromise = (async () => {
-      const data = await fetchApiJson(url, { signal });
-      const items = target === 'movies' ? data.movies : target === 'series' ? data.series : data.items;
+      const data = await fetchApiJson<any>(url, { signal });
+      const rawItems = target === 'movies' ? data.movies : target === 'series' ? data.series : data.items;
+      const items = normalizeCatalogPage(rawItems, target === 'series' ? 'tv' : 'movie');
       const hasMore = Boolean(data.hasMore);
 
-      writeCategoryCacheEntry(localStorage, cacheKey, { items: items || [], hasMore });
+      writeCategoryCacheEntry(localStorage, cacheKey, { items, hasMore });
       if (prefetchPosters) {
-        prefetchPostersForItems(items || []);
+        prefetchPostersForItems(items);
       }
-      return { items: items || [], hasMore, fromCache: false };
+      return { items, hasMore, fromCache: false };
     })();
 
     pendingCategoryRequestsRef.current.set(cacheKey, requestPromise);
@@ -581,15 +683,15 @@ export default function App() {
     } finally {
       pendingCategoryRequestsRef.current.delete(cacheKey);
     }
-  }, [normalizedApiBase, posterBatchSize, shuffleSeed, prefetchPostersForItems, readCachedCategoryPage]);
+  }, [getCategorySeed, normalizedApiBase, posterBatchSize, prefetchPostersForItems, readCachedCategoryPage]);
 
   const prefetchNextCategoryPage = useCallback(async (
-    target: 'movies' | 'series' | 'israeli',
+    target: FeedTarget,
     category: FeedCategory,
     options: { genreId?: number | null; year?: YearFilter; page: number }
   ) => {
     const { genreId, year, page } = options;
-    const seed = category === 'random' ? shuffleSeed + page : undefined;
+    const seed = getCategorySeed(category, page);
     const cacheKey = buildCategoryCacheKey({
       target,
       category,
@@ -612,59 +714,73 @@ export default function App() {
         prefetchedPageKeysRef.current.delete(cacheKey);
       }
     }
-  }, [fetchCategoryContent, posterBatchSize, shuffleSeed]);
+  }, [fetchCategoryContent, getCategorySeed, posterBatchSize]);
+
+  const getCurrentRootContext = useCallback(() => {
+    const target = getFeedTargetForSection(librarySection);
+    if (target === 'movies') {
+      return { target, category: movieCategory, genreId: movieGenreId, year: yearFilter };
+    }
+    if (target === 'series') {
+      return { target, category: seriesCategory, genreId: null, year: yearFilter };
+    }
+    return { target, category: israeliCategory, genreId: null, year: yearFilter };
+  }, [librarySection, movieCategory, movieGenreId, seriesCategory, israeliCategory, yearFilter]);
 
   const loadContentForCurrentSection = useCallback(async () => {
     if (showSearch || navContext) return;
+    if (librarySection === 'favorites' || librarySection === 'history') return;
 
-    const currentSection = librarySection;
-    if (currentSection === 'favorites' || currentSection === 'history') return;
+    const { target, category, genreId, year } = getCurrentRootContext();
+    const currentSeed = category === 'random' ? getCategorySeed(category) : undefined;
+    const rootRequestKey = buildRootRequestKey({ target, category, genreId, year, seed: currentSeed });
+    activeRootRequestKeyRef.current = rootRequestKey;
+    prefetchedPageKeysRef.current.clear();
 
-    const hasVisibleContent = (
-      (currentSection === 'all' && baseMovies.length > 0) ||
-      (currentSection === 'series' && seriesItems.length > 0) ||
-      (currentSection === 'israeli' && israeliItems.length > 0)
-    );
+    let visibleItems = getItemsForTarget(target);
+    if (visibleItems.length === 0) {
+      visibleItems = hydrateTargetFromLocalSources(target, category, { genreId, year, page: 1 });
+    }
 
-    setIsLoadingContent(!hasVisibleContent);
+    setIsLoadingContent(visibleItems.length === 0);
     setFetchError(null);
     contentFetchAbortRef.current?.abort();
     const controller = new AbortController();
     contentFetchAbortRef.current = controller;
 
     try {
-      if (currentSection === 'all') {
-        const result = await fetchCategoryContent('movies', movieCategory, { genreId: movieGenreId, year: yearFilter, signal: controller.signal });
-        setBaseMovies(result.items);
-        setHasMore(result.hasMore);
-        if (result.hasMore) {
-          void prefetchNextCategoryPage('movies', movieCategory, { genreId: movieGenreId, year: yearFilter, page: 2 });
-        }
-      } else if (currentSection === 'series') {
-        const result = await fetchCategoryContent('series', seriesCategory, { year: yearFilter, signal: controller.signal });
-        setSeriesItems(result.items);
-        setHasMore(result.hasMore);
-        if (result.hasMore) {
-          void prefetchNextCategoryPage('series', seriesCategory, { year: yearFilter, page: 2 });
-        }
-      } else if (currentSection === 'israeli') {
-        const result = await fetchCategoryContent('israeli', israeliCategory, { year: yearFilter, signal: controller.signal });
-        setIsraeliItems(result.items);
-        setHasMore(result.hasMore);
-        if (result.hasMore) {
-          void prefetchNextCategoryPage('israeli', israeliCategory, { year: yearFilter, page: 2 });
-        }
+      const result = await fetchCategoryContent(target, category, { genreId, year, signal: controller.signal });
+      if (activeRootRequestKeyRef.current !== rootRequestKey) {
+        return;
       }
+
+      const nextItems = result.items.length > 0 ? result.items : visibleItems;
+      setItemsForTarget(target, nextItems);
+      setHasMore(result.hasMore);
       setContentPage(1);
+      if (result.items.length > 0) {
+        writeLastGoodFeedPage(target, result);
+      }
+      if (result.hasMore) {
+        void prefetchNextCategoryPage(target, category, { genreId, year, page: 2 });
+      }
     } catch (e: any) {
-      if (e.name !== 'AbortError') {
+      if (e.name !== 'AbortError' && activeRootRequestKeyRef.current === rootRequestKey) {
         console.error('Content fetch failed:', e);
         setFetchError(e.message || 'Failed to load content');
+        if (visibleItems.length === 0) {
+          const fallbackItems = hydrateTargetFromLocalSources(target, category, { genreId, year, page: 1 });
+          if (fallbackItems.length > 0) {
+            setItemsForTarget(target, fallbackItems);
+          }
+        }
       }
     } finally {
-      setIsLoadingContent(false);
+      if (activeRootRequestKeyRef.current === rootRequestKey) {
+        setIsLoadingContent(false);
+      }
     }
-  }, [showSearch, navContext, librarySection, movieCategory, seriesCategory, israeliCategory, movieGenreId, yearFilter, fetchCategoryContent, prefetchNextCategoryPage, baseMovies.length, seriesItems.length, israeliItems.length]);
+  }, [showSearch, navContext, librarySection, getCurrentRootContext, getCategorySeed, getItemsForTarget, hydrateTargetFromLocalSources, fetchCategoryContent, setItemsForTarget, prefetchNextCategoryPage]);
 
   useEffect(() => {
     loadContentForCurrentSection();
@@ -674,69 +790,64 @@ export default function App() {
   }, [loadContentForCurrentSection]);
 
   useEffect(() => {
-    const cachedMovies = readCachedCategoryPage('movies', 'popular', { page: 1 });
-    if (cachedMovies?.items?.length) {
-      setBaseMovies(cachedMovies.items);
-    }
+    if (showSearch || navContext || isLoadingContent) return;
+    const activeTarget = getFeedTargetForSection(librarySection);
+    const targets = (['movies', 'series', 'israeli'] as FeedTarget[]).filter((target) => target !== activeTarget);
+    const pendingTargets = targets.filter((target) => !backgroundWarmupTargetsRef.current.has(target));
+    if (pendingTargets.length === 0) return;
 
-    const cachedSeries = readCachedCategoryPage('series', 'popular', { page: 1 });
-    if (cachedSeries?.items?.length) {
-      setSeriesItems(cachedSeries.items);
-    }
+    const timer = window.setTimeout(() => {
+      pendingTargets.forEach((target) => backgroundWarmupTargetsRef.current.add(target));
+      void Promise.allSettled(pendingTargets.map((target) =>
+        fetchCategoryContent(target, 'popular', { page: 1, prefetchPosters: false }).catch((error) => {
+          backgroundWarmupTargetsRef.current.delete(target);
+          throw error;
+        })
+      ));
+    }, 500);
 
-    const cachedIsraeli = readCachedCategoryPage('israeli', 'popular', { page: 1 });
-    if (cachedIsraeli?.items?.length) {
-      setIsraeliItems(cachedIsraeli.items);
-    }
-  }, [readCachedCategoryPage]);
+    return () => window.clearTimeout(timer);
+  }, [showSearch, navContext, isLoadingContent, librarySection, fetchCategoryContent]);
 
   useEffect(() => {
-    if (warmupStartedRef.current) return;
-    if (isLoadingContent) return;
-    warmupStartedRef.current = true;
-
-    const warmupTimer = window.setTimeout(() => {
-      void Promise.allSettled([
-        fetchCategoryContent('movies', 'popular', { page: 1, prefetchPosters: true }),
-        fetchCategoryContent('series', 'popular', { page: 1, prefetchPosters: true }),
-        fetchCategoryContent('israeli', 'popular', { page: 1, prefetchPosters: true })
-      ]);
-    }, 250);
-
-    return () => window.clearTimeout(warmupTimer);
-  }, [fetchCategoryContent, isLoadingContent]);
+    setContentPage(1);
+    setHasMore(true);
+    setFetchError(null);
+    setFocusedId(null);
+    setFocusedHeartId(null);
+  }, [librarySection, movieCategory, seriesCategory, israeliCategory, movieGenreId, seriesGenreFilter, yearFilter, shuffleSeed]);
 
   const loadMoreContent = useCallback(async () => {
     if (isLoadingMore || !hasMore || showSearch || navContext) return;
     if (librarySection === 'favorites' || librarySection === 'history') return;
 
+    const { target, category, genreId, year } = getCurrentRootContext();
+    const currentSeed = category === 'random' ? getCategorySeed(category) : undefined;
+    const rootRequestKey = buildRootRequestKey({ target, category, genreId, year, seed: currentSeed });
+    if (activeRootRequestKeyRef.current && activeRootRequestKeyRef.current !== rootRequestKey) return;
+
     const nextPage = contentPage + 1;
     setIsLoadingMore(true);
 
     try {
-      if (librarySection === 'all') {
-        const result = await fetchCategoryContent('movies', movieCategory, { genreId: movieGenreId, year: yearFilter, page: nextPage });
-        setBaseMovies(prev => [...prev, ...result.items]);
-        setHasMore(result.hasMore);
-        if (result.hasMore) {
-          void prefetchNextCategoryPage('movies', movieCategory, { genreId: movieGenreId, year: yearFilter, page: nextPage + 1 });
-        }
-      } else if (librarySection === 'series') {
-        const result = await fetchCategoryContent('series', seriesCategory, { year: yearFilter, page: nextPage });
-        setSeriesItems(prev => [...prev, ...result.items]);
-        setHasMore(result.hasMore);
-        if (result.hasMore) {
-          void prefetchNextCategoryPage('series', seriesCategory, { year: yearFilter, page: nextPage + 1 });
-        }
-      } else if (librarySection === 'israeli') {
-        const result = await fetchCategoryContent('israeli', israeliCategory, { year: yearFilter, page: nextPage });
-        setIsraeliItems(prev => [...prev, ...result.items]);
-        setHasMore(result.hasMore);
-        if (result.hasMore) {
-          void prefetchNextCategoryPage('israeli', israeliCategory, { year: yearFilter, page: nextPage + 1 });
+      const result = await fetchCategoryContent(target, category, { genreId, year, page: nextPage });
+      if (activeRootRequestKeyRef.current && activeRootRequestKeyRef.current !== rootRequestKey) {
+        return;
+      }
+      if (result.items.length > 0) {
+        if (target === 'movies') {
+          setBaseMovies((prev) => mergeCorridorItems(prev, result.items));
+        } else if (target === 'series') {
+          setSeriesItems((prev) => mergeCorridorItems(prev, result.items));
+        } else {
+          setIsraeliItems((prev) => mergeCorridorItems(prev, result.items));
         }
       }
+      setHasMore(result.hasMore);
       setContentPage(nextPage);
+      if (result.hasMore) {
+        void prefetchNextCategoryPage(target, category, { genreId, year, page: nextPage + 1 });
+      }
     } catch (e: any) {
       if (e.name !== 'AbortError') {
         console.error('Load more failed:', e);
@@ -744,7 +855,7 @@ export default function App() {
     } finally {
       setIsLoadingMore(false);
     }
-  }, [isLoadingMore, hasMore, showSearch, navContext, librarySection, contentPage, movieCategory, seriesCategory, israeliCategory, movieGenreId, yearFilter, fetchCategoryContent, prefetchNextCategoryPage]);
+  }, [isLoadingMore, hasMore, showSearch, navContext, librarySection, contentPage, getCurrentRootContext, getCategorySeed, fetchCategoryContent, prefetchNextCategoryPage]);
 
   const handleCategoryNavigation = useCallback((item: SideMenuItem) => {
     if (item.kind !== 'route') return;
@@ -765,36 +876,23 @@ export default function App() {
       return;
     }
 
-    if (route.target === 'movies') {
-      setLibrarySection('all');
-      if (route.category) setMovieCategory(route.category);
-      if (route.genreId !== undefined) setMovieGenreId(route.genreId ?? null);
-      if (route.year) setYearFilter(route.year);
-      else setYearFilter('all');
-      if (route.category === 'random') setShuffleSeed(Date.now());
+    const nextRouteState = resolveRootRouteState(route);
+    if (nextRouteState) {
+      setLibrarySection(nextRouteState.librarySection);
+      if (nextRouteState.movieCategory) setMovieCategory(nextRouteState.movieCategory);
+      if (nextRouteState.seriesCategory) setSeriesCategory(nextRouteState.seriesCategory);
+      if (nextRouteState.israeliCategory) setIsraeliCategory(nextRouteState.israeliCategory);
+      setMovieGenreId(nextRouteState.movieGenreId);
+      setSeriesGenreFilter(nextRouteState.seriesGenreFilter);
+      setYearFilter(nextRouteState.yearFilter);
+      setContentPage(1);
+      setHasMore(true);
+      setFetchError(null);
+      setFocusedId(null);
+      setFocusedHeartId(null);
+      prefetchedPageKeysRef.current.clear();
+      if (nextRouteState.refreshShuffle) setShuffleSeed(Date.now());
       setIsLocked(true);
-      return;
-    }
-
-    if (route.target === 'series') {
-      setLibrarySection('series');
-      if (route.category) setSeriesCategory(route.category);
-      if (route.genreLabel !== undefined) setSeriesGenreFilter(route.genreLabel ?? null);
-      if (route.year) setYearFilter(route.year);
-      else setYearFilter('all');
-      if (route.category === 'random') setShuffleSeed(Date.now());
-      setIsLocked(true);
-      return;
-    }
-
-    if (route.target === 'israeli') {
-      setLibrarySection('israeli');
-      if (route.category) setIsraeliCategory(route.category);
-      if (route.year) setYearFilter(route.year);
-      else setYearFilter('all');
-      if (route.category === 'random') setShuffleSeed(Date.now());
-      setIsLocked(true);
-      return;
     }
   }, []);
 
@@ -906,6 +1004,11 @@ export default function App() {
     };
   }, [searchQuery, showSearch, runPredictiveSearch, abortPendingSearch]);
 
+  const activeGenreFilter = useMemo(
+    () => getActiveGenreFilterForSection(librarySection, seriesGenreFilter),
+    [librarySection, seriesGenreFilter]
+  );
+
   const displayMovies = useMemo(() => {
     if (showSearch) return searchResults.map((m, i) => ({ ...m, uniqueId: `s-${m.id}-${i}` }));
     if (navContext?.type === 'seasons') return navContext.seasons;
@@ -914,9 +1017,9 @@ export default function App() {
     if (librarySection === 'history') return watchHistory.map((m, i) => ({ ...m, uniqueId: `h-${m.id}-${i}` }));
 
     let base = librarySection === 'series' ? seriesItems : librarySection === 'israeli' ? israeliItems : baseMovies;
-    return applyCatalogFilters(base, { sortMode, yearFilter, genreFilter: seriesGenreFilter, randomSeed: shuffleSeed })
+    return applyCatalogFilters(base, { sortMode, yearFilter, genreFilter: activeGenreFilter, randomSeed: shuffleSeed })
       .map((m, i) => ({ ...m, uniqueId: `${librarySection}-${m.id}-${i}` }));
-  }, [showSearch, searchResults, navContext, librarySection, favorites, watchHistory, seriesItems, israeliItems, baseMovies, sortMode, yearFilter, seriesGenreFilter, shuffleSeed]);
+  }, [showSearch, searchResults, navContext, librarySection, favorites, watchHistory, seriesItems, israeliItems, baseMovies, sortMode, yearFilter, activeGenreFilter, shuffleSeed]);
 
   const displayMoviesRef = useRef(displayMovies);
   useEffect(() => { displayMoviesRef.current = displayMovies; }, [displayMovies]);
