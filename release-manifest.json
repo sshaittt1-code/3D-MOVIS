@@ -1,0 +1,13 @@
+{
+  "version": "1.1.0",
+  "versionCode": 2,
+  "publishedAt": "2026-03-16T10:00:00+02:00",
+  "mandatory": false,
+  "minSupportedVersion": "1.0.0",
+  "notes": [
+    "Hardening release for Android TV updates and stability",
+    "OTA manifest and native installer flow",
+    "Persistent user state across APK upgrades",
+    "Improved release verification and APK readiness"
+  ]
+}

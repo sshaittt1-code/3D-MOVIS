@@ -5,6 +5,7 @@ import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import cors from 'cors';
 import path from 'node:path';
+import fs from 'node:fs';
 import { normalizeSearchText, rankSearchResults } from './src/utils/searchNormalize';
 import {
   FALLBACK_LIBRARY,
@@ -33,6 +34,23 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 
 // Use crypto for simple ids
 import crypto from 'crypto';
+
+const RELEASE_MANIFEST_PATH = path.join(process.cwd(), 'release-manifest.json');
+const LOCAL_APK_FILE_PATH = path.join(process.cwd(), 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+const DEFAULT_RELEASE_MANIFEST = {
+  version: '1.0.0',
+  versionCode: 1,
+  publishedAt: '2026-03-16T10:00:00+02:00',
+  mandatory: false,
+  minSupportedVersion: '1.0.0',
+  notes: ['Release manifest missing, using fallback metadata.']
+};
+
+let apkArtifactMetadataCache: {
+  sourceKey: string;
+  sha256: string;
+  sizeBytes: number;
+} | null = null;
 
 // Serve Latest Built APK for OTA Updates
 app.use('/apk', express.static(path.join(process.cwd(), 'android', 'app', 'build', 'outputs', 'apk', 'debug')));
@@ -86,6 +104,108 @@ const getErrorMessage = (error: unknown) =>
 
 const readStringValue = (value: unknown) =>
   typeof value === 'string' ? value.trim() : '';
+
+const readReleaseManifest = () => {
+  try {
+    if (!fs.existsSync(RELEASE_MANIFEST_PATH)) {
+      return DEFAULT_RELEASE_MANIFEST;
+    }
+    const parsed = JSON.parse(fs.readFileSync(RELEASE_MANIFEST_PATH, 'utf8'));
+    const parsedVersionCode = Number.parseInt(String(parsed?.versionCode ?? ''), 10);
+    return {
+      version: readStringValue(parsed?.version) || DEFAULT_RELEASE_MANIFEST.version,
+      versionCode: Number.isInteger(parsedVersionCode) && parsedVersionCode > 0
+        ? parsedVersionCode
+        : DEFAULT_RELEASE_MANIFEST.versionCode,
+      publishedAt: readStringValue(parsed?.publishedAt) || DEFAULT_RELEASE_MANIFEST.publishedAt,
+      mandatory: Boolean(parsed?.mandatory),
+      minSupportedVersion: readStringValue(parsed?.minSupportedVersion) || DEFAULT_RELEASE_MANIFEST.minSupportedVersion,
+      notes: Array.isArray(parsed?.notes)
+        ? parsed.notes.map((note: unknown) => readStringValue(note)).filter(Boolean)
+        : DEFAULT_RELEASE_MANIFEST.notes
+    };
+  } catch {
+    return DEFAULT_RELEASE_MANIFEST;
+  }
+};
+
+const getApkArtifactMetadata = () => {
+  if (!fs.existsSync(LOCAL_APK_FILE_PATH)) {
+    apkArtifactMetadataCache = null;
+    return {
+      exists: false,
+      sizeBytes: 0,
+      sha256: null as string | null
+    };
+  }
+
+  const stat = fs.statSync(LOCAL_APK_FILE_PATH);
+  const sourceKey = `${stat.size}:${stat.mtimeMs}`;
+  if (apkArtifactMetadataCache?.sourceKey === sourceKey) {
+    return {
+      exists: true,
+      sizeBytes: apkArtifactMetadataCache.sizeBytes,
+      sha256: apkArtifactMetadataCache.sha256
+    };
+  }
+
+  const sha256 = crypto.createHash('sha256').update(fs.readFileSync(LOCAL_APK_FILE_PATH)).digest('hex');
+  apkArtifactMetadataCache = {
+    sourceKey,
+    sha256,
+    sizeBytes: stat.size
+  };
+
+  return {
+    exists: true,
+    sizeBytes: stat.size,
+    sha256
+  };
+};
+
+const buildUpdateManifestPayload = (req: express.Request) => {
+  const manifest = readReleaseManifest();
+  const apkMetadata = getApkArtifactMetadata();
+  const origin = `${req.protocol}://${req.get('host')}`;
+
+  return {
+    version: manifest.version,
+    versionCode: manifest.versionCode,
+    publishedAt: manifest.publishedAt,
+    mandatory: manifest.mandatory,
+    minSupportedVersion: manifest.minSupportedVersion,
+    notes: manifest.notes,
+    apkUrl: new URL('/apk/latest.apk', origin).toString(),
+    apkAvailable: apkMetadata.exists,
+    apkSizeBytes: apkMetadata.sizeBytes,
+    apkSha256: apkMetadata.sha256,
+    packageId: 'com.holocinema.tv'
+  };
+};
+
+app.get('/api/update-manifest', (req, res) => {
+  res.json(buildUpdateManifestPayload(req));
+});
+
+app.get('/api/version', (req, res) => {
+  const manifest = buildUpdateManifestPayload(req);
+  res.json({
+    version: manifest.version,
+    versionCode: manifest.versionCode,
+    publishedAt: manifest.publishedAt,
+    apkAvailable: manifest.apkAvailable,
+    apkUrl: manifest.apkUrl,
+    message: manifest.notes[0] || 'Release manifest available'
+  });
+});
+
+app.get('/apk/latest.apk', (_req, res) => {
+  if (!fs.existsSync(LOCAL_APK_FILE_PATH)) {
+    return res.status(404).json({ error: 'Latest APK is not available yet.' });
+  }
+
+  return res.sendFile(LOCAL_APK_FILE_PATH);
+});
 
 const readTelegramDialogCategory = (value: unknown): TelegramDialogCategory => {
   const normalized = readStringValue(value).toLowerCase();

@@ -5,9 +5,9 @@ import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Settings, Film, X, Loader2, Eye, Clock3 } from 'lucide-react';
 import { App as CapApp } from '@capacitor/app';
+import { Capacitor } from '@capacitor/core';
 import { textureManager } from './utils/TextureManager';
 import { applyCatalogFilters, getApiYearFilter, getUniqueGenres, type LibrarySection, type SortMode, type YearFilter } from './utils/catalog';
-import { isRemoteVersionNewer } from './utils/version';
 import { buildMediaKey, createDefaultMediaStateEntry, MEDIA_STATE_STORAGE_KEY, migrateLegacyMediaState, type MediaStateEntry, type WatchStatus, updateProgressState } from './utils/mediaState';
 import { AUTOPLAY_PRELOAD_SECONDS, findNextEpisodeInSeason, findNextSeason, shouldPrepareNextEpisode } from './utils/nextEpisode';
 import { readAutoPlayNextEpisode, writeAutoPlayNextEpisode } from './utils/playerSettings';
@@ -16,11 +16,13 @@ import { PosterContextMenu } from './components/PosterContextMenu';
 import { AppSettingsPanel } from './components/AppSettingsPanel';
 import { CinemaGate } from './components/CinemaGate';
 import { TelegramConsolePanel } from './components/TelegramConsolePanel';
+import { UpdateConsolePanel } from './components/UpdateConsolePanel';
 import { CorridorShell } from './components/CorridorShell';
 import { CorridorFocusOverlay } from './components/CorridorFocusOverlay';
 import { CorridorPosterSlot } from './components/CorridorPosterSlot';
 import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
-import { safeGetJson, safeGetString, safeParseJson, safeRemove, safeSetJson, safeSetString } from './utils/safeStorage';
+import { safeGetJson, safeGetString, safeRemove, safeSetJson, safeSetString } from './utils/safeStorage';
+import { buildApiUrl, fetchApiJson } from './utils/apiClient';
 import {
   buildCategoryCacheKey,
   compactCategoryCacheStorage,
@@ -112,6 +114,11 @@ import {
   shouldRunBackgroundWarmup
 } from './utils/runtimePerformance';
 import {
+  ensurePersistedStorageContract,
+  LAST_GOOD_FEED_STORAGE_KEY,
+  PERSISTED_STORAGE_KEYS
+} from './utils/persistedState';
+import {
   buildPosterSlotWindow,
   getCorridorTierConfig,
   IMAX_CORRIDOR_SHELL_CONFIG,
@@ -128,6 +135,16 @@ import {
   isTelegramDialogMediaType,
   type TelegramDialogCategory
 } from './utils/telegramDialogs';
+import { ApkInstaller, downloadUpdateApk, removeDownloadedUpdateApk } from './utils/apkInstaller';
+import {
+  createInitialUpdateState,
+  hasAvailableUpdate,
+  isCurrentVersionSupported,
+  normalizeUpdateManifest,
+  resolveUpdatePhase,
+  UPDATE_CHECK_INTERVAL_MS,
+  type DownloadedApkInfo
+} from './utils/updateManager';
 import {
   getTvDirection,
   hasLocalBackHandlerTarget,
@@ -139,34 +156,15 @@ import {
 
 // --- API Helpers ---
 const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://threed-movis.onrender.com';
-const LAST_GOOD_FEED_STORAGE_KEY = 'last_good_feed_v1';
+
+if (typeof localStorage !== 'undefined') {
+  ensurePersistedStorageContract(localStorage);
+}
 
 const blurActiveElement = () => {
   const activeElement = document.activeElement as HTMLElement | null;
   activeElement?.blur?.();
 };
-
-const fetchApiJson = async <T = any>(path: string, init: RequestInit = {}): Promise<T> => {
-  const sessionStr = safeGetString(localStorage, 'tg_session');
-  const headers = new Headers(init.headers ?? {});
-  if (sessionStr && !headers.has('x-tg-session')) {
-    headers.set('x-tg-session', sessionStr);
-  }
-  const response = await fetch(path, { ...init, headers });
-  const bodyText = await response.text();
-  const trimmedBody = bodyText.trim();
-  const parsedBody = trimmedBody && !trimmedBody.startsWith('<')
-    ? safeParseJson<Record<string, unknown>>(bodyText, {})
-    : {};
-  if (!response.ok) {
-    throw new Error(typeof parsedBody.error === 'string' ? parsedBody.error : bodyText || `Request failed with ${response.status}`);
-  }
-  if (!trimmedBody) return {} as T;
-  if (trimmedBody.startsWith('<')) throw new Error('API returned HTML. Check API Base URL.');
-  return safeParseJson<T>(bodyText, {} as T);
-};
-
-const buildApiUrl = (base: string, path: string) => `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
 
 type LastGoodFeedMap = Partial<Record<FeedTarget, CatalogPageResult>>;
 
@@ -591,9 +589,14 @@ export default function App() {
   const [autoPlayNextEpisode, setAutoPlayNextEpisode] = useState<boolean>(() => readAutoPlayNextEpisode(localStorage, true));
   const [posterBatchSize, setPosterBatchSize] = useState<number>(() => readPosterBatchSize(localStorage, DEFAULT_POSTER_BATCH_SIZE));
 
-  const [apiBase, setApiBase] = useState(() => safeGetString(localStorage, 'api_base', API_BASE));
+  const [apiBase] = useState(() => safeGetString(localStorage, PERSISTED_STORAGE_KEYS.apiBase, API_BASE));
   const normalizedApiBase = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase]);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState('1.0.0');
+  const [appBuild, setAppBuild] = useState('1');
+  const [appPackageId, setAppPackageId] = useState('com.holocinema.tv');
+  const [updateState, setUpdateState] = useState(() => createInitialUpdateState());
+  const [showUpdatePrompt, setShowUpdatePrompt] = useState(false);
 
   const [tgStatus, setTgStatus] = useState<TelegramAuthStatus>('checking');
   const [activeMedia, setActiveMedia] = useState<ActivePlayback | null>(null);
@@ -640,7 +643,10 @@ export default function App() {
   const nextEpisodePreparePromiseRef = useRef<Promise<void> | null>(null);
   const telegramContextKeyRef = useRef('');
   const telegramStatusRequestRef = useRef(0);
+  const updateResumeInstallRef = useRef(false);
+  const lastUpdateCheckAtRef = useRef(0);
   const runtimePerformanceProfile = useMemo(() => resolveRuntimePerformanceProfile(), []);
+  const isNativePlatform = useMemo(() => Capacitor.isNativePlatform(), []);
   const corridorTierConfig = useMemo(
     () => getCorridorTierConfig(runtimePerformanceProfile.tier),
     [runtimePerformanceProfile.tier]
@@ -649,13 +655,14 @@ export default function App() {
   const [showCorridorDebug] = useState(() => {
     if (typeof window === 'undefined') return false;
     const params = new URLSearchParams(window.location.search);
-    return params.get('hc_debug') === '1' || safeGetString(localStorage, 'hc_corridor_debug') === '1';
+    return params.get('hc_debug') === '1' || safeGetString(localStorage, PERSISTED_STORAGE_KEYS.corridorDebug) === '1';
   });
 
   useEffect(() => { mediaStateMapRef.current = mediaStateMap; safeSetJson(localStorage, MEDIA_STATE_STORAGE_KEY, mediaStateMap); }, [mediaStateMap]);
   useEffect(() => { playbackCacheMapRef.current = playbackCacheMap; writePlaybackCacheMap(localStorage, playbackCacheMap); }, [playbackCacheMap]);
   useEffect(() => { activeMediaRef.current = activeMedia; }, [activeMedia]);
   useEffect(() => { preparedNextPlaybackRef.current = preparedNextPlayback; }, [preparedNextPlayback]);
+  useEffect(() => { safeSetString(localStorage, PERSISTED_STORAGE_KEYS.apiBase, apiBase); }, [apiBase]);
   useEffect(() => {
     compactCategoryCacheStorage(localStorage);
   }, []);
@@ -720,6 +727,266 @@ export default function App() {
     setAutoPlayNextEpisode(value);
     writeAutoPlayNextEpisode(localStorage, value);
   }, []);
+
+  const refreshInstallPermissionState = useCallback(async () => {
+    if (!isNativePlatform) {
+      setUpdateState((prev) => ({ ...prev, permissionState: 'granted' }));
+      return 'granted' as const;
+    }
+
+    try {
+      const permission = await ApkInstaller.getInstallPermissionStatus();
+      const permissionState = permission.canInstall ? 'granted' : 'needs_permission';
+      setUpdateState((prev) => ({ ...prev, permissionState }));
+      return permissionState;
+    } catch {
+      setUpdateState((prev) => ({ ...prev, permissionState: 'unknown' }));
+      return 'unknown' as const;
+    }
+  }, [isNativePlatform]);
+
+  const installDownloadedUpdate = useCallback(async (downloadedApk?: DownloadedApkInfo | null) => {
+    const apk = downloadedApk ?? updateState.downloadedApk;
+    if (!apk) {
+      setUpdateState((prev) => ({
+        ...prev,
+        phase: 'error',
+        error: 'לא נמצא קובץ APK מוכן להתקנה.'
+      }));
+      return;
+    }
+
+    if (!isNativePlatform) {
+      setShowUpdatePrompt(false);
+      window.open(updateState.manifest?.apkUrl || apk.uri, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    try {
+      setShowUpdatePrompt(false);
+      setUpdateState((prev) => ({ ...prev, phase: 'installing', error: null }));
+      await ApkInstaller.install({ filePath: apk.uri });
+    } catch (error: any) {
+      setUpdateState((prev) => ({
+        ...prev,
+        phase: 'ready_to_install',
+        error: error?.message || 'פתיחת מתקין Android נכשלה.'
+      }));
+    }
+  }, [isNativePlatform, updateState.downloadedApk, updateState.manifest?.apkUrl]);
+
+  const checkForUpdates = useCallback(async (options: { quiet?: boolean; force?: boolean } = {}) => {
+    const now = Date.now();
+    if (!options.force && now - lastUpdateCheckAtRef.current < UPDATE_CHECK_INTERVAL_MS / 2) {
+      return;
+    }
+
+    if (!options.quiet) {
+      setUpdateState((prev) => ({ ...prev, phase: 'checking', error: null }));
+    } else {
+      setUpdateState((prev) => ({ ...prev, error: null }));
+    }
+
+    try {
+      const payload = await fetchApiJson(
+        buildApiUrl(normalizedApiBase, '/api/update-manifest'),
+        {},
+        { timeoutMs: 7000, retryCount: 1, retryDelayMs: 500 }
+      );
+      const manifest = normalizeUpdateManifest(payload, normalizedApiBase);
+      if (!manifest) {
+        throw new Error('קובץ העדכון שהשרת החזיר אינו תקין.');
+      }
+
+      const permissionState = await refreshInstallPermissionState();
+      const supportedVersion = isCurrentVersionSupported(appVersion, manifest);
+      const nextPhase = resolveUpdatePhase(appVersion, manifest);
+      const updateAvailable = hasAvailableUpdate(appVersion, manifest);
+      const nowChecked = Date.now();
+
+      lastUpdateCheckAtRef.current = nowChecked;
+      setUpdateState((prev) => ({
+        ...prev,
+        manifest,
+        lastCheckedAt: nowChecked,
+        permissionState,
+        phase: supportedVersion ? nextPhase : 'available',
+        error: supportedVersion
+          ? null
+          : 'הגרסה שמותקנת אצלך ישנה מדי ביחס לשחרור האחרון. מומלץ לעדכן עכשיו.',
+        downloadedApk:
+          prev.downloadedApk && prev.manifest?.version === manifest.version
+            ? prev.downloadedApk
+            : null
+      }));
+
+      if (isNativePlatform && updateAvailable && manifest.apkAvailable) {
+        setShowUpdatePrompt(true);
+      }
+      if (!updateAvailable) {
+        setShowUpdatePrompt(false);
+      }
+    } catch (error: any) {
+      lastUpdateCheckAtRef.current = Date.now();
+      setUpdateState((prev) => ({
+        ...prev,
+        phase: prev.downloadedApk ? 'ready_to_install' : 'error',
+        error: options.quiet && prev.error ? prev.error : (error?.message || 'בדיקת העדכונים נכשלה.'),
+        lastCheckedAt: Date.now()
+      }));
+    }
+  }, [appVersion, isNativePlatform, normalizedApiBase, refreshInstallPermissionState]);
+
+  const startUpdateInstallFlow = useCallback(async () => {
+    const manifest = updateState.manifest;
+    if (!manifest || !manifest.apkAvailable) {
+      setUpdateState((prev) => ({
+        ...prev,
+        phase: 'error',
+        error: 'אין כרגע APK זמין להתקנה.'
+      }));
+      return;
+    }
+
+    setShowUpdatePrompt(false);
+    setUpdateState((prev) => ({
+      ...prev,
+      phase: 'downloading',
+      error: null,
+      progressPercent: null
+    }));
+
+    try {
+      const permissionState = await refreshInstallPermissionState();
+      const downloaded = await downloadUpdateApk(manifest.apkUrl);
+      const verification = isNativePlatform
+        ? await ApkInstaller.verifyPackageArchive({
+            filePath: downloaded.uri,
+            packageName: manifest.packageId || appPackageId,
+            expectedSizeBytes: manifest.apkSizeBytes
+          })
+        : {
+            exists: true,
+            isApk: true,
+            sizeBytes: downloaded.sizeBytes,
+            packageName: manifest.packageId || appPackageId,
+            versionName: manifest.version,
+            versionCode: manifest.versionCode,
+            matchesPackage: true
+          };
+
+      if (!verification.exists || !verification.isApk) {
+        throw new Error('הקובץ שהורד לא זוהה כ-APK תקין.');
+      }
+      if (!verification.matchesPackage) {
+        throw new Error('קובץ העדכון אינו תואם לחבילת האפליקציה המותקנת.');
+      }
+
+      const downloadedApk: DownloadedApkInfo = {
+        ...downloaded,
+        versionName: verification.versionName ?? manifest.version,
+        versionCode: verification.versionCode ?? manifest.versionCode,
+        packageName: verification.packageName ?? manifest.packageId ?? appPackageId
+      };
+
+      setUpdateState((prev) => ({
+        ...prev,
+        downloadedApk,
+        permissionState,
+        phase: 'ready_to_install',
+        error: null
+      }));
+
+      if (permissionState === 'granted') {
+        await installDownloadedUpdate(downloadedApk);
+      } else {
+        updateResumeInstallRef.current = true;
+      }
+    } catch (error: any) {
+      await removeDownloadedUpdateApk();
+      setUpdateState((prev) => ({
+        ...prev,
+        downloadedApk: null,
+        phase: 'error',
+        error: error?.message || 'הורדת העדכון נכשלה.'
+      }));
+    }
+  }, [appPackageId, installDownloadedUpdate, isNativePlatform, refreshInstallPermissionState, updateState.manifest]);
+
+  const openUpdatePermissionSettings = useCallback(async () => {
+    if (!isNativePlatform) return;
+    updateResumeInstallRef.current = true;
+    try {
+      await ApkInstaller.openInstallPermissionSettings();
+    } catch (error: any) {
+      setUpdateState((prev) => ({
+        ...prev,
+        phase: 'error',
+        error: error?.message || 'לא ניתן לפתוח את מסך הרשאות ההתקנה.'
+      }));
+    }
+  }, [isNativePlatform]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAppInfo = async () => {
+      try {
+        const info = await CapApp.getInfo();
+        if (cancelled) return;
+        setAppVersion(info.version || '1.0.0');
+        setAppBuild(info.build || '1');
+        setAppPackageId(info.id || 'com.holocinema.tv');
+      } catch {
+        if (cancelled) return;
+        setAppVersion((prev) => prev || '1.0.0');
+      }
+    };
+
+    void loadAppInfo();
+    void refreshInstallPermissionState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshInstallPermissionState]);
+
+  useEffect(() => {
+    void checkForUpdates({ quiet: true, force: true });
+  }, [checkForUpdates]);
+
+  useEffect(() => {
+    if (!appVisible) return;
+    const timer = window.setInterval(() => {
+      void checkForUpdates({ quiet: true, force: true });
+    }, UPDATE_CHECK_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [appVisible, checkForUpdates]);
+
+  useEffect(() => {
+    const handleAppState = async ({ isActive }: { isActive: boolean }) => {
+      if (!isActive) return;
+
+      if (updateResumeInstallRef.current) {
+        const permissionState = await refreshInstallPermissionState();
+        if (permissionState === 'granted' && updateState.downloadedApk) {
+          updateResumeInstallRef.current = false;
+          await installDownloadedUpdate(updateState.downloadedApk);
+          return;
+        }
+      }
+
+      if (Date.now() - lastUpdateCheckAtRef.current > UPDATE_CHECK_INTERVAL_MS) {
+        await checkForUpdates({ quiet: true, force: true });
+      }
+    };
+
+    const listener = CapApp.addListener('appStateChange', handleAppState);
+    return () => {
+      listener.then((handle) => handle.remove());
+    };
+  }, [checkForUpdates, installDownloadedUpdate, refreshInstallPermissionState, updateState.downloadedApk]);
 
   const closeSettingsSurface = useCallback(() => {
     const shouldReturnToSidebar = settingsReturnToSidebarRef.current;
@@ -843,9 +1110,9 @@ export default function App() {
 
   const applyTelegramSession = useCallback((sessionString: string | null) => {
     if (sessionString) {
-      safeSetString(localStorage, 'tg_session', sessionString);
+      safeSetString(localStorage, PERSISTED_STORAGE_KEYS.telegramSession, sessionString);
     } else {
-      safeRemove(localStorage, 'tg_session');
+      safeRemove(localStorage, PERSISTED_STORAGE_KEYS.telegramSession);
     }
   }, []);
 
@@ -2401,6 +2668,24 @@ export default function App() {
       : tgStatus === 'checking'
         ? 'bg-amber-400'
         : 'bg-white/40';
+  const updatePrimaryActionLabel = updateState.permissionState === 'needs_permission' && updateState.downloadedApk
+    ? 'אפשר התקנה'
+    : updateState.phase === 'ready_to_install'
+      ? 'התקן עכשיו'
+      : updateState.phase === 'downloading'
+        ? 'מוריד עדכון...'
+        : 'עדכן עכשיו';
+  const handlePrimaryUpdateAction = () => {
+    if (updateState.permissionState === 'needs_permission' && updateState.downloadedApk) {
+      void openUpdatePermissionSettings();
+      return;
+    }
+    if (updateState.phase === 'ready_to_install') {
+      void installDownloadedUpdate();
+      return;
+    }
+    void startUpdateInstallFlow();
+  };
 
   return (
     <div className="hc-app-shell w-full h-screen overflow-hidden bg-black text-white" dir="rtl">
@@ -2448,6 +2733,61 @@ export default function App() {
           <div>Cache: {textureManager.getStats().cached} | Pending: {textureManager.getStats().pending}</div>
         </div>
       )}
+
+      <AnimatePresence>
+        {showUpdatePrompt && updateState.manifest && (
+          <motion.div
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 18 }}
+            className="hc-tv-safe-top-left absolute z-40 mt-16 max-w-xl rounded-[32px] border border-[#2AABEE]/25 bg-[linear-gradient(180deg,rgba(10,18,26,0.94),rgba(6,10,15,0.9))] p-6 shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.3em] text-[#7debd6]">עדכון זמין</div>
+                <h3 className="mt-3 text-2xl font-semibold text-white">
+                  HoloCinema {updateState.manifest.version}
+                </h3>
+                <p className="mt-2 text-sm text-white/65">
+                  נמצאה גרסה חדשה להורדה והתקנה. העדכון ישמור על המועדפים, ההיסטוריה והחיבור הקיים למערכת.
+                </p>
+              </div>
+              <button onClick={() => setShowUpdatePrompt(false)} className="hc-close-button p-2">
+                <X size={18} />
+              </button>
+            </div>
+
+            {updateState.manifest.notes.length > 0 && (
+              <div className="mt-4 space-y-2 text-sm text-white/70">
+                {updateState.manifest.notes.slice(0, 3).map((note, index) => (
+                  <div key={`${updateState.manifest?.version}-${index}`} className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+                    {note}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                onClick={handlePrimaryUpdateAction}
+                disabled={updateState.phase === 'downloading' || updateState.phase === 'installing'}
+                className="hc-button hc-button--accent px-5 py-3 text-sm"
+              >
+                {updatePrimaryActionLabel}
+              </button>
+              <button
+                onClick={() => {
+                  setShowUpdatePrompt(false);
+                  openSettingsPanel('updates');
+                }}
+                className="hc-button hc-button--ghost px-5 py-3 text-sm"
+              >
+                פרטי עדכון
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {(isLoadingContent || isLoadingMore) && (
         <div className="hc-tv-safe-top-left absolute z-30 flex items-center gap-3 rounded-full border border-[#00ffcc]/20 bg-black/70 px-5 py-3 backdrop-blur-md">
@@ -2588,6 +2928,22 @@ export default function App() {
               telegramStatusLabel={telegramStatusLabel}
               telegramStatusTone={telegramStatusTone}
               apiBase={normalizedApiBase}
+              updatesPanelContent={
+                <UpdateConsolePanel
+                  currentVersion={appVersion}
+                  currentBuild={appBuild}
+                  packageId={appPackageId}
+                  phase={updateState.phase}
+                  permissionState={updateState.permissionState}
+                  manifest={updateState.manifest}
+                  error={updateState.error}
+                  lastCheckedAt={updateState.lastCheckedAt}
+                  onCheck={() => { void checkForUpdates({ force: true }); }}
+                  onStartUpdate={() => { void startUpdateInstallFlow(); }}
+                  onInstall={() => { void installDownloadedUpdate(); }}
+                  onOpenPermissionSettings={() => { void openUpdatePermissionSettings(); }}
+                />
+              }
               telegramPanelContent={
                 <TelegramConsolePanel
                   configured={tgConfigured}

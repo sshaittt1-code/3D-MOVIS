@@ -48,6 +48,9 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
+      - name: Verify OTA Manifest And Latest APK
+        run: npm run smoke:artifacts:local
+
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:

@@ -16,6 +16,7 @@ type AppSettingsPanelProps = {
   telegramStatusTone: string;
   apiBase: string;
   telegramPanelContent?: React.ReactNode;
+  updatesPanelContent?: React.ReactNode;
 };
 
 export const AppSettingsPanel = ({
@@ -31,7 +32,8 @@ export const AppSettingsPanel = ({
   telegramStatusLabel,
   telegramStatusTone,
   apiBase,
-  telegramPanelContent
+  telegramPanelContent,
+  updatesPanelContent
 }: AppSettingsPanelProps) => (
   <div className="hc-screen-overlay" data-tv-scope="ui">
     <div className="hc-panel hc-panel--wide p-8">
@@ -43,10 +45,10 @@ export const AppSettingsPanel = ({
           </div>
           <h2 className="mt-4 text-4xl font-bold text-white">הגדרות המערכת</h2>
           <p className="hc-subtitle mt-3 max-w-2xl text-base">
-            מעטפת הגדרות אחת, ברורה ויציבה, שמחזיקה את חוויית Android TV בלי מצבים מתים ובלי קפיצות בין פאנלים.
+            מעטפת אחת ברורה ויציבה להגדרות, חיבורי מקורות, עדכונים וניהול חוויית Android TV.
           </p>
         </div>
-        <button onClick={onClose} className="hc-close-button p-3">
+        <button onClick={onClose} className="hc-close-button p-3" aria-label="סגור הגדרות">
           <X size={22} />
         </button>
       </div>
@@ -74,7 +76,7 @@ export const AppSettingsPanel = ({
               <h3 className="text-2xl font-semibold">מסדרון ופוסטרים</h3>
             </div>
             <p className="hc-subtitle mt-3 text-sm">
-              שליטה ברוחב הטעינה הראשוני כדי להתאים את המסדרון גם לסטרימרים חלשים וגם למכשירים חזקים יותר.
+              שליטה על רוחב הטעינה הראשוני כדי להתאים את המסדרון גם לסטרימרים חלשים וגם למכשירים חזקים יותר.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               {posterBatchOptions.map((value) => (
@@ -123,7 +125,7 @@ export const AppSettingsPanel = ({
               <h3 className="text-2xl font-semibold">מעטפת Telegram</h3>
             </div>
             <p className="hc-subtitle mt-3 max-w-3xl text-sm">
-              חיבור מלא למקורות, login flow וניגון ישיר מוצגים כאן כשהם זמינים למעטפת הראשית.
+              חיבור מלא למקורות, התחברות, חיפוש וניגון ישיר זמינים כאן כשהם משולבים במעטפת הראשית.
             </p>
             <div className="hc-meter mt-6 text-sm text-white">
               <span className={`h-2.5 w-2.5 rounded-full ${telegramStatusTone}`} />
@@ -134,19 +136,21 @@ export const AppSettingsPanel = ({
       )}
 
       {panel === 'updates' && (
-        <div className="hc-panel-section mt-8 p-6">
-          <div className="flex items-center gap-3 text-white">
-            <Settings size={18} className="text-[#7debd6]" />
-            <h3 className="text-2xl font-semibold">סביבת הרצה ועדכונים</h3>
+        updatesPanelContent ?? (
+          <div className="hc-panel-section mt-8 p-6">
+            <div className="flex items-center gap-3 text-white">
+              <Settings size={18} className="text-[#7debd6]" />
+              <h3 className="text-2xl font-semibold">סביבת הרצה ועדכונים</h3>
+            </div>
+            <p className="hc-subtitle mt-3 text-sm">
+              מסך ייצוב לעדכונים, כתובת ה-API הפעילה, ובסיס לשחרור גרסאות חדשות בצורה בטוחה מתוך האפליקציה.
+            </p>
+            <div className="hc-card mt-6 px-5 py-4 text-sm text-white/75">
+              <div className="text-white/50">API Base</div>
+              <div className="mt-2 break-all text-white">{apiBase}</div>
+            </div>
           </div>
-          <p className="hc-subtitle mt-3 text-sm">
-            מסך ייצוב להרצה ולשחרור: כתובת ה־API הפעילה, build ל־APK, והבסיס למסכי עדכון מתקדמים בשלבים הבאים.
-          </p>
-          <div className="hc-card mt-6 px-5 py-4 text-sm text-white/75">
-            <div className="text-white/50">API Base</div>
-            <div className="mt-2 break-all text-white">{apiBase}</div>
-          </div>
-        </div>
+        )
       )}
     </div>
   </div>

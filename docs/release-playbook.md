@@ -2,19 +2,27 @@
 
 ## Local Release Checklist
 1. Verify the workspace is on the intended branch and the working tree is clean enough to release.
-2. Run:
+2. Update `release-manifest.json`:
+   - bump `version`
+   - bump `versionCode`
+   - set `publishedAt`
+   - refresh `notes`
+3. Run:
    - `npm run quality:gate`
    - `npm run android:apk`
-3. Confirm the generated APK exists:
+   - `npm run smoke:artifacts:local`
+4. Confirm the generated APK exists:
    - `android/app/build/outputs/apk/debug/app-debug.apk`
-4. Smoke-check on device or emulator:
+5. Smoke-check on device or emulator:
    - Launch opens in `Movies -> Popular`
    - Posters are visible
    - Category switching works
    - `Series -> Seasons -> Episodes` works
    - Android TV Back behavior works
    - Telegram login/search/playback still works
-5. Commit and push:
+   - Update prompt appears when a newer release manifest is available
+   - Installing an update preserves favorites/history/Telegram session
+6. Commit and push:
    - `git add .`
    - `git commit -m "<short Hebrew release note>"`
    - `git push`
@@ -25,7 +33,8 @@ The GitHub Actions workflow runs:
 2. `npm run quality:gate`
 3. `npx cap sync android`
 4. `./gradlew assembleDebug`
-5. Uploads the APK artifact
+5. `npm run smoke:artifacts:local`
+6. Uploads the APK artifact
 
 Workflow file:
 - `.github/workflows/build-tv-apk.yml`
@@ -39,6 +48,23 @@ Workflow file:
   - `/api/movies`
   - `/api/series`
   - `/api/israeli`
+- Local backend update smoke passes for:
+  - `/api/update-manifest`
+  - `/apk/latest.apk` after APK build
+
+## OTA Contract
+- `release-manifest.json` is the single source of truth for:
+  - `version`
+  - `versionCode`
+  - `publishedAt`
+  - `notes`
+- The backend exposes:
+  - `GET /api/update-manifest`
+  - `GET /apk/latest.apk`
+- The Android app downloads the APK and hands it off to the Android system installer.
+- User data survives upgrades as long as:
+  - package name stays the same
+  - signing key stays the same
 
 ## Release Notes Guidance
 Keep release notes short and product-facing:

@@ -48,6 +48,16 @@ The debug APK is generated at:
 
 `android/app/build/outputs/apk/debug/app-debug.apk`
 
+## OTA Update Endpoints
+- `GET /api/update-manifest`
+  Returns the current release manifest for in-app update checks.
+- `GET /apk/latest.apk`
+  Stable URL for the latest installable APK.
+
+The release metadata is stored in:
+
+`release-manifest.json`
+
 ## Backend Configuration
 Optional environment variables:
 - `TG_API_ID` / `TG_API_HASH`
@@ -62,8 +72,10 @@ Optional environment variables:
 ## Release Flow
 For a local release-quality pass:
 
-1. `npm run quality:gate`
-2. `npm run android:apk`
+1. Update `release-manifest.json` with the next `version`, `versionCode`, `publishedAt`, and release notes.
+2. `npm run quality:gate`
+3. `npm run android:apk`
+4. `npm run smoke:artifacts:local`
 
 Or simply:
 
@@ -75,4 +87,5 @@ For the CI release path, see:
 
 ## Notes
 - The project is optimized for Android TV and weaker streamers, so caching and staged poster loading are part of the runtime design.
+- In-app APK updates use the Android system installer. User state is preserved across upgrades as long as the package name and signing key stay the same.
 - `.kiro/` is intentionally left out of product commits unless explicitly needed.

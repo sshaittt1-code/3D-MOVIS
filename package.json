@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -12,8 +12,11 @@
     "test": "node --import tsx --test src/utils/*.test.ts",
     "smoke:feeds": "node scripts/feedSmoke.mjs",
     "smoke:feeds:local": "node scripts/releaseVerify.mjs",
+    "smoke:updates": "node scripts/updateSmoke.mjs",
+    "smoke:updates:local": "node scripts/releaseVerify.mjs",
+    "smoke:artifacts:local": "node scripts/releaseVerify.mjs --expect-apk",
     "quality:gate": "npm run lint && npm run test && npm run build && npm run smoke:feeds:local",
-    "release:verify": "npm run quality:gate && npm run android:apk",
+    "release:verify": "npm run quality:gate && npm run android:apk && npm run smoke:artifacts:local",
     "start": "node server.ts",
     "android:add": "npx cap add android",
     "android:sync": "npm run build && npx cap sync android",
