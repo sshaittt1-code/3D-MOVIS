@@ -5,6 +5,8 @@ import {
   ensurePersistedStorageContract,
   getPersistedUserStateKeys,
   PERSISTED_STORAGE_KEYS,
+  resolvePreferredApiBase,
+  sanitizePersistedApiBase,
   STORAGE_SCHEMA_VERSION,
   STORAGE_SCHEMA_VERSION_KEY
 } from './persistedState';
@@ -49,10 +51,30 @@ test('ensurePersistedStorageContract upgrades stale api base urls to the current
     [PERSISTED_STORAGE_KEYS.apiBase]: 'https://threed-movis.onrender.com'
   });
 
-  const result = ensurePersistedStorageContract(storage);
+  const result = ensurePersistedStorageContract(storage, {
+    origin: null,
+    protocol: null
+  });
 
   assert.equal(result.schemaVersion, STORAGE_SCHEMA_VERSION);
   assert.equal(storage.getItem(PERSISTED_STORAGE_KEYS.apiBase), DEFAULT_API_BASE_URL);
+});
+
+test('resolvePreferredApiBase prefers same-origin http runtimes for browser flows', () => {
+  assert.equal(resolvePreferredApiBase({
+    origin: 'http://127.0.0.1:3000',
+    protocol: 'http:'
+  }), 'http://127.0.0.1:3000');
+});
+
+test('sanitizePersistedApiBase replaces managed remote bases with same-origin browser hosts', () => {
+  assert.equal(
+    sanitizePersistedApiBase('https://holocinema-api-545560686289.europe-west1.run.app', {
+      origin: 'http://127.0.0.1:3000',
+      protocol: 'http:'
+    }),
+    'http://127.0.0.1:3000'
+  );
 });
 
 test('getPersistedUserStateKeys exposes the user data that must survive updates', () => {

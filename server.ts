@@ -27,6 +27,7 @@ import {
 } from './src/utils/telegramDialogs';
 
 const app = express();
+app.set('trust proxy', true);
 app.use(cors());
 app.use(express.json());
 
@@ -546,6 +547,14 @@ const sortLocalCatalog = (items: any[], category: string, year?: number, israeli
   }
 
   return filtered;
+};
+
+const paginateCatalogItems = (items: any[], batchNum: number, pageSize: number) => {
+  const startIndex = Math.max(0, (batchNum - 1) * pageSize);
+  return {
+    items: items.slice(startIndex, startIndex + pageSize),
+    hasMore: startIndex + pageSize < items.length
+  };
 };
 
 const fetchTvMazeShowContext = async (showId: number) => {
@@ -1121,21 +1130,17 @@ app.get('/api/movies', async (req, res) => {
           return res.json(buildCatalogResponse('movies', movies, movies.length >= pageSize));
         }
       } catch (tmdbError) {
-        console.warn('TMDB movie fetch failed, falling back to TVMaze content.', tmdbError);
+        console.warn('TMDB movie fetch failed, falling back to local movie library.', tmdbError);
       }
     }
 
-    // Fallback
-    const fallback = await fetchTvMazeFallbackBatch(batchNum, genreId, pageSize, getSourcePagesPerBatch(pageSize));
-    fallback.movies = sortLocalCatalog(fallback.movies, category, year, israeliOnly, randomSeed)
-      .map((item: any) => withPosterFields(item, 'movie'))
+    const fallbackPool = (israeliOnly ? FALLBACK_LIBRARY.israeli : FALLBACK_LIBRARY.movies)
+      .filter((item) => item.mediaType === 'movie')
+      .map((item) => withPosterFields(item, 'movie'))
       .filter(Boolean);
-    /*
-      { id: 1, title: 'התחלה (Inception)', genre: 'מדע בדיוני', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', trailer: '', desc: 'גנב שגונב סודות תאגידיים.', mediaType: 'movie' },
-      { id: 2, title: 'בין כוכבים (Interstellar)', genre: 'מדע בדיוני', rating: 8.6, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', trailer: '', desc: 'צוות חוקרים נוסע דרך חור תולעת.', mediaType: 'movie' },
-    ];
-    */
-    res.json(buildCatalogResponse('movies', fallback.movies, fallback.hasMore));
+    const sortedFallback = sortLocalCatalog(fallbackPool, category, year, israeliOnly, randomSeed);
+    const fallback = paginateCatalogItems(sortedFallback, batchNum, pageSize);
+    res.json(buildCatalogResponse('movies', fallback.items, fallback.hasMore));
   } catch (e: any) {
     res.status(500).json({ error: getErrorMessage(e) });
   }
@@ -1361,15 +1366,6 @@ app.get('/api/series/:id/season/:num', async (req, res) => {
 });
 
 async function startServer() {
-  // OTA Version Check
-  app.get('/api/version', (req, res) => {
-    res.json({
-      version: '1.0.6',
-      date: '13 במרץ 2026',
-      message: 'עדכון מערכת רחב: כל משתמש כעת מנהל חיבור פרטי לטלגרם על גבי הענן בשמירה מקומית! תוקנו שלל באגים של תנועת השלט עבור כפתורים והוספת מקורות.'
-    });
-  });
-
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -1389,8 +1385,6 @@ async function startServer() {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 }
-
-startServer();
 
 const dedupeSearchItems = (items: any[]) => {
   const seen = new Set<string>();
@@ -1517,14 +1511,27 @@ app.get('/api/search', async (req, res) => {
     }
 
     if (!tmdbKey) {
-      const tvMazeResults = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`).then((response) => response.json());
-      const results = rankSearchResults((Array.isArray(tvMazeResults) ? tvMazeResults : [])
+      const tvMazeResults = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`)
+        .then((response) => response.json())
+        .catch(() => []);
+      const tvMazeCatalog = (Array.isArray(tvMazeResults) ? tvMazeResults : [])
         .map((entry: any) => entry.show)
         .filter((show: any) => show?.image?.original)
         .map((show: any) => ({
           ...mapTvMazeShow(show),
           alternateTitles: Array.isArray(show.akas) ? show.akas : []
-        })), query).slice(0, 40);
+        }));
+      const localCorpus = dedupeSearchItems([
+        ...FALLBACK_LIBRARY.movies,
+        ...FALLBACK_LIBRARY.series,
+        ...FALLBACK_LIBRARY.israeli,
+        ...tvMazeCatalog
+      ]).filter((item: any) => {
+        if (type === 'movie') return item?.mediaType === 'movie';
+        if (type === 'tv') return item?.mediaType === 'tv';
+        return true;
+      });
+      const results = rankSearchResults(localCorpus, query).slice(0, 40);
       setCachedSearchEntry(cacheKey, results);
       return res.json({ results });
     }
@@ -1592,3 +1599,5 @@ app.get('/api/genres', (_req, res) => {
     { id: 36,   name: 'היסטוריה',        tmdbId: 36 },
   ]});
 });
+
+startServer();

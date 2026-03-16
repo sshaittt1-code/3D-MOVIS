@@ -215,11 +215,6 @@ export const SideMenu = ({
   };
 
   const handleRailSelect = (root: SideMenuRoot) => {
-    if (root.subgroups?.length) {
-      focusDrawerForRoot(root);
-      return;
-    }
-
     onActivate(root.defaultItem);
   };
 
@@ -365,6 +360,7 @@ export const SideMenu = ({
       className="absolute inset-y-0 right-0 z-40 flex items-stretch pointer-events-none"
       data-tv-scope={isOpen ? 'ui' : undefined}
       data-tv-back-scope={isOpen ? 'local' : undefined}
+      data-testid="side-menu"
       onKeyDown={handleMenuKeyDown}
     >
       <AnimatePresence initial={false}>
@@ -416,6 +412,7 @@ export const SideMenu = ({
                             ref={(node) => { buttonRefs.current[subgroupButtonId] = node; }}
                             onFocus={() => setMenuState((prev) => ({ ...prev, focusedZone: 'drawer', focusedDrawerEntryId: subgroupButtonId }))}
                             onClick={() => expandSubgroup(subgroup.id, isExpanded)}
+                            data-testid={`menu-subgroup-${subgroup.id}`}
                             className={`hc-focusable flex w-full items-center justify-between rounded-[1.25rem] border px-4 py-3 text-right transition-all ${
                               isFocused || isExpanded
                                 ? 'border-emerald-400/28 bg-[linear-gradient(90deg,rgba(14,74,56,0.62),rgba(8,40,33,0.42))] text-white shadow-[0_0_26px_rgba(0,255,204,0.16)]'
@@ -445,6 +442,7 @@ export const SideMenu = ({
                                         ref={(node) => { buttonRefs.current[item.id] = node; }}
                                         onFocus={() => setMenuState((prev) => ({ ...prev, focusedZone: 'drawer', focusedDrawerEntryId: item.id }))}
                                         onClick={() => onActivate(item)}
+                                        data-testid={`menu-item-${item.id}`}
                                         className={`hc-focusable w-full rounded-[1.15rem] border px-4 py-3 text-right transition-all ${
                                           isItemFocused
                                             ? 'border-emerald-400/30 bg-[linear-gradient(90deg,rgba(0,255,204,0.16),rgba(18,86,72,0.26))] text-white shadow-[0_0_24px_rgba(0,255,204,0.16)]'
@@ -479,6 +477,7 @@ export const SideMenu = ({
                         focusedDrawerEntryId: getActionEntryId(activeRoot.id)
                       }))}
                       onClick={() => onActivate(activeRoot.defaultItem)}
+                      data-testid={`menu-action-${activeRoot.id}`}
                       className={`hc-focusable mt-6 w-full rounded-[1.25rem] border px-5 py-4 text-right transition-all ${
                         menuState.focusedZone === 'drawer' && menuState.focusedDrawerEntryId === getActionEntryId(activeRoot.id)
                           ? 'border-emerald-400/30 bg-[linear-gradient(90deg,rgba(0,255,204,0.16),rgba(18,86,72,0.26))] text-white shadow-[0_0_24px_rgba(0,255,204,0.16)]'
@@ -519,16 +518,9 @@ export const SideMenu = ({
                 }}
                 onClick={() => {
                   focusRailRoot(root.id);
-                  if (root.subgroups?.length) {
-                    if (isOpen) {
-                      setMenuState((prev) => ({ ...prev, focusedZone: 'rail' }));
-                    } else {
-                      onOpen();
-                    }
-                    return;
-                  }
-                  onActivate(root.defaultItem);
+                  handleRailSelect(root);
                 }}
+                data-testid={`menu-root-${root.id.replace(/^root-/, '')}`}
                 className={`hc-focusable group relative flex h-[4.35rem] w-[4.35rem] items-center justify-center rounded-[1.6rem] border transition-all ${
                   isDrawerFocused
                     ? 'border-emerald-400/34 bg-[linear-gradient(180deg,rgba(0,255,204,0.18),rgba(18,92,74,0.26))] text-white shadow-[0_0_26px_rgba(0,255,204,0.18)]'

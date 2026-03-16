@@ -5,11 +5,15 @@ import { POSTER_BATCH_SIZE_STORAGE_KEY } from './posterBatchSettings';
 import { safeGetString, safeRemove, safeSetString } from './safeStorage';
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+type ApiBaseRuntime = {
+  origin?: string | null;
+  protocol?: string | null;
+};
 
 export const STORAGE_SCHEMA_VERSION_KEY = 'hc_storage_schema_version';
-export const STORAGE_SCHEMA_VERSION = '3';
+export const STORAGE_SCHEMA_VERSION = '4';
 export const LAST_GOOD_FEED_STORAGE_KEY = 'last_good_feed_v1';
-export const DEFAULT_API_BASE_URL = 'https://holocinema-api-ficosyc5ua-ew.a.run.app';
+export const DEFAULT_API_BASE_URL = 'https://holocinema-api-545560686289.europe-west1.run.app';
 
 export const PERSISTED_STORAGE_KEYS = {
   schemaVersion: STORAGE_SCHEMA_VERSION_KEY,
@@ -31,8 +35,56 @@ const LEGACY_KEY_MIGRATIONS: Array<{ from: string; to: string }> = [
 
 const STALE_API_BASES = new Set([
   'https://threed-movis.onrender.com',
-  'https://holocinema-api-545560686289.europe-west1.run.app'
+  'https://holocinema-api-ficosyc5ua-ew.a.run.app'
 ]);
+
+const MANAGED_REMOTE_API_BASES = new Set([
+  DEFAULT_API_BASE_URL,
+  ...STALE_API_BASES
+]);
+
+const normalizeApiBase = (value: string | null | undefined) => String(value || '').trim().replace(/\/$/, '');
+
+const detectApiBaseRuntime = (): ApiBaseRuntime => {
+  if (typeof window === 'undefined') {
+    return { origin: null, protocol: null };
+  }
+
+  return {
+    origin: window.location.origin,
+    protocol: window.location.protocol
+  };
+};
+
+export const resolvePreferredApiBase = (runtime: ApiBaseRuntime = detectApiBaseRuntime()) => {
+  const origin = normalizeApiBase(runtime.origin);
+  const protocol = String(runtime.protocol || '').toLowerCase();
+
+  if ((protocol === 'http:' || protocol === 'https:') && origin) {
+    return origin;
+  }
+
+  return DEFAULT_API_BASE_URL;
+};
+
+export const sanitizePersistedApiBase = (
+  value: string | null | undefined,
+  runtime: ApiBaseRuntime = detectApiBaseRuntime()
+) => {
+  const normalizedValue = normalizeApiBase(value);
+  const preferredBase = resolvePreferredApiBase(runtime);
+
+  if (!normalizedValue || STALE_API_BASES.has(normalizedValue)) {
+    return preferredBase;
+  }
+
+  const prefersSameOrigin = preferredBase !== DEFAULT_API_BASE_URL;
+  if (prefersSameOrigin && MANAGED_REMOTE_API_BASES.has(normalizedValue) && normalizedValue !== preferredBase) {
+    return preferredBase;
+  }
+
+  return normalizedValue;
+};
 
 export type StorageContractResult = {
   schemaVersion: string;
@@ -50,7 +102,10 @@ export const getPersistedUserStateKeys = () => [
   PERSISTED_STORAGE_KEYS.apiBase
 ];
 
-export const ensurePersistedStorageContract = (storage: StorageLike): StorageContractResult => {
+export const ensurePersistedStorageContract = (
+  storage: StorageLike,
+  runtime: ApiBaseRuntime = detectApiBaseRuntime()
+): StorageContractResult => {
   const migratedKeys: string[] = [];
 
   for (const migration of LEGACY_KEY_MIGRATIONS) {
@@ -65,12 +120,11 @@ export const ensurePersistedStorageContract = (storage: StorageLike): StorageCon
     }
   }
 
-  const currentApiBase = safeGetString(storage, PERSISTED_STORAGE_KEYS.apiBase, '').trim();
-  if (!currentApiBase || STALE_API_BASES.has(currentApiBase)) {
-    safeSetString(storage, PERSISTED_STORAGE_KEYS.apiBase, DEFAULT_API_BASE_URL);
-    if (currentApiBase !== DEFAULT_API_BASE_URL) {
-      migratedKeys.push(`${PERSISTED_STORAGE_KEYS.apiBase}->${DEFAULT_API_BASE_URL}`);
-    }
+  const currentApiBase = normalizeApiBase(safeGetString(storage, PERSISTED_STORAGE_KEYS.apiBase, ''));
+  const nextApiBase = sanitizePersistedApiBase(currentApiBase, runtime);
+  if (currentApiBase !== nextApiBase) {
+    safeSetString(storage, PERSISTED_STORAGE_KEYS.apiBase, nextApiBase);
+    migratedKeys.push(`${PERSISTED_STORAGE_KEYS.apiBase}->${nextApiBase}`);
   }
 
   const currentSchemaVersion = safeGetString(storage, STORAGE_SCHEMA_VERSION_KEY, '');

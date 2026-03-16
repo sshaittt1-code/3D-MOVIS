@@ -123,7 +123,8 @@ import {
   DEFAULT_API_BASE_URL,
   ensurePersistedStorageContract,
   LAST_GOOD_FEED_STORAGE_KEY,
-  PERSISTED_STORAGE_KEYS
+  PERSISTED_STORAGE_KEYS,
+  sanitizePersistedApiBase
 } from './utils/persistedState';
 import {
   buildPosterSlotWindow,
@@ -597,7 +598,9 @@ export default function App() {
   const [autoPlayNextEpisode, setAutoPlayNextEpisode] = useState<boolean>(() => readAutoPlayNextEpisode(localStorage, true));
   const [posterBatchSize, setPosterBatchSize] = useState<number>(() => readPosterBatchSize(localStorage, DEFAULT_POSTER_BATCH_SIZE));
 
-  const [apiBase] = useState(() => safeGetString(localStorage, PERSISTED_STORAGE_KEYS.apiBase, API_BASE));
+  const [apiBase] = useState(() => sanitizePersistedApiBase(
+    safeGetString(localStorage, PERSISTED_STORAGE_KEYS.apiBase, API_BASE)
+  ));
   const normalizedApiBase = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase]);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState('1.0.0');
@@ -2949,7 +2952,27 @@ export default function App() {
   };
 
   return (
-    <div className="hc-app-shell w-full h-screen overflow-hidden bg-black text-white" dir="rtl">
+    <div
+      className="hc-app-shell w-full h-screen overflow-hidden bg-black text-white"
+      dir="rtl"
+      data-testid="app-shell"
+      data-active-section={librarySection}
+      data-active-item-id={getActiveMenuItemId({
+        librarySection,
+        activeGenreId: movieGenreId,
+        seriesGenreFilter,
+        yearFilter,
+        movieCategory,
+        seriesCategory,
+        israeliCategory,
+        telegramCategory,
+        showSearch
+      })}
+      data-root-request-key={currentRootRequestKey}
+      data-sidebar-open={String(!isLocked)}
+      data-search-open={String(showSearch)}
+      data-poster-count={String(displayMovies.length)}
+    >
       <Canvas camera={{ position: [0, 1.6, 2], fov: 75 }}>
         <ambientLight intensity={0.52} />
         <directionalLight position={[0, 6.8, 6]} intensity={0.9} color="#d7f7ff" />
@@ -3101,7 +3124,7 @@ export default function App() {
           <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="hc-panel hc-tv-safe-top-right absolute z-50 w-[35rem] p-6" data-tv-scope="ui">
             <div className="flex items-center gap-4">
               <div className="hc-badge px-4 py-4 text-[#00ffcc]"><Search size={24} /></div>
-              <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="חפש סרט או סדרה..." className="hc-input flex-1 border-none bg-transparent px-0 py-0 text-2xl shadow-none focus:border-none focus:bg-transparent focus:shadow-none" />
+              <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="חפש סרט או סדרה..." data-testid="search-input" className="hc-input flex-1 border-none bg-transparent px-0 py-0 text-2xl shadow-none focus:border-none focus:bg-transparent focus:shadow-none" />
               {isSearchingTmdb && <Loader2 className="animate-spin text-[#00ffcc]" />}
               <button onClick={closeSearchSurface} className="hc-close-button p-2 opacity-80"><X /></button>
             </div>

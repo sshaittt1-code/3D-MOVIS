@@ -25,6 +25,12 @@ export const buildApiUrl = (base: string, path: string) =>
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const isDomExceptionLike = (value: unknown, name: string) =>
+  typeof value === 'object'
+  && value !== null
+  && 'name' in value
+  && (value as { name?: string }).name === name;
+
 const createAbortSignal = (timeoutMs: number | undefined, externalSignal?: AbortSignal) => {
   const controller = new AbortController();
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -116,11 +122,31 @@ export const fetchApiJson = async <T = any>(
 
       return safeParseJson<T>(bodyText, {} as T);
     } catch (error: any) {
+      const abortReason = signal.aborted ? (signal as AbortSignal & { reason?: unknown }).reason : undefined;
+      const timedOut = isDomExceptionLike(abortReason, 'TimeoutError') || isDomExceptionLike(error, 'TimeoutError');
+
+      if ((error?.name === 'AbortError' || isDomExceptionLike(error, 'AbortError')) && !timedOut) {
+        throw new DOMException(error?.message || 'The operation was aborted.', 'AbortError');
+      }
+
       const normalizedError = error instanceof ApiClientError
         ? error
-        : new ApiClientError(error?.message || 'Network request failed', {
-            transient: error?.name === 'AbortError' || error?.name === 'TimeoutError'
-          });
+        : new ApiClientError(
+            timedOut ? 'Request timed out' : (error?.message || 'Network request failed'),
+            {
+              status: timedOut ? 408 : undefined,
+              transient: timedOut
+            }
+          );
+
+      if (
+        !timedOut
+        && !(error instanceof ApiClientError)
+        && error?.name !== 'AbortError'
+        && !isDomExceptionLike(error, 'AbortError')
+      ) {
+        normalizedError.transient = true;
+      }
 
       if (!shouldRetry(normalizedError, attempt, retryCount, method)) {
         throw normalizedError;
