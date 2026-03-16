@@ -373,21 +373,59 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
 
 const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocused, watchStatus }: any) => {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
+  const [textureFailed, setTextureFailed] = useState(false);
   const [showText, setShowText] = useState(false);
   const groupRef = useRef<THREE.Group>(null!);
   const previewFetchAttempted = useRef(false);
   const fullFetchAttempted = useRef(false);
   const previewUrl = movie.posterThumb || movie.poster;
   const fullUrl = movie.poster || movie.posterThumb;
+  const placeholderColor = useMemo(() => {
+    const source = `${movie.mediaType || 'movie'}:${movie.title || movie.id || 'poster'}`;
+    let hash = 0;
+    for (let index = 0; index < source.length; index += 1) {
+      hash = (hash * 31 + source.charCodeAt(index)) >>> 0;
+    }
+    const hue = hash % 360;
+    return `hsl(${hue} 58% 22%)`;
+  }, [movie.id, movie.mediaType, movie.title]);
+  const placeholderAccent = useMemo(() => {
+    const source = `${movie.year || 0}:${movie.genre || movie.title || 'poster'}`;
+    let hash = 17;
+    for (let index = 0; index < source.length; index += 1) {
+      hash = (hash * 37 + source.charCodeAt(index)) >>> 0;
+    }
+    const hue = hash % 360;
+    return `hsl(${hue} 82% 62%)`;
+  }, [movie.genre, movie.title, movie.year]);
+
+  const applyLoadedTexture = useCallback((nextTexture: THREE.Texture | null) => {
+    if (!nextTexture) return;
+    setTextureFailed(false);
+    setTexture(nextTexture);
+  }, []);
+
+  const markTextureFailure = useCallback(() => {
+    setTextureFailed(true);
+  }, []);
 
   useEffect(() => {
     previewFetchAttempted.current = false;
     fullFetchAttempted.current = false;
-    setTexture(fullUrl ? textureManager.getTexture(fullUrl) : null);
-    if (!textureManager.getTexture(fullUrl) && previewUrl) {
-      setTexture(textureManager.getTexture(previewUrl));
+    setTextureFailed(false);
+
+    const cachedFull = fullUrl ? textureManager.getTexture(fullUrl) : null;
+    const cachedPreview = previewUrl ? textureManager.getTexture(previewUrl) : null;
+    if (cachedFull) {
+      applyLoadedTexture(cachedFull);
+      return;
     }
-  }, [fullUrl, previewUrl]);
+    if (cachedPreview) {
+      applyLoadedTexture(cachedPreview);
+      return;
+    }
+    setTexture(null);
+  }, [applyLoadedTexture, fullUrl, previewUrl]);
 
   useFrame((state) => { 
     if (!groupRef.current) return;
@@ -401,16 +439,22 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
 
     if (isVisible && previewUrl && !previewFetchAttempted.current) {
       previewFetchAttempted.current = true;
-      textureManager.loadTexture(previewUrl).then(tex => setTexture(tex)).catch(() => null);
+      textureManager.loadTexture(previewUrl).then((tex) => applyLoadedTexture(tex)).catch(() => {
+        markTextureFailure();
+      });
     }
 
     const shouldUpgradeToFull = isFocused || distZ < 12;
     if (isVisible && shouldUpgradeToFull && fullUrl && fullUrl !== previewUrl && !fullFetchAttempted.current) {
       fullFetchAttempted.current = true;
-      textureManager.loadTexture(fullUrl).then(tex => setTexture(tex)).catch(() => null);
+      textureManager.loadTexture(fullUrl).then((tex) => applyLoadedTexture(tex)).catch(() => {
+        markTextureFailure();
+      });
     } else if (isVisible && fullUrl === previewUrl && fullUrl && !fullFetchAttempted.current) {
       fullFetchAttempted.current = true;
-      textureManager.loadTexture(fullUrl).then(tex => setTexture(tex)).catch(() => null);
+      textureManager.loadTexture(fullUrl).then((tex) => applyLoadedTexture(tex)).catch(() => {
+        markTextureFailure();
+      });
     }
   });
 
@@ -422,12 +466,49 @@ const Poster = ({ movie, position, rotation, isFocused, isFavorited, isHeartFocu
     <group position={position} rotation={rotation} ref={groupRef}>
       <mesh name="poster_mesh" userData={{ uniqueId: movie.uniqueId }} position={[0, 0, 0.01]}>
         <planeGeometry args={[2.5, 3.75]} />
-        <meshStandardMaterial map={texture} color={texture ? (isFocused ? '#ffffff' : '#acacac') : '#1c2730'} />
+        <meshStandardMaterial
+          map={texture}
+          color={texture ? (isFocused ? '#ffffff' : '#acacac') : placeholderColor}
+          emissive={texture ? '#000000' : placeholderAccent}
+          emissiveIntensity={texture ? 0 : (isFocused ? 0.28 : 0.14)}
+        />
       </mesh>
       <mesh name="poster_mesh" userData={{ uniqueId: movie.uniqueId }} position={[0, 0, -0.02]}>
         <planeGeometry args={[2.6, 3.85]} />
         <meshBasicMaterial color={isFocused ? '#00ffcc' : '#111111'} />
       </mesh>
+      {!texture && (
+        <>
+          <mesh position={[0, 0.95, 0.04]}>
+            <planeGeometry args={[1.9, 0.12]} />
+            <meshBasicMaterial color={placeholderAccent} transparent opacity={0.9} />
+          </mesh>
+          <Text
+            position={[0, 0.18, 0.05]}
+            fontSize={0.34}
+            color="#f8fafc"
+            anchorX="center"
+            anchorY="middle"
+            maxWidth={1.9}
+            textAlign="center"
+          >
+            {movie.title}
+          </Text>
+          <Text
+            position={[0, -1.05, 0.05]}
+            fontSize={0.18}
+            color={textureFailed ? '#fca5a5' : '#cbd5f5'}
+            anchorX="center"
+            anchorY="middle"
+            maxWidth={1.95}
+            textAlign="center"
+          >
+            {textureFailed
+              ? `פוסטר לא זמין${movie.year ? ` · ${movie.year}` : ''}`
+              : [movie.genre, movie.year].filter(Boolean).join(' · ') || 'טוען פוסטר...'}
+          </Text>
+        </>
+      )}
       <mesh name="heart_mesh" userData={{ uniqueId: movie.uniqueId }} position={[1.05, 2.05, 0.05]}>
         <circleGeometry args={[0.38, 16]} />
         <meshBasicMaterial color={heartColor} transparent opacity={0.85} />

@@ -17,6 +17,13 @@ test('shouldHandleGlobalTvBack ignores editable targets', () => {
   );
 });
 
+test('shouldHandleGlobalTvBack still allows Escape from editable search inputs', () => {
+  assert.equal(
+    shouldHandleGlobalTvBack({ key: 'Escape' }, { isEditableTarget: true, hasLocalBackHandler: false }),
+    true
+  );
+});
+
 test('shouldHandleGlobalTvBack ignores ui scope targets', () => {
   assert.equal(
     shouldHandleGlobalTvBack({ key: 'Escape' }, { hasLocalBackHandler: true }),

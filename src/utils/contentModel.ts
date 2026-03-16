@@ -209,8 +209,8 @@ const buildFallbackItem = (item: CorridorItem): CorridorItem => ({
 
 export const FALLBACK_LIBRARY: Record<FeedTarget, CorridorItem[]> = {
   movies: [
-    buildFallbackItem({ id: 27205, title: 'Inception', genre: 'Sci-Fi', rating: 8.8, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/8Z8dpt8NqCvxu4XTEcXCFCISCE0.jpg', desc: 'A dream-infiltration heist bends reality in every corridor.', mediaType: 'movie', year: 2010 }),
-    buildFallbackItem({ id: 157336, title: 'Interstellar', genre: 'Sci-Fi', rating: 8.6, popularity: 94, poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MvrIdlsR.jpg', desc: 'Explorers cross a wormhole to save humanity from collapse.', mediaType: 'movie', year: 2014 }),
+    buildFallbackItem({ id: 27205, title: 'Inception', genre: 'Sci-Fi', rating: 8.8, popularity: 95, poster: 'https://picsum.photos/seed/inception-fallback/500/750', desc: 'A dream-infiltration heist bends reality in every corridor.', mediaType: 'movie', year: 2010 }),
+    buildFallbackItem({ id: 157336, title: 'Interstellar', genre: 'Sci-Fi', rating: 8.6, popularity: 94, poster: 'https://picsum.photos/seed/interstellar-fallback/500/750', desc: 'Explorers cross a wormhole to save humanity from collapse.', mediaType: 'movie', year: 2014 }),
     buildFallbackItem({ id: 155, title: 'The Dark Knight', genre: 'Action', rating: 9.0, popularity: 98, poster: 'https://image.tmdb.org/t/p/w500/qJ2tW6WMUDux911r6m7haRef0WH.jpg', desc: 'Batman faces chaos itself in Gotham City.', mediaType: 'movie', year: 2008 }),
     buildFallbackItem({ id: 438631, title: 'Dune', genre: 'Sci-Fi', rating: 8.0, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/d5NXSklXo0qyIYkgV94XAgMIckC.jpg', desc: 'A noble heir is thrust into a deadly battle for Arrakis.', mediaType: 'movie', year: 2021 }),
     buildFallbackItem({ id: 76341, title: 'Mad Max: Fury Road', genre: 'Action', rating: 8.1, popularity: 92, poster: 'https://image.tmdb.org/t/p/w500/hA2ple9q4qnwxp3hKVNhroipsir.jpg', desc: 'A relentless high-octane escape through a brutal wasteland.', mediaType: 'movie', year: 2015 }),
@@ -222,9 +222,9 @@ export const FALLBACK_LIBRARY: Record<FeedTarget, CorridorItem[]> = {
   ],
   series: [
     buildFallbackItem({ id: 1396, title: 'Breaking Bad', genre: 'Drama', rating: 9.5, popularity: 97, poster: 'https://image.tmdb.org/t/p/w500/ztkUQFLlC19CCMYHW9o1zWhJRNq.jpg', desc: 'A chemistry teacher transforms into a drug kingpin.', mediaType: 'tv', year: 2008 }),
-    buildFallbackItem({ id: 60059, title: 'Better Call Saul', genre: 'Drama', rating: 8.9, popularity: 90, poster: 'https://image.tmdb.org/t/p/w500/fC2HDm5t0kHl7Mzh9rhXc32G7DG.jpg', desc: 'The rise of Jimmy McGill before he becomes Saul Goodman.', mediaType: 'tv', year: 2015 }),
+    buildFallbackItem({ id: 60059, title: 'Better Call Saul', genre: 'Drama', rating: 8.9, popularity: 90, poster: 'https://picsum.photos/seed/better-call-saul-fallback/500/750', desc: 'The rise of Jimmy McGill before he becomes Saul Goodman.', mediaType: 'tv', year: 2015 }),
     buildFallbackItem({ id: 66732, title: 'Stranger Things', genre: 'Sci-Fi', rating: 8.7, popularity: 95, poster: 'https://image.tmdb.org/t/p/w500/49WJfeN0moxb9IPfGn8AIqMGskD.jpg', desc: 'A small town uncovers a terrifying alternate dimension.', mediaType: 'tv', year: 2016 }),
-    buildFallbackItem({ id: 70523, title: 'Dark', genre: 'Mystery', rating: 8.8, popularity: 85, poster: 'https://image.tmdb.org/t/p/w500/5LoVkW3zU6jVHiw82qAtfKgnYDj.jpg', desc: 'A missing child reveals a web of time-travel secrets.', mediaType: 'tv', year: 2017 }),
+    buildFallbackItem({ id: 70523, title: 'Dark', genre: 'Mystery', rating: 8.8, popularity: 85, poster: 'https://picsum.photos/seed/dark-fallback/500/750', desc: 'A missing child reveals a web of time-travel secrets.', mediaType: 'tv', year: 2017 }),
     buildFallbackItem({ id: 95396, title: 'Severance', genre: 'Thriller', rating: 8.6, popularity: 83, poster: 'https://image.tmdb.org/t/p/w500/jcEl8SISNfGdlQFwLzeEtsjDvpw.jpg', desc: 'Office workers undergo a procedure that splits work from self.', mediaType: 'tv', year: 2022 }),
     buildFallbackItem({ id: 100088, title: 'The Last of Us', genre: 'Drama', rating: 8.8, popularity: 92, poster: 'https://image.tmdb.org/t/p/w500/uKvVjHNqB5VmOrdxqAt2F7J78ED.jpg', desc: 'A hardened survivor escorts a girl across a collapsed world.', mediaType: 'tv', year: 2023 })
   ],
