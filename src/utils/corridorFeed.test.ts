@@ -64,6 +64,13 @@ test('resolveRootRouteState clears irrelevant filters when switching to series',
   });
 });
 
+test('resolveRootRouteState ignores library-only routes', () => {
+  assert.equal(resolveRootRouteState({ target: 'favorites' }), null);
+  assert.equal(resolveRootRouteState({ target: 'history' }), null);
+  assert.equal(resolveRootRouteState({ target: 'continue_watching' }), null);
+  assert.equal(resolveRootRouteState({ target: 'search' }), null);
+});
+
 test('buildRootRequestKey stays isolated across root datasets', () => {
   const movies = buildRootRequestKey({ target: 'movies', category: 'popular', genreId: 28, year: '2025' });
   const series = buildRootRequestKey({ target: 'series', category: 'popular', year: '2025' });

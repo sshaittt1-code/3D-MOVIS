@@ -7,7 +7,9 @@ export type MenuRoute =
   | { target: 'movies'; category?: FeedCategory; genreId?: number | null; year?: YearFilter }
   | { target: 'series'; category?: FeedCategory; genreLabel?: string | null; year?: YearFilter }
   | { target: 'israeli'; category?: FeedCategory; year?: YearFilter }
+  | { target: 'continue_watching' }
   | { target: 'favorites' }
+  | { target: 'history' }
   | { target: 'search' };
 
 export type SideMenuItem =
@@ -79,11 +81,15 @@ const israeliCategoryItem = (id: string, label: string, description: string, cat
 export const buildSideMenuGroups = ({
   movieGenres,
   seriesGenres,
-  favoritesCount
+  continueWatchingCount,
+  favoritesCount,
+  historyCount
 }: {
   movieGenres: GenreOption[];
   seriesGenres: string[];
+  continueWatchingCount: number;
   favoritesCount: number;
+  historyCount: number;
 }): SideMenuGroup[] => {
   const movieGenreItems = movieGenres
     .filter((genre) => genre.tmdbId)
@@ -92,7 +98,7 @@ export const buildSideMenuGroups = ({
       id: `movies-genre-${genre.tmdbId}`,
       label: genre.name,
       description: `סרטים בז'אנר ${genre.name}`,
-      icon: '◌',
+      icon: '✦',
       kind: 'route' as const,
       route: { target: 'movies' as const, category: 'popular' as const, genreId: genre.tmdbId }
     }));
@@ -101,7 +107,7 @@ export const buildSideMenuGroups = ({
     id: `movies-year-${year}`,
     label: year,
     description: `סרטים משנה ${year}`,
-    icon: '◍',
+    icon: '⌛',
     kind: 'route' as const,
     route: { target: 'movies' as const, category: 'popular' as const, year: year as YearFilter }
   }));
@@ -110,7 +116,7 @@ export const buildSideMenuGroups = ({
     id: `series-genre-${genreLabel}`,
     label: genreLabel,
     description: `סדרות בז'אנר ${genreLabel}`,
-    icon: '◌',
+    icon: '✦',
     kind: 'route' as const,
     route: { target: 'series' as const, category: 'popular' as const, genreLabel }
   }));
@@ -119,7 +125,7 @@ export const buildSideMenuGroups = ({
     id: `series-year-${year}`,
     label: year,
     description: `סדרות משנה ${year}`,
-    icon: '◍',
+    icon: '⌛',
     kind: 'route' as const,
     route: { target: 'series' as const, category: 'popular' as const, year: year as YearFilter }
   }));
@@ -131,17 +137,19 @@ export const buildSideMenuGroups = ({
       subtitle: 'החלפה מיידית של המסדרון',
       defaultExpanded: true,
       items: [
-        { id: 'quick-movies', label: 'סרטים', description: 'מסדרון הסרטים הראשי', icon: '🎥', tone: 'accent', kind: 'route', route: { target: 'movies', category: 'popular' } },
-        { id: 'quick-series', label: 'סדרות', description: 'מסדרון סדרות בלבד', icon: '📺', tone: 'accent', kind: 'route', route: { target: 'series', category: 'popular' } },
-        { id: 'quick-israeli', label: 'ישראלי', description: 'סרטים וסדרות ישראליים במסדרון עצמאי', icon: '🇮🇱', tone: 'accent', kind: 'route', route: { target: 'israeli', category: 'popular' } },
+        { id: 'quick-movies', label: 'סרטים', description: 'המסדרון הראשי של הסרטים', icon: '🎥', tone: 'accent', kind: 'route', route: { target: 'movies', category: 'popular' } },
+        { id: 'quick-series', label: 'סדרות', description: 'מסדרון הסדרות הראשי', icon: '📺', tone: 'accent', kind: 'route', route: { target: 'series', category: 'popular' } },
+        { id: 'quick-israeli', label: 'ישראלי', description: 'סרטים וסדרות ישראליים במסדרון נפרד', icon: '🇮🇱', tone: 'accent', kind: 'route', route: { target: 'israeli', category: 'popular' } },
+        { id: 'quick-continue', label: `המשך צפייה (${continueWatchingCount})`, description: 'חזרה מהירה לתוכן שעצרת באמצע', icon: '▶', kind: 'route', route: { target: 'continue_watching' } },
         { id: 'quick-favorites', label: `מועדפים (${favoritesCount})`, description: 'כל מה שסימנת במקום אחד', icon: '♥', kind: 'route', route: { target: 'favorites' } },
+        { id: 'quick-history', label: `היסטוריה (${historyCount})`, description: 'צפיות אחרונות, מסודר לפי זמן', icon: '🕘', kind: 'route', route: { target: 'history' } },
         { id: 'quick-search', label: 'חיפוש', description: 'חיפוש ישיר שמחליף את המסדרון', icon: '⌕', kind: 'route', route: { target: 'search' } }
       ]
     },
     {
       id: 'movies',
       title: 'סרטים',
-      subtitle: 'קטגוריות, ז׳אנרים ושנים',
+      subtitle: "קטגוריות, ז'אנרים ושנים",
       defaultExpanded: true,
       items: [
         movieCategoryItem('movies-popular', 'פופולרי', 'מה שנצפה ומדובר עכשיו', 'popular'),
@@ -158,9 +166,9 @@ export const buildSideMenuGroups = ({
       title: 'סדרות',
       subtitle: 'מעברים ישירים למסדרונות סדרות בלבד',
       items: [
-        seriesCategoryItem('series-popular', 'פופולרי', 'סדרות פופולריות כרגע', 'popular'),
+        seriesCategoryItem('series-popular', 'פופולרי', 'סדרות בולטות כרגע', 'popular'),
         seriesCategoryItem('series-top-rated', 'הכי מדורג', 'לפי איכות והצבעות', 'top_rated'),
-        seriesCategoryItem('series-trending', 'טרנדי', 'מה שחם השבוע', 'trending'),
+        seriesCategoryItem('series-trending', 'טרנדי', 'מה חם השבוע', 'trending'),
         seriesCategoryItem('series-active', 'פעילות לאחרונה', 'סדרות עם פעילות חדשה', 'recently_active'),
         seriesCategoryItem('series-random', 'מיקס אקראי', 'גילוי סדרות בצורה חופשית', 'random'),
         ...seriesGenreItems,
@@ -176,7 +184,7 @@ export const buildSideMenuGroups = ({
         israeliCategoryItem('israeli-top-rated', 'הכי מדורג', 'דירוגים גבוהים בתוכן ישראלי', 'top_rated'),
         israeliCategoryItem('israeli-trending', 'טרנדי', 'מה חם עכשיו בתוכן ישראלי', 'trending'),
         israeliCategoryItem('israeli-recent', 'פעילות לאחרונה', 'יצירות ישראליות חדשות ורלוונטיות', 'recently_active'),
-        israeliCategoryItem('israeli-random', 'מיקס אקראי', 'גילוי אקראי של תוכן ישראלי', 'random')
+        israeliCategoryItem('israeli-random', 'מיקס אקראי', 'גילוי חופשי של תוכן ישראלי', 'random')
       ]
     },
     {
@@ -213,7 +221,9 @@ export const getActiveMenuItemId = ({
   showSearch: boolean;
 }) => {
   if (showSearch) return 'quick-search';
+  if (librarySection === 'continue_watching') return 'quick-continue';
   if (librarySection === 'favorites') return 'quick-favorites';
+  if (librarySection === 'history') return 'quick-history';
   if (librarySection === 'israeli') {
     if (yearFilter !== 'all') return 'quick-israeli';
     return israeliCategory === 'top_rated'

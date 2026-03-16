@@ -102,6 +102,12 @@ import {
   resolveRuntimePerformanceProfile,
   shouldRunBackgroundWarmup
 } from './utils/runtimePerformance';
+import {
+  classifySearchSource,
+  deriveLibraryCollections,
+  getSearchSourceLabel,
+  summarizeSearchResultsBySource
+} from './utils/libraryState';
 
 // --- API Helpers ---
 const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://threed-movis.onrender.com';
@@ -514,7 +520,7 @@ export default function App() {
 
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searchResults, setSearchResults] = useState<CorridorItem[]>([]);
   const [isSearchingTmdb, setIsSearchingTmdb] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [posterContextMovie, setPosterContextMovie] = useState<any>(null);
@@ -554,8 +560,25 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
-  const favorites = useMemo(() => Object.values(mediaStateMap).filter(e => e.favorite).map(e => e.snapshot), [mediaStateMap]);
-  const watchHistory = useMemo(() => Object.values(mediaStateMap).filter(e => e.lastWatchedAt).sort((a,b) => (b.lastWatchedAt||0) - (a.lastWatchedAt||0)).map(e => e.snapshot), [mediaStateMap]);
+  const libraryCollections = useMemo(() => deriveLibraryCollections({
+    mediaStateMap,
+    catalogItems: [...baseMovies, ...seriesItems, ...israeliItems]
+  }), [mediaStateMap, baseMovies, seriesItems, israeliItems]);
+  const favorites = libraryCollections.favorites;
+  const watchHistory = libraryCollections.history;
+  const continueWatching = libraryCollections.continueWatching;
+  const searchPool = libraryCollections.searchPool;
+  const searchSpotlight = libraryCollections.spotlight;
+  const searchSourceLookup = libraryCollections.sourceLookup;
+  const librarySourceSummaries = libraryCollections.sourceSummaries;
+  const searchResultSourceSummaries = useMemo(
+    () => summarizeSearchResultsBySource(searchResults, searchSourceLookup),
+    [searchResults, searchSourceLookup]
+  );
+  const searchPreviewItems = useMemo(
+    () => (searchQuery.trim() ? searchResults.slice(0, 5) : searchSpotlight),
+    [searchQuery, searchResults, searchSpotlight]
+  );
   const shellSnapshot = useMemo(() => ({
     hasActiveMedia: Boolean(activeMedia),
     hasPosterContextMovie: Boolean(posterContextMovie),
@@ -1626,7 +1649,7 @@ export default function App() {
 
   const loadContentForCurrentSection = useCallback(async () => {
     if (showSearch || navContext) return;
-    if (librarySection === 'favorites' || librarySection === 'history') return;
+    if (librarySection === 'favorites' || librarySection === 'history' || librarySection === 'continue_watching') return;
 
     const { target, category, genreId, year } = getCurrentRootContext();
     const rootRequestKey = getCurrentRootRequestKey();
@@ -1732,7 +1755,7 @@ export default function App() {
 
   const loadMoreContent = useCallback(async () => {
     if (isLoadingMore || !hasMore || showSearch || navContext) return;
-    if (librarySection === 'favorites' || librarySection === 'history') return;
+    if (librarySection === 'favorites' || librarySection === 'history' || librarySection === 'continue_watching') return;
 
     const { target, category, genreId, year } = getCurrentRootContext();
     const rootRequestKey = getCurrentRootRequestKey();
@@ -1826,6 +1849,18 @@ export default function App() {
       return;
     }
 
+    if (route.target === 'history') {
+      setLibrarySection('history');
+      setIsLocked(true);
+      return;
+    }
+
+    if (route.target === 'continue_watching') {
+      setLibrarySection('continue_watching');
+      setIsLocked(true);
+      return;
+    }
+
     const nextRouteState = resolveRootRouteState(route);
     if (nextRouteState) {
       setLibrarySection(nextRouteState.librarySection);
@@ -1894,7 +1929,7 @@ export default function App() {
       return;
     }
 
-    const localMatches = rankSearchResults([...favorites, ...watchHistory, ...baseMovies, ...seriesItems, ...israeliItems], trimmedQuery);
+    const localMatches = rankSearchResults(searchPool, trimmedQuery);
     setSearchResults(localMatches.slice(0, 15));
     setSearchError(null);
 
@@ -1913,7 +1948,10 @@ export default function App() {
 
       if (requestId !== predictiveSearchRequestRef.current) return;
 
-      const remoteResults = Array.isArray(data.results) ? data.results : [];
+      const remoteResults = normalizeCatalogPage(
+        Array.isArray(data.results) ? data.results : [],
+        'movie'
+      );
       const combined = rankSearchResults([...localMatches, ...remoteResults], trimmedQuery);
       setSearchResults(combined.slice(0, 30));
       setSearchError(null);
@@ -1930,7 +1968,7 @@ export default function App() {
         }
       }
     }
-  }, [favorites, watchHistory, baseMovies, seriesItems, israeliItems, normalizedApiBase, abortPendingSearch]);
+  }, [searchPool, normalizedApiBase, abortPendingSearch]);
 
   useEffect(() => {
     if (!showSearch) return;
@@ -2031,7 +2069,7 @@ export default function App() {
 
   const nearEndTriggerKey = useMemo(() => {
     if (!hasMore || isLoadingMore || showSearch || navContext) return null;
-    if (librarySection === 'favorites' || librarySection === 'history') return null;
+    if (librarySection === 'favorites' || librarySection === 'history' || librarySection === 'continue_watching') return null;
     return `${buildLoadMorePageKey(currentRootRequestKey, contentPage + 1)}::retry:${nearEndGeneration}`;
   }, [hasMore, isLoadingMore, showSearch, navContext, librarySection, currentRootRequestKey, contentPage, nearEndGeneration]);
 
@@ -2039,6 +2077,7 @@ export default function App() {
     if (showSearch) return decorateCorridorItems(searchResults, 'search');
     if (navContext?.type === 'seasons') return decorateCorridorItems(navContext.seasons, `seasons:${navContext.seriesId}`);
     if (navContext?.type === 'episodes') return decorateCorridorItems(navContext.episodes, `episodes:${navContext.seriesId}:${navContext.seasonNum}`);
+    if (librarySection === 'continue_watching') return decorateCorridorItems(continueWatching, 'continue_watching');
     if (librarySection === 'favorites') return decorateCorridorItems(favorites, 'favorites');
     if (librarySection === 'history') return decorateCorridorItems(watchHistory, 'history');
 
@@ -2047,7 +2086,15 @@ export default function App() {
       applyCatalogFilters(base, { sortMode, yearFilter, genreFilter: activeGenreFilter, randomSeed: shuffleSeed }),
       currentRootRequestKey
     );
-  }, [showSearch, searchResults, navContext, librarySection, favorites, watchHistory, seriesItems, israeliItems, baseMovies, sortMode, yearFilter, activeGenreFilter, shuffleSeed, currentRootRequestKey]);
+  }, [showSearch, searchResults, navContext, librarySection, continueWatching, favorites, watchHistory, seriesItems, israeliItems, baseMovies, sortMode, yearFilter, activeGenreFilter, shuffleSeed, currentRootRequestKey]);
+
+  const emptyLibraryStateMessage = useMemo(() => {
+    if (showSearch || navContext || isLoadingContent || displayMovies.length > 0) return null;
+    if (librarySection === 'continue_watching') return 'עדיין אין תכנים להמשך צפייה';
+    if (librarySection === 'favorites') return 'עדיין לא סימנת תכנים כמועדפים';
+    if (librarySection === 'history') return 'היסטוריית הצפייה שלך תופיע כאן אחרי שתתחיל לצפות';
+    return null;
+  }, [showSearch, navContext, isLoadingContent, displayMovies.length, librarySection]);
 
   const displayMoviesRef = useRef(displayMovies);
   useEffect(() => { displayMoviesRef.current = displayMovies; }, [displayMovies]);
@@ -2187,6 +2234,18 @@ export default function App() {
         </div>
       )}
 
+      {emptyLibraryStateMessage && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 text-center">
+          <div className="rounded-[32px] border border-white/10 bg-black/60 px-8 py-6 backdrop-blur-xl">
+            <div className="text-xl font-semibold text-white">{emptyLibraryStateMessage}</div>
+            <div className="mt-2 text-sm text-white/55">אפשר לפתוח את הסרגל הראשי ולעבור לקטלוג, לחיפוש או לטלגרם.</div>
+          </div>
+          <button onClick={() => setIsLocked(false)} className="rounded-full border border-[#00ffcc]/30 bg-[#00ffcc]/12 px-6 py-3 text-sm text-[#7debd6]">
+            פתח תפריט ראשי
+          </button>
+        </div>
+      )}
+
       <AnimatePresence>
         {showSearch && isLocked && (
           <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="absolute top-10 right-10 z-50 w-[35rem] p-6 bg-black/80 backdrop-blur-xl border border-[#00ffcc]/30 rounded-[40px] shadow-2xl" data-tv-scope="ui">
@@ -2196,14 +2255,56 @@ export default function App() {
               {isSearchingTmdb && <Loader2 className="animate-spin text-[#00ffcc]" />}
               <button onClick={closeSearchSurface} className="p-2 opacity-50"><X /></button>
             </div>
+            {!searchError && (searchQuery.trim() ? searchResultSourceSummaries : librarySourceSummaries).length > 0 && (
+              <div className="mt-5 flex flex-wrap gap-2">
+                {(searchQuery.trim() ? searchResultSourceSummaries : librarySourceSummaries).map((summary) => (
+                  <div key={summary.id} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/75">
+                    {summary.label} ({summary.count})
+                  </div>
+                ))}
+              </div>
+            )}
             {searchError && (
               <div className="mt-6 text-center text-red-400">{searchError}</div>
+            )}
+            {!searchError && !searchQuery.trim() && (
+              <div className="mt-6 text-center text-sm text-white/60">התחל להקליד כדי להחליף את המסדרון בתוצאות חיפוש. עד אז מוצגים כאן קיצורי הדרך של הספרייה האישית שלך.</div>
             )}
             {!searchError && searchQuery.trim().length > 0 && searchQuery.trim().length < 3 && !isSearchingTmdb && (
               <div className="mt-6 text-center text-gray-500">הקלד לפחות 3 תווים לחיפוש</div>
             )}
             {!searchError && searchResults.length === 0 && searchQuery.trim().length >= 3 && !isSearchingTmdb && (
               <div className="mt-6 text-center text-gray-500">לא נמצאו תוצאות</div>
+            )}
+            {!searchError && searchPreviewItems.length > 0 && (
+              <div className="mt-6 rounded-[28px] border border-white/8 bg-white/[0.04] p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-semibold text-white">
+                    {searchQuery.trim() ? 'התאמות מובילות' : 'ממשיכים מאיפה שעצרת'}
+                  </div>
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#7debd6]">
+                    {searchQuery.trim() ? 'Live corridor results' : 'Your library'}
+                  </div>
+                </div>
+                <div className="mt-3 space-y-2">
+                  {searchPreviewItems.map((item) => (
+                    <div key={`${item.mediaType}:${item.id}`} className="flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-black/20 px-4 py-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold text-white">{item.localizedTitle || item.title}</div>
+                        <div className="mt-1 truncate text-xs text-white/45">{item.seriesTitle || item.originalTitle || item.genre || item.mediaType}</div>
+                      </div>
+                      <div className="shrink-0 rounded-full border border-[#00ffcc]/20 bg-[#00ffcc]/10 px-3 py-1 text-[11px] text-[#7debd6]">
+                        {getSearchSourceLabel(classifySearchSource(item, searchSourceLookup))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 text-xs text-white/45">
+                  {searchQuery.trim()
+                    ? 'התוצאות המלאות כבר נטענו במסדרון, כך שאפשר לבחור אותן מיד עם השלט.'
+                    : 'המשך צפייה, מועדפים והיסטוריה זמינים גם כמסדרונות קבועים דרך הסרגל הראשי.'}
+                </div>
+              </div>
             )}
           </motion.div>
         )}
@@ -2280,7 +2381,13 @@ export default function App() {
 
       <SideMenu
         isOpen={!isLocked}
-        groups={buildSideMenuGroups({ movieGenres: [], seriesGenres: [], favoritesCount: favorites.length })}
+        groups={buildSideMenuGroups({
+          movieGenres: [],
+          seriesGenres: [],
+          continueWatchingCount: continueWatching.length,
+          favoritesCount: favorites.length,
+          historyCount: watchHistory.length
+        })}
         activeItemId={getActiveMenuItemId({
           librarySection,
           activeGenreId: movieGenreId,
@@ -2293,6 +2400,7 @@ export default function App() {
         })}
         currentLabel={
           showSearch ? 'חיפוש'
+            : librarySection === 'continue_watching' ? 'המשך צפייה'
             : librarySection === 'favorites' ? 'מועדפים'
               : librarySection === 'history' ? 'היסטוריה'
                 : librarySection === 'series' ? 'סדרות'

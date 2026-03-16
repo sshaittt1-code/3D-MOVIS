@@ -14,3 +14,27 @@ test('getActiveMenuItemId keeps israeli as a standalone root section', () => {
     showSearch: false
   }), 'israeli-popular');
 });
+
+test('getActiveMenuItemId surfaces history and continue watching roots', () => {
+  assert.equal(getActiveMenuItemId({
+    librarySection: 'history',
+    activeGenreId: null,
+    seriesGenreFilter: null,
+    yearFilter: 'all',
+    movieCategory: 'popular',
+    seriesCategory: 'popular',
+    israeliCategory: 'popular',
+    showSearch: false
+  }), 'quick-history');
+
+  assert.equal(getActiveMenuItemId({
+    librarySection: 'continue_watching',
+    activeGenreId: null,
+    seriesGenreFilter: null,
+    yearFilter: 'all',
+    movieCategory: 'popular',
+    seriesCategory: 'popular',
+    israeliCategory: 'popular',
+    showSearch: false
+  }), 'quick-continue');
+});

@@ -54,7 +54,14 @@ export const buildRootRequestKey = ({
 ].join('|');
 
 export const resolveRootRouteState = (route: MenuRoute): RootRouteState | null => {
-  if (route.target === 'favorites' || route.target === 'search') return null;
+  if (
+    route.target === 'favorites'
+    || route.target === 'history'
+    || route.target === 'continue_watching'
+    || route.target === 'search'
+  ) {
+    return null;
+  }
 
   if (route.target === 'movies') {
     return {
