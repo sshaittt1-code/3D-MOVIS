@@ -1,0 +1,18 @@
+.git
+.github
+.idea
+.kiro
+.vscode
+node_modules
+dist
+coverage
+build
+android
+Gradient gallery page (1)
+progress.md
+task.md
+tg_session.txt
+*.log
+.env
+.env.*
+!.env.example
