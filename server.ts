@@ -14,6 +14,10 @@ import {
   normalizeSeasonPage,
   type FeedTarget
 } from './src/utils/contentModel';
+import {
+  normalizeTelegramPhoneE164,
+  translateTelegramAuthError
+} from './src/utils/telegramLogin';
 
 const app = express();
 app.use(cors());
@@ -39,8 +43,9 @@ interface LoginSession {
   resolveCode: ((code: string) => void) | null;
   resolvePassword: ((pw: string) => void) | null;
   rejectLogin: ((err: any) => void) | null;
-  stage: 'none' | 'pending_code' | 'pending_password' | 'success' | 'error';
+  stage: 'none' | 'starting' | 'pending_code' | 'pending_password' | 'success' | 'error';
   errorMsg: string;
+  phone: string;
 }
 const loginSessions = new Map<string, LoginSession>();
 
@@ -83,6 +88,18 @@ const getTelegramApiConfig = () => {
     throw new Error('Telegram API credentials are not configured on the server.');
   }
   return { apiId, apiHash };
+};
+
+const waitForLoginSessionStage = async (
+  session: LoginSession,
+  predicate: (stage: LoginSession['stage']) => boolean,
+  timeoutMs = 2200
+) => {
+  const startedAt = Date.now();
+  while (!predicate(session.stage) && Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+  return session.stage;
 };
 
 const readPositiveInt = (value: unknown) => {
@@ -349,8 +366,10 @@ const getClientParam = async (sessionStr: string) => {
 // Start Login Flow
 app.post('/api/tg/startLogin', async (req, res) => {
   try {
-    const phone = readStringValue(req.body?.phone);
-    if (!phone) return res.status(400).json({ error: 'Phone number is required' });
+    const phone = normalizeTelegramPhoneE164(readStringValue(req.body?.phone));
+    if (!phone) {
+      return res.status(400).json({ error: 'מספר הטלפון חייב להיות בפורמט בינלאומי מלא.' });
+    }
     const loginId = crypto.randomUUID();
     const { apiId, apiHash } = getTelegramApiConfig();
 
@@ -362,8 +381,9 @@ app.post('/api/tg/startLogin', async (req, res) => {
       resolveCode: null,
       resolvePassword: null,
       rejectLogin: null,
-      stage: 'pending_code',
-      errorMsg: ''
+      stage: 'starting',
+      errorMsg: '',
+      phone
     };
     loginSessions.set(loginId, sessionObj);
 
@@ -382,7 +402,7 @@ app.post('/api/tg/startLogin', async (req, res) => {
         },
         onError: (err) => {
           sessionObj.stage = 'error';
-          sessionObj.errorMsg = err.message;
+          sessionObj.errorMsg = translateTelegramAuthError(err.message);
           if (sessionObj.rejectLogin) sessionObj.rejectLogin(err);
         }
       }
@@ -390,14 +410,25 @@ app.post('/api/tg/startLogin', async (req, res) => {
       sessionObj.stage = 'success';
     }).catch(err => {
       sessionObj.stage = 'error';
-      sessionObj.errorMsg = err.message;
+      sessionObj.errorMsg = translateTelegramAuthError(err.message);
       console.error('Login error:', err);
     });
 
-    res.json({ success: true, loginId });
+    const stage = await waitForLoginSessionStage(
+      sessionObj,
+      (currentStage) => currentStage !== 'starting'
+    );
+
+    if (stage === 'error') {
+      loginSessions.delete(loginId);
+      await client.disconnect().catch(() => null);
+      return res.status(400).json({ error: sessionObj.errorMsg || 'לא ניתן היה להתחיל את ההתחברות ל-Telegram.' });
+    }
+
+    res.json({ success: true, loginId, stage: 'codeInput', phone });
   } catch (e: any) {
-    const message = getErrorMessage(e);
-    res.status(message.includes('not configured') ? 503 : 500).json({ error: message });
+    const message = translateTelegramAuthError(getErrorMessage(e));
+    res.status(message.includes('לא מוגדר') ? 503 : 500).json({ error: message });
   }
 });
 
@@ -405,12 +436,14 @@ app.post('/api/tg/startLogin', async (req, res) => {
 app.post('/api/tg/submitCode', async (req, res) => {
   const loginId = readStringValue(req.body?.loginId);
   const code = readStringValue(req.body?.code);
-  if (!loginId || !code) return res.status(400).json({ error: 'Login id and code are required.' });
+  if (!loginId || !code) return res.status(400).json({ error: 'חסרים מזהה התחברות או קוד אימות.' });
   const sessionObj = loginSessions.get(loginId);
-  if (!sessionObj) return res.status(404).json({ error: 'Login session expired or not found.' });
+  if (!sessionObj) return res.status(404).json({ error: 'סשן ההתחברות פג. שלח קוד מחדש.' });
 
   if (sessionObj.resolveCode) {
-    sessionObj.resolveCode(code);
+    const resolveCode = sessionObj.resolveCode;
+    sessionObj.resolveCode = null;
+    resolveCode(code);
 
     // Wait for the signInUser promise to progress to either success, error, or password state
     let attempts = 0;
@@ -420,17 +453,17 @@ app.post('/api/tg/submitCode', async (req, res) => {
     }
 
     if (sessionObj.stage === 'pending_password') {
-      res.json({ requiresPassword: true });
+      res.json({ success: true, requiresPassword: true, stage: 'passwordInput' });
     } else if (sessionObj.stage === 'success') {
       const finalSessionStr = (sessionObj.client.session as StringSession).save() as unknown as string;
       activeClients.set(finalSessionStr, sessionObj.client);
       loginSessions.delete(loginId);
-      res.json({ success: true, sessionString: finalSessionStr });
+      res.json({ success: true, stage: 'loggedIn', sessionString: finalSessionStr });
     } else {
-      res.status(400).json({ error: sessionObj.errorMsg || 'Failed to verify code' });
+      res.status(400).json({ error: sessionObj.errorMsg || 'קוד האימות לא אומת. נסה שוב.' });
     }
   } else {
-    res.status(400).json({ error: 'Not waiting for code' });
+    res.status(400).json({ error: 'השרת לא ממתין כרגע לקוד אימות. שלח קוד מחדש.' });
   }
 });
 
@@ -438,12 +471,14 @@ app.post('/api/tg/submitCode', async (req, res) => {
 app.post('/api/tg/submitPassword', async (req, res) => {
   const loginId = readStringValue(req.body?.loginId);
   const password = readStringValue(req.body?.password);
-  if (!loginId || !password) return res.status(400).json({ error: 'Login id and password are required.' });
+  if (!loginId || !password) return res.status(400).json({ error: 'חסרים מזהה התחברות או סיסמת אבטחה.' });
   const sessionObj = loginSessions.get(loginId);
-  if (!sessionObj) return res.status(404).json({ error: 'Login session expired or not found.' });
+  if (!sessionObj) return res.status(404).json({ error: 'סשן ההתחברות פג. נסה להתחבר מחדש.' });
 
   if (sessionObj.resolvePassword) {
-    sessionObj.resolvePassword(password);
+    const resolvePassword = sessionObj.resolvePassword;
+    sessionObj.resolvePassword = null;
+    resolvePassword(password);
 
     let attempts = 0;
     while (sessionObj.stage === 'pending_password' && attempts < 30) {
@@ -455,12 +490,12 @@ app.post('/api/tg/submitPassword', async (req, res) => {
       const finalSessionStr = (sessionObj.client.session as StringSession).save() as unknown as string;
       activeClients.set(finalSessionStr, sessionObj.client);
       loginSessions.delete(loginId);
-      res.json({ success: true, sessionString: finalSessionStr });
+      res.json({ success: true, stage: 'loggedIn', sessionString: finalSessionStr });
     } else {
-      res.status(400).json({ error: sessionObj.errorMsg || 'Failed to verify password' });
+      res.status(400).json({ error: sessionObj.errorMsg || 'סיסמת האבטחה לא אומתה. נסה שוב.' });
     }
   } else {
-    res.status(400).json({ error: 'Not waiting for password' });
+    res.status(400).json({ error: 'השרת לא ממתין כרגע לסיסמת האבטחה. נסה להתחבר מחדש.' });
   }
 });
 

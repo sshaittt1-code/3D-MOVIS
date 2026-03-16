@@ -6,6 +6,7 @@ import type {
   TelegramSearchResult,
   TelegramSubtitleResult
 } from '../utils/telegramPlayer';
+import { TELEGRAM_DEFAULT_COUNTRY_CODE } from '../utils/telegramLogin';
 
 type TelegramConsolePanelProps = {
   configured: boolean;
@@ -18,7 +19,9 @@ type TelegramConsolePanelProps = {
   currentItem: CorridorItem | null;
   currentPlaybackTitle: string | null;
   preparedNextTitle: string | null;
-  phone: string;
+  phoneDigits: string;
+  phoneE164: string;
+  canStartLogin: boolean;
   code: string;
   password: string;
   searchQuery: string;
@@ -32,6 +35,7 @@ type TelegramConsolePanelProps = {
   onSelectedSubtitleChange: (value: string | null) => void;
   onRefreshStatus: () => void;
   onStartLogin: () => void;
+  onResendCode: () => void;
   onSubmitCode: () => void;
   onSubmitPassword: () => void;
   onLogout: () => void;
@@ -43,34 +47,34 @@ type TelegramConsolePanelProps = {
 
 const STATUS_COPY: Record<TelegramAuthStatus, { title: string; tone: string; body: string }> = {
   checking: {
-    title: 'Checking Telegram',
+    title: 'בודק חיבור ל-Telegram',
     tone: 'border-amber-400/25 bg-amber-500/12 text-amber-100',
-    body: 'We are validating the current Telegram session before opening media sources.'
+    body: 'אנחנו מאמתים אם כבר קיימת התחברות פעילה לפני שניגש למקורות ולניגון.'
   },
   loggedOut: {
-    title: 'Telegram is disconnected',
+    title: 'חשבון Telegram לא מחובר',
     tone: 'border-white/10 bg-white/[0.04] text-white/75',
-    body: 'Sign in with your Telegram account to unlock source search and playback handoff.'
+    body: 'התחבר עם מספר הטלפון שלך כדי לפתוח חיפוש מקורות, כתוביות והעברה לנגן.'
   },
   phoneInput: {
-    title: 'Enter phone number',
+    title: 'הזן מספר טלפון',
     tone: 'border-[#2AABEE]/30 bg-[#2AABEE]/12 text-white',
-    body: 'Start the MTProto login flow by sending your phone number to the backend.'
+    body: 'הקידומת הישראלית קבועה ל־+972. הזן רק את הספרות של המספר המקומי.'
   },
   codeInput: {
-    title: 'Enter verification code',
+    title: 'הזן קוד אימות',
     tone: 'border-[#2AABEE]/30 bg-[#2AABEE]/12 text-white',
-    body: 'Telegram sent you a code. Submit it here to continue.'
+    body: 'Telegram שלח קוד אימות. הזן אותו כאן כדי להמשיך לשלב הבא.'
   },
   passwordInput: {
-    title: 'Two-factor password required',
+    title: 'נדרשת סיסמת אבטחה',
     tone: 'border-fuchsia-400/30 bg-fuchsia-500/12 text-white',
-    body: 'This account uses Telegram cloud password protection. Submit the password to finish the login.'
+    body: 'לחשבון הזה מופעלת הגנת 2FA. הזן את סיסמת האבטחה כדי להשלים את ההתחברות.'
   },
   loggedIn: {
-    title: 'Telegram is connected',
+    title: 'Telegram מחובר ומוכן',
     tone: 'border-emerald-400/30 bg-emerald-500/14 text-emerald-100',
-    body: 'Source search is ready. Pick a movie or episode and stream it with the native player.'
+    body: 'החיבור פעיל. אפשר לבחור סרט או פרק, לחפש מקורות ולהעביר לנגן.'
   }
 };
 
@@ -88,7 +92,9 @@ export const TelegramConsolePanel = ({
   currentItem,
   currentPlaybackTitle,
   preparedNextTitle,
-  phone,
+  phoneDigits,
+  phoneE164,
+  canStartLogin,
   code,
   password,
   searchQuery,
@@ -102,6 +108,7 @@ export const TelegramConsolePanel = ({
   onSelectedSubtitleChange,
   onRefreshStatus,
   onStartLogin,
+  onResendCode,
   onSubmitCode,
   onSubmitPassword,
   onLogout,
@@ -113,6 +120,15 @@ export const TelegramConsolePanel = ({
   const statusCopy = STATUS_COPY[status];
   const playableSelection = isPlayableSelection(currentItem);
   const busyIndicator = busy || sourceSearchBusy || subtitleSearchBusy;
+  const isCodeStep = status === 'codeInput';
+  const isPasswordStep = status === 'passwordInput';
+  const isLoggedIn = status === 'loggedIn';
+  const activeStepIndex = isPasswordStep ? 2 : isCodeStep ? 1 : 0;
+  const wizardSteps = [
+    { id: 'phone', label: 'מספר טלפון' },
+    { id: 'code', label: 'קוד אימות' },
+    { id: 'password', label: 'סיסמת אבטחה' }
+  ];
 
   return (
     <div className="mt-8 grid gap-6 xl:grid-cols-[1.25fr,0.9fr]">
@@ -121,7 +137,7 @@ export const TelegramConsolePanel = ({
           <div>
             <div className="hc-badge hc-badge--telegram">
               <ShieldCheck size={16} />
-              <span>Telegram Source Console</span>
+              <span>מסוף התחברות Telegram</span>
             </div>
             <h3 className="mt-4 text-2xl font-semibold text-white">{statusCopy.title}</h3>
             <p className="hc-subtitle mt-3 max-w-2xl text-sm">{statusCopy.body}</p>
@@ -150,7 +166,7 @@ export const TelegramConsolePanel = ({
 
         {!configured && (
           <div className="mt-6 rounded-[24px] border border-red-400/20 bg-red-500/10 px-5 py-4 text-sm text-red-100">
-            Telegram API is not configured on the backend yet. Add `TG_API_ID` and `TG_API_HASH` on the server and refresh.
+            Telegram API עדיין לא מוגדר בשרת. צריך להגדיר `TG_API_ID` ו־`TG_API_HASH` כדי להתחבר.
           </div>
         )}
 
@@ -159,38 +175,82 @@ export const TelegramConsolePanel = ({
           <span>{statusCopy.title}</span>
         </div>
 
+        <div className="mt-6 grid gap-3 md:grid-cols-3">
+          {wizardSteps.map((step, index) => {
+            const isCompleted = isLoggedIn || index < activeStepIndex;
+            const isActive = !isLoggedIn && index === activeStepIndex;
+            return (
+              <div
+                key={step.id}
+                className={`hc-card px-4 py-3 text-right ${
+                  isCompleted
+                    ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-100'
+                    : isActive
+                      ? 'border-[#2AABEE]/30 bg-[#2AABEE]/12 text-white'
+                      : 'text-white/55'
+                }`}
+              >
+                <div className="text-[11px] uppercase tracking-[0.24em] text-white/45">שלב {index + 1}</div>
+                <div className="mt-2 text-sm font-semibold">{step.label}</div>
+              </div>
+            );
+          })}
+        </div>
+
         {error && (
           <div className="mt-6 rounded-[24px] border border-red-400/20 bg-red-500/10 px-5 py-4 text-sm text-red-100">
             {error}
           </div>
         )}
 
-        {(status === 'loggedOut' || status === 'phoneInput') && (
-          <div className="hc-card mt-8 p-5">
-            <label className="block text-sm text-white/55">Phone number</label>
+        <div className="hc-card mt-8 p-5">
+          <label className="block text-sm text-white/55">מספר טלפון ישראלי</label>
+          <div className="mt-3 flex items-center gap-3">
+            <div className="hc-input w-auto min-w-[6.5rem] bg-white/[0.03] text-center text-lg text-white/75">
+              {TELEGRAM_DEFAULT_COUNTRY_CODE}
+            </div>
             <input
-              value={phone}
+              value={phoneDigits}
               onChange={(event) => onPhoneChange(event.target.value)}
-              placeholder="+972501234567"
-              className="hc-input mt-3 text-lg"
+              inputMode="numeric"
+              autoComplete="tel-national"
+              maxLength={10}
+              disabled={isCodeStep || isPasswordStep || isLoggedIn}
+              placeholder="501234567"
+              className="hc-input flex-1 text-left text-lg"
             />
+          </div>
+          <div className="mt-3 text-sm text-white/50">
+            המספר המלא שיישלח: <span className="text-white">{phoneE164 || `${TELEGRAM_DEFAULT_COUNTRY_CODE}...`}</span>
+          </div>
+          <div className="mt-5 flex flex-wrap gap-3">
             <button
               onClick={onStartLogin}
-              disabled={busy || !phone.trim() || !configured}
-              className="hc-button hc-button--telegram mt-5 px-6 py-3 text-sm"
+              disabled={busy || !canStartLogin || !configured || isLoggedIn}
+              className="hc-button hc-button--telegram px-6 py-3 text-sm"
             >
               <LogIn size={16} />
-              <span>Send code</span>
+              <span>{phoneE164 ? `שלח קוד ל־${phoneE164}` : 'שלח קוד אימות'}</span>
             </button>
+            {isCodeStep && (
+              <button
+                onClick={onResendCode}
+                disabled={busy || !canStartLogin}
+                className="hc-button hc-button--ghost px-6 py-3 text-sm"
+              >
+                שלח שוב קוד
+              </button>
+            )}
           </div>
-        )}
+        </div>
 
-        {status === 'codeInput' && (
+        {isCodeStep && (
           <div className="hc-card mt-8 p-5">
-            <label className="block text-sm text-white/55">Verification code</label>
+            <label className="block text-sm text-white/55">קוד אימות שנשלח ב־Telegram</label>
             <input
               value={code}
               onChange={(event) => onCodeChange(event.target.value)}
+              inputMode="numeric"
               placeholder="12345"
               className="hc-input mt-3 text-lg"
             />
@@ -199,19 +259,19 @@ export const TelegramConsolePanel = ({
               disabled={busy || !code.trim()}
               className="hc-button hc-button--telegram mt-5 px-6 py-3 text-sm"
             >
-              Confirm code
+              אמת קוד
             </button>
           </div>
         )}
 
-        {status === 'passwordInput' && (
+        {isPasswordStep && (
           <div className="hc-card mt-8 p-5">
-            <label className="block text-sm text-white/55">Telegram 2FA password</label>
+            <label className="block text-sm text-white/55">סיסמת אבטחה של Telegram</label>
             <input
               value={password}
               onChange={(event) => onPasswordChange(event.target.value)}
               type="password"
-              placeholder="Password"
+              placeholder="הזן את הסיסמה"
               className="hc-input mt-3 text-lg"
             />
             <button
@@ -219,12 +279,12 @@ export const TelegramConsolePanel = ({
               disabled={busy || !password.trim()}
               className="hc-button hc-button--magenta mt-5 px-6 py-3 text-sm"
             >
-              Confirm password
+              אמת סיסמה
             </button>
           </div>
         )}
 
-        {status === 'loggedIn' && (
+        {isLoggedIn && (
           <div className="mt-8 space-y-5">
             <div className="hc-card p-5">
               <div className="flex flex-wrap items-start justify-between gap-4">

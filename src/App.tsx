@@ -99,6 +99,14 @@ import {
   type TelegramSubtitleResult
 } from './utils/telegramPlayer';
 import {
+  buildIsraeliPhoneE164,
+  isLikelyValidIsraeliPhoneDigits,
+  normalizeIsraeliPhoneDigits,
+  resolveTelegramStatusAfterRefresh,
+  TELEGRAM_DEFAULT_COUNTRY_CODE,
+  translateTelegramAuthError
+} from './utils/telegramLogin';
+import {
   resolveRuntimePerformanceProfile,
   shouldRunBackgroundWarmup
 } from './utils/runtimePerformance';
@@ -499,7 +507,7 @@ export default function App() {
   const [tgBusy, setTgBusy] = useState(false);
   const [tgError, setTgError] = useState<string | null>(null);
   const [tgLoginId, setTgLoginId] = useState<string | null>(null);
-  const [tgPhone, setTgPhone] = useState('');
+  const [tgPhoneDigits, setTgPhoneDigits] = useState('');
   const [tgCode, setTgCode] = useState('');
   const [tgPassword, setTgPassword] = useState('');
   const [tgSearchQuery, setTgSearchQuery] = useState('');
@@ -510,6 +518,8 @@ export default function App() {
   const [isSearchingTelegramSubtitles, setIsSearchingTelegramSubtitles] = useState(false);
   const [preparingTelegramSourceId, setPreparingTelegramSourceId] = useState<number | null>(null);
   const [preparedNextPlayback, setPreparedNextPlayback] = useState<PreparedPlayback | null>(null);
+  const tgPhoneE164 = useMemo(() => buildIsraeliPhoneE164(tgPhoneDigits), [tgPhoneDigits]);
+  const canStartTelegramLogin = useMemo(() => isLikelyValidIsraeliPhoneDigits(tgPhoneDigits), [tgPhoneDigits]);
 
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -673,6 +683,7 @@ export default function App() {
 
   const refreshTelegramStatus = useCallback(async (options: { quiet?: boolean } = {}) => {
     const requestId = ++telegramStatusRequestRef.current;
+    const hasActiveLogin = Boolean(tgLoginId);
     if (!options.quiet) {
       setTgBusy(true);
     }
@@ -685,8 +696,12 @@ export default function App() {
       if (requestId !== telegramStatusRequestRef.current) return;
 
       setTgConfigured(data.configured !== false);
-      setTgStatus(data.loggedIn ? 'loggedIn' : 'loggedOut');
-      if (!data.loggedIn) {
+      setTgStatus((current) => resolveTelegramStatusAfterRefresh({
+        currentStatus: current,
+        hasActiveLogin,
+        remoteLoggedIn: Boolean(data.loggedIn)
+      }));
+      if (!data.loggedIn && !hasActiveLogin) {
         setTgLoginId(null);
         setTgSources([]);
         setTgSubtitleResults([]);
@@ -695,16 +710,21 @@ export default function App() {
     } catch (error: any) {
       if (requestId !== telegramStatusRequestRef.current) return;
       console.error('Telegram status failed', error);
-      const message = error?.message || 'Failed to check Telegram status';
+      const rawMessage = error?.message || 'Failed to check Telegram status';
+      const message = translateTelegramAuthError(rawMessage);
       setTgError(message);
-      setTgConfigured(!String(message).toLowerCase().includes('not configured'));
-      setTgStatus('loggedOut');
+      setTgConfigured(!String(rawMessage).toLowerCase().includes('not configured'));
+      setTgStatus((current) => resolveTelegramStatusAfterRefresh({
+        currentStatus: current,
+        hasActiveLogin,
+        remoteLoggedIn: false
+      }));
     } finally {
       if (requestId === telegramStatusRequestRef.current && !options.quiet) {
         setTgBusy(false);
       }
     }
-  }, [normalizedApiBase]);
+  }, [normalizedApiBase, tgLoginId]);
 
   const resetTelegramSearchState = useCallback((options: { preserveQuery?: boolean } = {}) => {
     if (!options.preserveQuery) {
@@ -723,22 +743,27 @@ export default function App() {
     }
   }, []);
 
+  const handleTelegramPhoneDigitsChange = useCallback((value: string) => {
+    setTgPhoneDigits(normalizeIsraeliPhoneDigits(value));
+    setTgStatus((current) => (current === 'loggedOut' ? 'phoneInput' : current));
+    setTgError(null);
+  }, []);
+
   const startTelegramLogin = useCallback(async () => {
-    const phone = tgPhone.trim();
-    if (!phone) {
-      setTgError('Enter a phone number first.');
+    if (!canStartTelegramLogin || !tgPhoneE164) {
+      setTgError('הזן מספר טלפון ישראלי תקין כדי לקבל קוד אימות.');
       return;
     }
 
     setTgBusy(true);
     setTgError(null);
     try {
-      const data = await fetchApiJson<{ loginId?: string; success?: boolean }>(
+      const data = await fetchApiJson<{ loginId?: string; success?: boolean; stage?: TelegramAuthStatus; phone?: string }>(
         buildApiUrl(normalizedApiBase, '/api/tg/startLogin'),
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone })
+          body: JSON.stringify({ phone: tgPhoneE164 })
         }
       );
 
@@ -749,25 +774,25 @@ export default function App() {
       setTgLoginId(data.loginId);
       setTgCode('');
       setTgPassword('');
-      setTgStatus('codeInput');
+      setTgStatus(data.stage === 'passwordInput' ? 'passwordInput' : 'codeInput');
     } catch (error: any) {
       console.error('Telegram login start failed', error);
-      setTgError(error?.message || 'Failed to start Telegram login');
+      setTgError(translateTelegramAuthError(error?.message || 'Failed to start Telegram login'));
     } finally {
       setTgBusy(false);
     }
-  }, [normalizedApiBase, tgPhone]);
+  }, [canStartTelegramLogin, normalizedApiBase, tgPhoneE164]);
 
   const submitTelegramCode = useCallback(async () => {
     if (!tgLoginId || !tgCode.trim()) {
-      setTgError('Enter the verification code first.');
+      setTgError('הזן קודם את קוד האימות שנשלח אליך ב-Telegram.');
       return;
     }
 
     setTgBusy(true);
     setTgError(null);
     try {
-      const data = await fetchApiJson<{ success?: boolean; requiresPassword?: boolean; sessionString?: string }>(
+      const data = await fetchApiJson<{ success?: boolean; requiresPassword?: boolean; stage?: TelegramAuthStatus; sessionString?: string }>(
         buildApiUrl(normalizedApiBase, '/api/tg/submitCode'),
         {
           method: 'POST',
@@ -793,7 +818,7 @@ export default function App() {
       await refreshTelegramStatus({ quiet: true });
     } catch (error: any) {
       console.error('Telegram code verification failed', error);
-      setTgError(error?.message || 'Failed to verify the Telegram code');
+      setTgError(translateTelegramAuthError(error?.message || 'Failed to verify the Telegram code'));
     } finally {
       setTgBusy(false);
     }
@@ -801,14 +826,14 @@ export default function App() {
 
   const submitTelegramPassword = useCallback(async () => {
     if (!tgLoginId || !tgPassword.trim()) {
-      setTgError('Enter the Telegram password first.');
+      setTgError('הזן את סיסמת האבטחה של Telegram כדי להשלים את ההתחברות.');
       return;
     }
 
     setTgBusy(true);
     setTgError(null);
     try {
-      const data = await fetchApiJson<{ success?: boolean; sessionString?: string }>(
+      const data = await fetchApiJson<{ success?: boolean; stage?: TelegramAuthStatus; sessionString?: string }>(
         buildApiUrl(normalizedApiBase, '/api/tg/submitPassword'),
         {
           method: 'POST',
@@ -829,7 +854,7 @@ export default function App() {
       await refreshTelegramStatus({ quiet: true });
     } catch (error: any) {
       console.error('Telegram password verification failed', error);
-      setTgError(error?.message || 'Failed to verify the Telegram password');
+      setTgError(translateTelegramAuthError(error?.message || 'Failed to verify the Telegram password'));
     } finally {
       setTgBusy(false);
     }
@@ -848,10 +873,10 @@ export default function App() {
       setTgCode('');
       setTgPassword('');
       resetTelegramSearchState();
-      setTgStatus('loggedOut');
+      setTgStatus(tgPhoneDigits ? 'phoneInput' : 'loggedOut');
       setTgBusy(false);
     }
-  }, [applyTelegramSession, normalizedApiBase, resetTelegramSearchState]);
+  }, [applyTelegramSession, normalizedApiBase, resetTelegramSearchState, tgPhoneDigits]);
 
   const searchTelegramSubtitlesForItem = useCallback(async (
     item: CorridorItem,
@@ -2182,6 +2207,8 @@ export default function App() {
       ? 'מחובר לחשבון Telegram'
       : tgStatus === 'checking'
         ? 'בודק חיבור Telegram'
+        : tgStatus === 'phoneInput'
+          ? 'מוכן לשליחת קוד אימות'
         : tgStatus === 'codeInput'
           ? 'ממתין לקוד אימות'
           : tgStatus === 'passwordInput'
@@ -2355,20 +2382,23 @@ export default function App() {
                   currentItem={telegramPlayableItem}
                   currentPlaybackTitle={activeMedia?.title ?? null}
                   preparedNextTitle={preparedNextPlayback?.title ?? null}
-                  phone={tgPhone}
+                  phoneDigits={tgPhoneDigits}
+                  phoneE164={tgPhoneE164}
+                  canStartLogin={canStartTelegramLogin}
                   code={tgCode}
                   password={tgPassword}
                   searchQuery={tgSearchQuery}
                   sources={tgSources}
                   subtitles={tgSubtitleResults}
                   selectedSubtitleUrl={tgSelectedSubtitleUrl}
-                  onPhoneChange={setTgPhone}
+                  onPhoneChange={handleTelegramPhoneDigitsChange}
                   onCodeChange={setTgCode}
                   onPasswordChange={setTgPassword}
                   onSearchQueryChange={setTgSearchQuery}
                   onSelectedSubtitleChange={setTgSelectedSubtitleUrl}
                   onRefreshStatus={() => { void refreshTelegramStatus(); }}
                   onStartLogin={() => { void startTelegramLogin(); }}
+                  onResendCode={() => { void startTelegramLogin(); }}
                   onSubmitCode={() => { void submitTelegramCode(); }}
                   onSubmitPassword={() => { void submitTelegramPassword(); }}
                   onLogout={() => { void logoutTelegram(); }}
