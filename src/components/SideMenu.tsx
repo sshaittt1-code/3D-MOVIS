@@ -16,26 +16,35 @@ import {
   getRootIdForMenuItem,
   type SideMenuGroup,
   type SideMenuItem,
-  type SideMenuRoot,
-  type SideMenuSubcategoryGroup
+  type SideMenuRoot
 } from '../utils/menuConfig';
+import {
+  buildDrawerEntries,
+  getActionEntryId,
+  getDefaultMenuControllerState,
+  getInitialExpandedSubgroupId,
+  getRailButtonId,
+  getSubgroupEntryId,
+  moveDrawerFocus,
+  moveRailFocus,
+  resolveMenuBackBehavior,
+  syncMenuControllerState,
+  type SideMenuDrawerEntry
+} from '../utils/menuNavigation';
 import { isTvBackKey } from '../utils/tvNavigation';
 import { getTvDirection, isTvSelectKey, stopTvEvent } from '../utils/tvRemote';
 
 type SideMenuProps = {
+  visible?: boolean;
   isOpen: boolean;
   groups: SideMenuGroup[];
   telegramConnected: boolean;
   activeItemId: string;
   currentLabel: string;
   onActivate: (item: SideMenuItem) => void;
+  onOpen: () => void;
   onClose: () => void;
 };
-
-type VisibleEntry =
-  | { id: string; kind: 'root'; root: SideMenuRoot }
-  | { id: string; kind: 'subcategory'; rootId: string; subgroup: SideMenuSubcategoryGroup }
-  | { id: string; kind: 'item'; rootId: string; subgroupId: string; item: SideMenuItem };
 
 const ICON_BY_KEY = {
   search: Search,
@@ -48,352 +57,497 @@ const ICON_BY_KEY = {
   exit: LogOut
 } as const;
 
-const rootEntryId = (rootId: string) => `root:${rootId}`;
-const subgroupEntryId = (rootId: string, subgroupId: string) => `subgroup:${rootId}:${subgroupId}`;
+const getRootById = (roots: SideMenuRoot[], rootId: string) =>
+  roots.find((root) => root.id === rootId) ?? roots[0] ?? null;
 
-const buildVisibleEntries = (
-  roots: SideMenuRoot[],
-  expandedRootId: string | null,
-  expandedSubgroupId: string | null
-): VisibleEntry[] => {
-  const entries: VisibleEntry[] = [];
-
-  roots.forEach((root) => {
-    entries.push({ id: rootEntryId(root.id), kind: 'root', root });
-
-    if (root.id !== expandedRootId || !root.subgroups?.length) {
-      return;
-    }
-
-    root.subgroups.forEach((subgroup) => {
-      entries.push({
-        id: subgroupEntryId(root.id, subgroup.id),
-        kind: 'subcategory',
-        rootId: root.id,
-        subgroup
-      });
-
-      if (expandedSubgroupId !== subgroup.id) {
-        return;
-      }
-
-      subgroup.items.forEach((item) => {
-        entries.push({
-          id: item.id,
-          kind: 'item',
-          rootId: root.id,
-          subgroupId: subgroup.id,
-          item
-        });
-      });
-    });
-  });
-
-  return entries;
-};
-
-const getInitialExpandedSubgroupId = (root: SideMenuRoot | undefined, activeItemId: string) => {
-  if (!root?.subgroups?.length) {
-    return null;
-  }
-
-  return root.subgroups.find((group) => group.items.some((item) => item.id === activeItemId))?.id
-    ?? root.subgroups[0].id;
-};
-
-export const SideMenu = ({ isOpen, groups, telegramConnected, activeItemId, currentLabel, onActivate, onClose }: SideMenuProps) => {
+export const SideMenu = ({
+  visible = true,
+  isOpen,
+  groups,
+  telegramConnected,
+  activeItemId,
+  currentLabel,
+  onActivate,
+  onOpen,
+  onClose
+}: SideMenuProps) => {
   const roots = useMemo(() => buildSideMenuRoots(groups, { telegramConnected }), [groups, telegramConnected]);
   const activeRootId = useMemo(() => getRootIdForMenuItem(roots, activeItemId), [activeItemId, roots]);
-  const [expandedRootId, setExpandedRootId] = useState<string | null>(null);
-  const [expandedSubgroupId, setExpandedSubgroupId] = useState<string | null>(null);
-  const [focusedEntryId, setFocusedEntryId] = useState<string>('');
+  const [menuState, setMenuState] = useState(() => getDefaultMenuControllerState(roots, activeRootId, activeItemId));
   const buttonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const wasOpenRef = useRef(isOpen);
 
-  const visibleEntries = useMemo(
-    () => buildVisibleEntries(roots, expandedRootId, expandedSubgroupId),
-    [expandedRootId, expandedSubgroupId, roots]
+  useEffect(() => {
+    setMenuState((prev) => {
+      const base = syncMenuControllerState(roots, prev, {
+        activeRootId,
+        activeItemId,
+        isDrawerOpen: isOpen
+      });
+
+      if (isOpen && !wasOpenRef.current) {
+        return {
+          ...base,
+          focusedZone: 'rail',
+          focusedDrawerEntryId: null
+        };
+      }
+
+      if (!isOpen) {
+        return {
+          ...base,
+          railActiveRootId: activeRootId || base.railActiveRootId,
+          focusedZone: 'rail',
+          focusedDrawerEntryId: null
+        };
+      }
+
+      return base;
+    });
+
+    wasOpenRef.current = isOpen;
+  }, [activeItemId, activeRootId, isOpen, roots]);
+
+  const activeRoot = useMemo(
+    () => getRootById(roots, menuState.railActiveRootId || activeRootId),
+    [activeRootId, menuState.railActiveRootId, roots]
+  );
+
+  const drawerEntries = useMemo(
+    () => buildDrawerEntries(activeRoot, menuState.expandedSubgroupId),
+    [activeRoot, menuState.expandedSubgroupId]
   );
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!visible || !isOpen || !activeRoot) return;
+    const focusId = menuState.focusedZone === 'drawer'
+      ? menuState.focusedDrawerEntryId
+      : getRailButtonId(activeRoot.id);
 
-    const activeRoot = roots.find((root) => root.id === activeRootId);
-    if (activeRoot?.subgroups?.length) {
-      setExpandedRootId(activeRoot.id);
-      setExpandedSubgroupId(getInitialExpandedSubgroupId(activeRoot, activeItemId));
-    } else {
-      setExpandedRootId(null);
-      setExpandedSubgroupId(null);
-    }
-  }, [activeItemId, activeRootId, isOpen, roots]);
+    if (!focusId) return;
+    const nextFrame = window.requestAnimationFrame(() => {
+      buttonRefs.current[focusId]?.focus();
+    });
 
-  useEffect(() => {
-    if (!isOpen || visibleEntries.length === 0) return;
+    return () => window.cancelAnimationFrame(nextFrame);
+  }, [activeRoot, isOpen, menuState.focusedDrawerEntryId, menuState.focusedZone, visible]);
 
-    const preferredId = visibleEntries.find((entry) => entry.id === activeItemId)?.id
-      ?? (activeRootId ? rootEntryId(activeRootId) : '')
-      ?? visibleEntries[0].id;
+  const focusRailRoot = (rootId: string) => {
+    const root = getRootById(roots, rootId);
+    if (!root) return;
 
-    setFocusedEntryId(preferredId || visibleEntries[0].id);
-  }, [activeItemId, activeRootId, isOpen, visibleEntries]);
+    const nextSubgroupId = getInitialExpandedSubgroupId(
+      root,
+      activeItemId,
+      root.id === menuState.expandedRootId ? menuState.expandedSubgroupId : null
+    );
 
-  useEffect(() => {
-    if (!isOpen || !focusedEntryId) return;
-    buttonRefs.current[focusedEntryId]?.focus();
-  }, [focusedEntryId, isOpen]);
-
-  const moveFocus = (direction: 1 | -1) => {
-    const currentIndex = visibleEntries.findIndex((entry) => entry.id === focusedEntryId);
-    const nextIndex = currentIndex === -1
-      ? 0
-      : Math.max(0, Math.min(visibleEntries.length - 1, currentIndex + direction));
-    setFocusedEntryId(visibleEntries[nextIndex]?.id || focusedEntryId);
+    setMenuState((prev) => syncMenuControllerState(roots, {
+      ...prev,
+      railActiveRootId: root.id,
+      expandedRootId: root.subgroups?.length ? root.id : null,
+      expandedSubgroupId: nextSubgroupId,
+      focusedZone: 'rail',
+      focusedDrawerEntryId: null
+    }, {
+      activeRootId,
+      activeItemId,
+      isDrawerOpen: isOpen
+    }));
   };
 
-  const openRoot = (root: SideMenuRoot) => {
-    if (!root.subgroups?.length) {
-      onActivate(root.defaultItem);
+  const focusDrawerForRoot = (root: SideMenuRoot) => {
+    const nextSubgroupId = getInitialExpandedSubgroupId(
+      root,
+      activeItemId,
+      root.id === menuState.expandedRootId ? menuState.expandedSubgroupId : null
+    );
+    const nextFocusId = root.subgroups?.length
+      ? getSubgroupEntryId(root.id, nextSubgroupId ?? root.subgroups[0].id)
+      : getActionEntryId(root.id);
+
+    if (!isOpen) {
+      onOpen();
+    }
+
+    setMenuState((prev) => syncMenuControllerState(roots, {
+      ...prev,
+      railActiveRootId: root.id,
+      expandedRootId: root.subgroups?.length ? root.id : null,
+      expandedSubgroupId: nextSubgroupId,
+      focusedZone: 'drawer',
+      focusedDrawerEntryId: nextFocusId
+    }, {
+      activeRootId,
+      activeItemId,
+      isDrawerOpen: true
+    }));
+  };
+
+  const collapseActiveSubgroup = () => {
+    if (!activeRoot?.subgroups?.length || !menuState.expandedSubgroupId) {
+      onClose();
       return;
     }
 
-    setExpandedRootId(root.id);
-    setExpandedSubgroupId(getInitialExpandedSubgroupId(root, activeItemId));
-    setFocusedEntryId(subgroupEntryId(root.id, getInitialExpandedSubgroupId(root, activeItemId) ?? root.subgroups[0].id));
+    setMenuState((prev) => ({
+      ...prev,
+      expandedSubgroupId: null,
+      focusedZone: 'drawer',
+      focusedDrawerEntryId: getSubgroupEntryId(activeRoot.id, menuState.expandedSubgroupId!)
+    }));
   };
 
-  const toggleSubgroup = (rootId: string, subgroupId: string) => {
-    setExpandedRootId(rootId);
-    setExpandedSubgroupId((current) => current === subgroupId ? null : subgroupId);
-    setFocusedEntryId(subgroupEntryId(rootId, subgroupId));
+  const expandSubgroup = (subgroupId: string, focusFirstItem = false) => {
+    if (!activeRoot?.subgroups?.length) return;
+
+    const subgroup = activeRoot.subgroups.find((candidate) => candidate.id === subgroupId);
+    const nextFocusId = focusFirstItem && subgroup?.items[0]
+      ? subgroup.items[0].id
+      : getSubgroupEntryId(activeRoot.id, subgroupId);
+
+    setMenuState((prev) => ({
+      ...prev,
+      expandedSubgroupId: subgroupId,
+      focusedZone: 'drawer',
+      focusedDrawerEntryId: nextFocusId
+    }));
   };
 
-  const handleKeyDown = (event: React.KeyboardEvent) => {
+  const handleRailSelect = (root: SideMenuRoot) => {
+    if (root.subgroups?.length) {
+      focusDrawerForRoot(root);
+      return;
+    }
+
+    onActivate(root.defaultItem);
+  };
+
+  const handleDrawerSelect = (entry: SideMenuDrawerEntry) => {
+    if (entry.kind === 'action') {
+      onActivate(entry.item);
+      return;
+    }
+
+    if (entry.kind === 'subcategory') {
+      const isExpanded = menuState.expandedSubgroupId === entry.subgroupId;
+      expandSubgroup(entry.subgroupId, isExpanded);
+      return;
+    }
+
+    onActivate(entry.item);
+  };
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent) => {
+    if (!visible || !isOpen) return;
+
     const direction = getTvDirection(event);
+    const currentRoot = activeRoot;
+    if (!currentRoot) return;
+
+    if (menuState.focusedZone === 'rail') {
+      if (direction === 'down') {
+        stopTvEvent(event);
+        focusRailRoot(moveRailFocus(roots, currentRoot.id, 1));
+        return;
+      }
+
+      if (direction === 'up') {
+        stopTvEvent(event);
+        focusRailRoot(moveRailFocus(roots, currentRoot.id, -1));
+        return;
+      }
+
+      if (direction === 'right') {
+        stopTvEvent(event);
+        focusDrawerForRoot(currentRoot);
+        return;
+      }
+
+      if (direction === 'left') {
+        stopTvEvent(event);
+        onClose();
+        return;
+      }
+
+      if (isTvBackKey(event)) {
+        stopTvEvent(event);
+        onClose();
+        return;
+      }
+
+      if (isTvSelectKey(event)) {
+        stopTvEvent(event);
+        handleRailSelect(currentRoot);
+      }
+
+      return;
+    }
 
     if (direction === 'down') {
       stopTvEvent(event);
-      moveFocus(1);
+      setMenuState((prev) => ({
+        ...prev,
+        focusedDrawerEntryId: moveDrawerFocus(drawerEntries, prev.focusedDrawerEntryId, 1)
+      }));
       return;
     }
 
     if (direction === 'up') {
       stopTvEvent(event);
-      moveFocus(-1);
+      setMenuState((prev) => ({
+        ...prev,
+        focusedDrawerEntryId: moveDrawerFocus(drawerEntries, prev.focusedDrawerEntryId, -1)
+      }));
       return;
     }
 
-    const currentEntry = visibleEntries.find((entry) => entry.id === focusedEntryId);
+    const currentEntry = drawerEntries.find((entry) => entry.id === menuState.focusedDrawerEntryId) ?? drawerEntries[0];
     if (!currentEntry) return;
-
-    if (direction === 'right') {
-      stopTvEvent(event);
-      if (currentEntry.kind === 'root') {
-        openRoot(currentEntry.root);
-        return;
-      }
-      if (currentEntry.kind === 'subcategory') {
-        toggleSubgroup(currentEntry.rootId, currentEntry.subgroup.id);
-      }
-      return;
-    }
 
     if (direction === 'left') {
       stopTvEvent(event);
       if (currentEntry.kind === 'item') {
-        setFocusedEntryId(subgroupEntryId(currentEntry.rootId, currentEntry.subgroupId));
+        setMenuState((prev) => ({
+          ...prev,
+          focusedDrawerEntryId: getSubgroupEntryId(currentRoot.id, currentEntry.subgroupId)
+        }));
         return;
       }
-      if (currentEntry.kind === 'subcategory') {
-        setExpandedSubgroupId(null);
-        setFocusedEntryId(rootEntryId(currentEntry.rootId));
+
+      if (currentEntry.kind === 'subcategory' && menuState.expandedSubgroupId === currentEntry.subgroupId) {
+        collapseActiveSubgroup();
         return;
       }
-      if (currentEntry.kind === 'root' && currentEntry.root.id === expandedRootId) {
-        setExpandedRootId(null);
-        setExpandedSubgroupId(null);
-        return;
-      }
-      onClose();
+
+      setMenuState((prev) => ({
+        ...prev,
+        focusedZone: 'rail',
+        focusedDrawerEntryId: null
+      }));
+      return;
+    }
+
+    if (direction === 'right' && currentEntry.kind === 'subcategory') {
+      stopTvEvent(event);
+      expandSubgroup(currentEntry.subgroupId, true);
       return;
     }
 
     if (isTvBackKey(event)) {
       stopTvEvent(event);
+      const backBehavior = resolveMenuBackBehavior(currentRoot, menuState);
+      if (backBehavior === 'collapse-subgroup') {
+        collapseActiveSubgroup();
+        return;
+      }
+
       onClose();
       return;
     }
 
-    if (!isTvSelectKey(event)) return;
-
-    stopTvEvent(event);
-    if (currentEntry.kind === 'root') {
-      openRoot(currentEntry.root);
-      return;
+    if (isTvSelectKey(event)) {
+      stopTvEvent(event);
+      handleDrawerSelect(currentEntry);
     }
-
-    if (currentEntry.kind === 'subcategory') {
-      toggleSubgroup(currentEntry.rootId, currentEntry.subgroup.id);
-      return;
-    }
-
-    onActivate(currentEntry.item);
   };
 
+  if (!visible || !activeRoot) {
+    return null;
+  }
+
+  const railClassName = isOpen
+    ? 'border-white/18 bg-[linear-gradient(180deg,rgba(16,23,31,0.92),rgba(9,14,20,0.94))] shadow-[-12px_0_40px_rgba(0,0,0,0.2)]'
+    : 'border-white/14 bg-[linear-gradient(180deg,rgba(12,20,28,0.76),rgba(7,12,18,0.86))] shadow-[-12px_0_32px_rgba(0,0,0,0.18)]';
+
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <div className="absolute inset-y-0 right-0 z-40 flex pointer-events-none" dir="rtl">
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="w-28 bg-gradient-to-l from-black/35 via-black/15 to-transparent"
-          />
-          <motion.aside
-            initial={{ opacity: 0, x: 48 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 48 }}
-            transition={{ type: 'spring', stiffness: 260, damping: 28 }}
-            data-tv-scope="ui"
-            data-tv-back-scope="local"
-            className="hc-tv-safe-right hc-tv-safe-y pointer-events-auto h-full w-[23rem] border-l border-white/15 bg-[linear-gradient(180deg,rgba(218,224,240,0.62),rgba(206,213,228,0.42))] shadow-[-24px_0_80px_rgba(0,0,0,0.45)] backdrop-blur-[34px]"
-            onKeyDown={handleKeyDown}
-          >
-            <div className="px-6 pb-6 pt-4">
-              <div className="rounded-[2.2rem] border border-white/45 bg-white/16 px-5 py-5 shadow-[0_10px_40px_rgba(9,15,30,0.16)]">
-                <p className="text-xs tracking-[0.24em] text-slate-500">HOME MENU</p>
-                <h2 className="mt-3 text-3xl font-bold text-slate-800">{currentLabel}</h2>
-                <p className="mt-2 text-sm text-slate-500">בחירה אחת ברורה בכל פעם, עם חזרה מהירה למסדרון.</p>
+    <div
+      className="absolute inset-y-0 right-0 z-40 flex items-stretch pointer-events-none"
+      data-tv-scope={isOpen ? 'ui' : undefined}
+      data-tv-back-scope={isOpen ? 'local' : undefined}
+      onKeyDown={handleMenuKeyDown}
+    >
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="pointer-events-none w-24 bg-gradient-to-l from-black/40 via-black/18 to-transparent"
+            />
+            <motion.aside
+              initial={{ opacity: 0, x: 18 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 18 }}
+              transition={{ type: 'spring', stiffness: 280, damping: 30 }}
+              className="pointer-events-auto h-full w-[20rem] border-l border-white/10 bg-[linear-gradient(180deg,rgba(9,14,20,0.96),rgba(6,10,16,0.98))] px-5 py-5 shadow-[-32px_0_80px_rgba(0,0,0,0.45)] backdrop-blur-[26px]"
+              dir="rtl"
+            >
+              <div className="rounded-[2rem] border border-white/10 bg-white/[0.03] px-5 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="rounded-full border border-emerald-400/26 bg-emerald-400/12 px-3 py-1 text-[0.72rem] font-semibold text-emerald-200">
+                    {currentLabel}
+                  </div>
+                  <div className="text-[0.68rem] uppercase tracking-[0.28em] text-white/35">Main rail</div>
+                </div>
+                <h2 className="mt-4 text-4xl font-bold text-white">{activeRoot.label}</h2>
+                <p className="mt-3 text-sm leading-6 text-white/58">{activeRoot.description}</p>
               </div>
-            </div>
 
-            <div className="h-[calc(100%-11rem)] overflow-y-auto px-4 pb-6">
-              <div className="space-y-2">
-                {roots.map((root) => {
-                  const Icon = ICON_BY_KEY[root.iconKey];
-                  const isExpanded = expandedRootId === root.id;
-                  const isActiveRoot = activeRootId === root.id;
-                  const isFocusedRoot = focusedEntryId === rootEntryId(root.id);
-                  const rootHasSubgroups = Boolean(root.subgroups?.length);
+              <div className="mt-5 max-h-[calc(100%-11rem)] overflow-y-auto pr-1">
+                {activeRoot.subgroups?.length ? (
+                  <div className="space-y-3">
+                    {activeRoot.subgroups.map((subgroup) => {
+                      const subgroupButtonId = getSubgroupEntryId(activeRoot.id, subgroup.id);
+                      const isExpanded = menuState.expandedSubgroupId === subgroup.id;
+                      const isFocused = menuState.focusedZone === 'drawer' && menuState.focusedDrawerEntryId === subgroupButtonId;
 
-                  return (
-                    <div key={root.id}>
-                      <button
-                        ref={(node) => { buttonRefs.current[rootEntryId(root.id)] = node; }}
-                        onFocus={() => setFocusedEntryId(rootEntryId(root.id))}
-                        onClick={() => openRoot(root)}
-                        className={`hc-focusable relative w-full overflow-hidden rounded-[1.8rem] border px-5 py-4 text-right transition-all ${
-                          isFocusedRoot || isActiveRoot
-                            ? 'border-white/30 bg-[linear-gradient(90deg,rgba(141,154,188,0.55),rgba(120,124,255,0.38))] text-slate-900 shadow-[0_12px_34px_rgba(84,92,210,0.16)]'
-                            : 'border-white/15 bg-white/6 text-slate-700 hover:bg-white/12'
-                        }`}
-                      >
-                        {(isFocusedRoot || isActiveRoot) && (
-                          <div className="absolute inset-y-5 right-0 w-1 rounded-full bg-gradient-to-b from-[#4f7bff] via-[#7a63ff] to-[#a64dff]" />
-                        )}
-                        <div className="flex items-center gap-4">
-                          <div className="flex-1">
-                            <div className={`text-[1.55rem] font-semibold ${isFocusedRoot || isActiveRoot ? 'text-[#4459ff]' : 'text-slate-700'}`}>
-                              {root.label}
-                            </div>
-                            <div className="mt-1 text-xs leading-5 text-slate-500">{root.description}</div>
-                          </div>
-                          {rootHasSubgroups && (
-                            <ChevronLeft
-                              className={`h-5 w-5 text-slate-400 transition-transform ${isExpanded ? '-rotate-90' : ''}`}
-                            />
-                          )}
-                          <div className={`flex h-12 w-12 items-center justify-center rounded-2xl border ${
-                            isFocusedRoot || isActiveRoot
-                              ? 'border-transparent bg-[linear-gradient(135deg,#4f7bff,#8e5bff)] text-white'
-                              : 'border-white/30 bg-white/55 text-slate-600'
-                          }`}>
-                            <Icon className="h-6 w-6" />
-                          </div>
-                        </div>
-                      </button>
-
-                      <AnimatePresence initial={false}>
-                        {isExpanded && root.subgroups?.length ? (
-                          <motion.div
-                            initial={{ opacity: 0, height: 0 }}
-                            animate={{ opacity: 1, height: 'auto' }}
-                            exit={{ opacity: 0, height: 0 }}
-                            className="overflow-hidden"
+                      return (
+                        <div
+                          key={subgroup.id}
+                          className={`rounded-[1.75rem] border px-3 py-3 transition-all ${
+                            isExpanded
+                              ? 'border-emerald-400/22 bg-emerald-400/[0.07]'
+                              : 'border-white/8 bg-white/[0.025]'
+                          }`}
+                        >
+                          <button
+                            ref={(node) => { buttonRefs.current[subgroupButtonId] = node; }}
+                            onFocus={() => setMenuState((prev) => ({ ...prev, focusedZone: 'drawer', focusedDrawerEntryId: subgroupButtonId }))}
+                            onClick={() => expandSubgroup(subgroup.id, isExpanded)}
+                            className={`hc-focusable flex w-full items-center justify-between rounded-[1.25rem] border px-4 py-3 text-right transition-all ${
+                              isFocused || isExpanded
+                                ? 'border-emerald-400/28 bg-[linear-gradient(90deg,rgba(14,74,56,0.62),rgba(8,40,33,0.42))] text-white shadow-[0_0_26px_rgba(0,255,204,0.16)]'
+                                : 'border-white/8 bg-transparent text-white/76 hover:border-emerald-400/16 hover:bg-white/[0.04]'
+                            }`}
                           >
-                            <div className="space-y-3 px-4 pb-2 pt-3">
-                              {root.subgroups.map((subgroup) => {
-                                const subgroupId = subgroupEntryId(root.id, subgroup.id);
-                                const isSubgroupFocused = focusedEntryId === subgroupId;
-                                const isSubgroupExpanded = expandedSubgroupId === subgroup.id;
+                            <ChevronLeft className={`h-4 w-4 text-emerald-200/80 transition-transform ${isExpanded ? '-rotate-90' : ''}`} />
+                            <span className="text-sm font-semibold">{subgroup.label}</span>
+                          </button>
 
-                                return (
-                                  <div key={subgroup.id} className="rounded-[1.6rem] bg-black/6 p-2">
-                                    <button
-                                      ref={(node) => { buttonRefs.current[subgroupId] = node; }}
-                                      onFocus={() => setFocusedEntryId(subgroupId)}
-                                      onClick={() => toggleSubgroup(root.id, subgroup.id)}
-                                      className={`hc-focusable flex w-full items-center justify-between rounded-[1.2rem] px-4 py-3 text-right transition-all ${
-                                        isSubgroupFocused || isSubgroupExpanded
-                                          ? 'bg-white/55 text-slate-800'
-                                          : 'bg-transparent text-slate-600 hover:bg-white/25'
-                                      }`}
-                                    >
-                                      <ChevronLeft className={`h-4 w-4 text-slate-400 transition-transform ${isSubgroupExpanded ? '-rotate-90' : ''}`} />
-                                      <span className="text-sm font-semibold">{subgroup.label}</span>
-                                    </button>
+                          <AnimatePresence initial={false}>
+                            {isExpanded && (
+                              <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className="overflow-hidden"
+                              >
+                                <div className="space-y-2 px-1 pb-1 pt-3">
+                                  {subgroup.items.map((item) => {
+                                    const isItemFocused = menuState.focusedZone === 'drawer' && menuState.focusedDrawerEntryId === item.id;
+                                    const isItemActive = activeItemId === item.id;
 
-                                    <AnimatePresence initial={false}>
-                                      {isSubgroupExpanded && (
-                                        <motion.div
-                                          initial={{ opacity: 0, height: 0 }}
-                                          animate={{ opacity: 1, height: 'auto' }}
-                                          exit={{ opacity: 0, height: 0 }}
-                                          className="overflow-hidden"
-                                        >
-                                          <div className="space-y-2 px-2 pb-2 pt-3">
-                                            {subgroup.items.map((item) => {
-                                              const isItemFocused = focusedEntryId === item.id;
-                                              const isItemActive = activeItemId === item.id;
-
-                                              return (
-                                                <button
-                                                  key={item.id}
-                                                  ref={(node) => { buttonRefs.current[item.id] = node; }}
-                                                  onFocus={() => setFocusedEntryId(item.id)}
-                                                  onClick={() => onActivate(item)}
-                                                  className={`hc-focusable w-full rounded-[1rem] border px-4 py-3 text-right text-sm transition-all ${
-                                                    isItemFocused
-                                                      ? 'border-[#5d72ff]/35 bg-[linear-gradient(90deg,rgba(93,114,255,0.18),rgba(140,96,255,0.16))] text-slate-900'
-                                                      : isItemActive
-                                                        ? 'border-[#5d72ff]/22 bg-white/38 text-slate-800'
-                                                        : 'border-transparent bg-white/18 text-slate-600 hover:bg-white/30'
-                                                  }`}
-                                                >
-                                                  <div className="font-semibold">{item.label}</div>
-                                                  <div className="mt-1 text-xs text-slate-500">{item.description}</div>
-                                                </button>
-                                              );
-                                            })}
-                                          </div>
-                                        </motion.div>
-                                      )}
-                                    </AnimatePresence>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </motion.div>
-                        ) : null}
-                      </AnimatePresence>
-                    </div>
-                  );
-                })}
+                                    return (
+                                      <button
+                                        key={item.id}
+                                        ref={(node) => { buttonRefs.current[item.id] = node; }}
+                                        onFocus={() => setMenuState((prev) => ({ ...prev, focusedZone: 'drawer', focusedDrawerEntryId: item.id }))}
+                                        onClick={() => onActivate(item)}
+                                        className={`hc-focusable w-full rounded-[1.15rem] border px-4 py-3 text-right transition-all ${
+                                          isItemFocused
+                                            ? 'border-emerald-400/30 bg-[linear-gradient(90deg,rgba(0,255,204,0.16),rgba(18,86,72,0.26))] text-white shadow-[0_0_24px_rgba(0,255,204,0.16)]'
+                                            : isItemActive
+                                              ? 'border-emerald-400/18 bg-emerald-400/[0.09] text-white/94'
+                                              : 'border-white/6 bg-white/[0.03] text-white/74 hover:border-emerald-400/16 hover:bg-white/[0.05]'
+                                        }`}
+                                      >
+                                        <div className="text-sm font-semibold">{item.label}</div>
+                                        <div className="mt-1 text-xs leading-5 text-white/46">{item.description}</div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="rounded-[1.9rem] border border-white/10 bg-white/[0.03] p-5">
+                    <div className="text-xs uppercase tracking-[0.24em] text-white/32">Destination</div>
+                    <div className="mt-3 text-2xl font-semibold text-white">{activeRoot.label}</div>
+                    <p className="mt-3 text-sm leading-6 text-white/55">{activeRoot.description}</p>
+                    <button
+                      ref={(node) => { buttonRefs.current[getActionEntryId(activeRoot.id)] = node; }}
+                      onFocus={() => setMenuState((prev) => ({
+                        ...prev,
+                        focusedZone: 'drawer',
+                        focusedDrawerEntryId: getActionEntryId(activeRoot.id)
+                      }))}
+                      onClick={() => onActivate(activeRoot.defaultItem)}
+                      className={`hc-focusable mt-6 w-full rounded-[1.25rem] border px-5 py-4 text-right transition-all ${
+                        menuState.focusedZone === 'drawer' && menuState.focusedDrawerEntryId === getActionEntryId(activeRoot.id)
+                          ? 'border-emerald-400/30 bg-[linear-gradient(90deg,rgba(0,255,204,0.16),rgba(18,86,72,0.26))] text-white shadow-[0_0_24px_rgba(0,255,204,0.16)]'
+                          : 'border-white/8 bg-white/[0.03] text-white/82 hover:border-emerald-400/18 hover:bg-white/[0.05]'
+                      }`}
+                    >
+                      <div className="text-sm font-semibold">{activeRoot.defaultItem.label}</div>
+                      <div className="mt-1 text-xs leading-5 text-white/46">{activeRoot.defaultItem.description}</div>
+                    </button>
+                  </div>
+                )}
               </div>
-            </div>
-          </motion.aside>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
+      <div
+        className={`pointer-events-auto flex h-full w-[4.9rem] flex-col items-center gap-3 border-l px-2 py-5 backdrop-blur-[20px] transition-all ${railClassName}`}
+        dir="rtl"
+      >
+        <div className="mb-2 text-[0.62rem] uppercase tracking-[0.3em] text-white/28">Menu</div>
+        <div className="flex-1 space-y-2 overflow-y-auto">
+          {roots.map((root) => {
+            const Icon = ICON_BY_KEY[root.iconKey];
+            const isActiveRoot = activeRootId === root.id;
+            const isPreviewRoot = menuState.railActiveRootId === root.id;
+            const isDrawerFocused = isOpen && menuState.focusedZone === 'rail' && menuState.railActiveRootId === root.id;
+
+            return (
+              <button
+                key={root.id}
+                ref={(node) => { buttonRefs.current[getRailButtonId(root.id)] = node; }}
+                tabIndex={isOpen ? 0 : -1}
+                onFocus={() => {
+                  if (!isOpen) return;
+                  focusRailRoot(root.id);
+                }}
+                onClick={() => {
+                  focusRailRoot(root.id);
+                  if (root.subgroups?.length) {
+                    if (isOpen) {
+                      setMenuState((prev) => ({ ...prev, focusedZone: 'rail' }));
+                    } else {
+                      onOpen();
+                    }
+                    return;
+                  }
+                  onActivate(root.defaultItem);
+                }}
+                className={`hc-focusable group relative flex h-[4.35rem] w-[4.35rem] items-center justify-center rounded-[1.6rem] border transition-all ${
+                  isDrawerFocused
+                    ? 'border-emerald-400/34 bg-[linear-gradient(180deg,rgba(0,255,204,0.18),rgba(18,92,74,0.26))] text-white shadow-[0_0_26px_rgba(0,255,204,0.18)]'
+                    : isPreviewRoot || isActiveRoot
+                      ? 'border-emerald-400/22 bg-emerald-400/[0.09] text-emerald-100'
+                      : 'border-white/8 bg-white/[0.03] text-white/64 hover:border-emerald-400/18 hover:bg-white/[0.05]'
+                }`}
+                aria-label={root.label}
+                title={root.label}
+              >
+                {(isPreviewRoot || isActiveRoot) && (
+                  <span className="absolute inset-y-3 left-0 w-[3px] rounded-full bg-gradient-to-b from-emerald-300 via-emerald-400 to-cyan-300" />
+                )}
+                <Icon className="h-6 w-6" />
+              </button>
+            );
+          })}
         </div>
-      )}
-    </AnimatePresence>
+      </div>
+    </div>
   );
 };

@@ -720,6 +720,7 @@ export default function App() {
   }), [activeMedia, posterContextMovie, showTelegramAuthModal, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings, isLocked]);
   const activeShellLayer = useMemo(() => resolveAppShellLayer(shellSnapshot), [shellSnapshot]);
   const isAnyShellOverlayOpen = activeShellLayer !== 'corridor' && activeShellLayer !== 'sidebar' && activeShellLayer !== 'navContext';
+  const showSlimMenu = activeShellLayer === 'corridor' || activeShellLayer === 'sidebar';
 
   useEffect(() => {
     document.documentElement.dataset.hcPlatform = 'android-tv';
@@ -2894,7 +2895,8 @@ export default function App() {
     const handleGlobalBackKey = (event: KeyboardEvent) => {
       if (!shouldHandleGlobalTvBack(event, {
         isEditableTarget: isEditableTextTarget(event.target),
-        hasLocalBackHandler: hasLocalBackHandlerTarget(event.target)
+        hasLocalBackHandler: hasLocalBackHandlerTarget(event.target),
+        allowGlobalWhenLocalHandler: activeShellLayer === 'corridor'
       })) {
         return;
       }
@@ -2905,7 +2907,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleGlobalBackKey, true);
     return () => window.removeEventListener('keydown', handleGlobalBackKey, true);
-  }, [performBackAction]);
+  }, [activeShellLayer, performBackAction]);
 
   const telegramStatusLabel = !tgConfigured
     ? 'Telegram API לא מוגדר בשרת'
@@ -3268,6 +3270,7 @@ export default function App() {
       </AnimatePresence>
 
       <SideMenu
+        visible={showSlimMenu}
         isOpen={!isLocked}
         groups={buildSideMenuGroups({
           movieGenres: [],
@@ -3301,6 +3304,7 @@ export default function App() {
                     : 'סרטים'
         }
         onActivate={handleMenuSelection}
+        onOpen={() => setIsLocked(false)}
         onClose={() => setIsLocked(true)}
       />
 

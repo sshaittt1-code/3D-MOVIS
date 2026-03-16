@@ -7,6 +7,7 @@ export type TvKeyEventLike = {
 export type TvBackContext = {
   isEditableTarget?: boolean;
   hasLocalBackHandler?: boolean;
+  allowGlobalWhenLocalHandler?: boolean;
 };
 
 const TV_BACK_KEYS = new Set(['Escape', 'Backspace', 'GoBack', 'BrowserBack']);
@@ -25,6 +26,6 @@ export const shouldHandleGlobalTvBack = (
   if (!isTvBackKey(event)) return false;
   const isBackspace = event.key === 'Backspace' || (event.keyCode ?? event.which ?? 0) === 8;
   if (context.isEditableTarget && isBackspace) return false;
-  if (context.hasLocalBackHandler) return false;
+  if (context.hasLocalBackHandler && !context.allowGlobalWhenLocalHandler) return false;
   return true;
 };

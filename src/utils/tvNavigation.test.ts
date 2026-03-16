@@ -31,6 +31,16 @@ test('shouldHandleGlobalTvBack ignores ui scope targets', () => {
   );
 });
 
+test('shouldHandleGlobalTvBack can still open the sidebar from corridor-level targets', () => {
+  assert.equal(
+    shouldHandleGlobalTvBack(
+      { key: 'Escape' },
+      { hasLocalBackHandler: true, allowGlobalWhenLocalHandler: true }
+    ),
+    true
+  );
+});
+
 test('shouldHandleGlobalTvBack accepts corridor-level back keys', () => {
   assert.equal(
     shouldHandleGlobalTvBack({ key: 'Escape' }, { isEditableTarget: false, hasLocalBackHandler: false }),

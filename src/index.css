@@ -211,10 +211,10 @@ button {
 
 .hc-tab:hover,
 .hc-tab:focus-visible {
-  border-color: rgba(60, 255, 191, 0.34);
-  background: rgba(18, 92, 74, 0.32);
+  border-color: rgba(72, 255, 181, 0.44);
+  background: linear-gradient(180deg, rgba(18, 92, 74, 0.44), rgba(8, 44, 36, 0.52));
   color: white;
-  box-shadow: 0 0 0 1px rgba(60, 255, 191, 0.22), 0 0 38px rgba(0, 255, 170, 0.24);
+  box-shadow: 0 0 0 1px rgba(60, 255, 191, 0.26), 0 0 48px rgba(0, 255, 170, 0.32);
   outline: none;
 }
 
@@ -242,10 +242,10 @@ button {
 
 .hc-pill:hover,
 .hc-pill:focus-visible {
-  border-color: rgba(60, 255, 191, 0.34);
-  background: rgba(18, 92, 74, 0.28);
+  border-color: rgba(72, 255, 181, 0.42);
+  background: linear-gradient(180deg, rgba(18, 92, 74, 0.4), rgba(8, 44, 36, 0.46));
   color: white;
-  box-shadow: 0 0 0 1px rgba(60, 255, 191, 0.18), 0 0 34px rgba(0, 255, 170, 0.2);
+  box-shadow: 0 0 0 1px rgba(60, 255, 191, 0.22), 0 0 40px rgba(0, 255, 170, 0.28);
   outline: none;
 }
 
