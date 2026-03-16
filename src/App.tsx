@@ -108,32 +108,23 @@ import {
   getSearchSourceLabel,
   summarizeSearchResultsBySource
 } from './utils/libraryState';
+import {
+  getTvDirection,
+  hasLocalBackHandlerTarget,
+  isTvNavigationKey,
+  isTvSelectKey,
+  isUiScopeTarget,
+  stopTvEvent
+} from './utils/tvRemote';
 
 // --- API Helpers ---
 const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://threed-movis.onrender.com';
 const LAST_GOOD_FEED_STORAGE_KEY = 'last_good_feed_v1';
-const isTvSelectKey = (e: KeyboardEvent) =>
-  e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
-
-const isTvNavigationKey = (e: KeyboardEvent) =>
-  ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || isTvSelectKey(e);
 
 const blurActiveElement = () => {
   const activeElement = document.activeElement as HTMLElement | null;
   activeElement?.blur?.();
 };
-
-const stopTvEvent = (e: KeyboardEvent) => {
-  e.preventDefault();
-  e.stopPropagation();
-  e.stopImmediatePropagation?.();
-};
-
-const isUiScopeTarget = (target: EventTarget | null) =>
-  typeof Element !== 'undefined' && target instanceof Element && !!target.closest('[data-tv-scope="ui"]');
-
-const hasLocalBackHandlerTarget = (target: EventTarget | null) =>
-  typeof Element !== 'undefined' && target instanceof Element && !!target.closest('[data-tv-back-scope="local"]');
 
 const fetchApiJson = async <T = any>(path: string, init: RequestInit = {}): Promise<T> => {
   const sessionStr = safeGetString(localStorage, 'tg_session');
@@ -257,15 +248,16 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
       }
       if (!isLocked || isAnyModalOpen || !!selectedMovie) return;
       if (isTvNavigationKey(e)) stopTvEvent(e);
-      if (e.key === 'ArrowUp') {
+      const direction = getTvDirection(e);
+      if (direction === 'up') {
         setTargetPos(p => new THREE.Vector3(p.x, p.y, p.z - STEP_SIZE));
         targetRotY.current = 0;
-      } else if (e.key === 'ArrowDown') {
+      } else if (direction === 'down') {
         setTargetPos(p => new THREE.Vector3(p.x, p.y, Math.min(p.z + STEP_SIZE, CORRIDOR_INITIAL_CAMERA_Z + 3)));
         targetRotY.current = 0;
-      } else if (e.key === 'ArrowLeft') {
+      } else if (direction === 'left') {
         keys.current.left = true;
-      } else if (e.key === 'ArrowRight') {
+      } else if (direction === 'right') {
         keys.current.right = true;
       } else if (isTvSelectKey(e)) {
         if (e.repeat || selectKeyDownAtRef.current !== null) return;
@@ -286,8 +278,9 @@ const TVController = ({ posterLayout, isLocked, onPosterSelect, onPosterLongPres
         clearLongPress();
         return;
       }
-      if (e.key === 'ArrowLeft') keys.current.left = false;
-      else if (e.key === 'ArrowRight') keys.current.right = false;
+      const direction = getTvDirection(e);
+      if (direction === 'left') keys.current.left = false;
+      else if (direction === 'right') keys.current.right = false;
       else if (isTvSelectKey(e)) {
         if (selectKeyDownAtRef.current === null) return;
         const duration = selectKeyDownAtRef.current ? Date.now() - selectKeyDownAtRef.current : 0;
@@ -591,6 +584,17 @@ export default function App() {
   }), [activeMedia, posterContextMovie, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings, isLocked]);
   const activeShellLayer = useMemo(() => resolveAppShellLayer(shellSnapshot), [shellSnapshot]);
   const isAnyShellOverlayOpen = activeShellLayer !== 'corridor' && activeShellLayer !== 'sidebar' && activeShellLayer !== 'navContext';
+
+  useEffect(() => {
+    document.documentElement.dataset.hcPlatform = 'android-tv';
+    document.body.classList.add('hc-tv-app');
+    document.body.classList.toggle('hc-modal-open', isAnyShellOverlayOpen);
+    return () => {
+      document.body.classList.remove('hc-tv-app');
+      document.body.classList.remove('hc-modal-open');
+      delete document.documentElement.dataset.hcPlatform;
+    };
+  }, [isAnyShellOverlayOpen]);
 
   const handlePosterBatchSizeChange = useCallback((value: number) => {
     setPosterBatchSize(value);
@@ -2192,7 +2196,7 @@ export default function App() {
         : 'bg-white/40';
 
   return (
-    <div className="w-full h-screen bg-black overflow-hidden relative text-white" dir="rtl">
+    <div className="hc-app-shell w-full h-screen overflow-hidden bg-black text-white" dir="rtl">
       <Canvas camera={{ position: [0, 1.6, 2], fov: 75 }}>
         <ambientLight intensity={0.8} />
         <Suspense fallback={null}>
@@ -2207,14 +2211,14 @@ export default function App() {
       </Canvas>
 
       {(isLoadingContent || isLoadingMore) && (
-        <div className="absolute top-6 left-6 z-30 flex items-center gap-3 rounded-full bg-black/70 px-5 py-3 backdrop-blur-md border border-[#00ffcc]/20">
+        <div className="hc-tv-safe-top-left absolute z-30 flex items-center gap-3 rounded-full border border-[#00ffcc]/20 bg-black/70 px-5 py-3 backdrop-blur-md">
           <Loader2 className="animate-spin text-[#00ffcc]" size={20} />
           <span className="text-sm text-white/80">{isLoadingContent ? 'טוען תוכן...' : 'טוען עוד...'}</span>
         </div>
       )}
 
       {hierarchyMeta && (
-        <div className="absolute right-8 top-6 z-30 max-w-[34rem] rounded-[28px] border border-[#00ffcc]/18 bg-[linear-gradient(180deg,rgba(3,10,14,0.86),rgba(4,8,12,0.72))] px-6 py-4 text-right shadow-[0_0_40px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+        <div className="hc-tv-safe-top-right absolute z-30 max-w-[34rem] rounded-[28px] border border-[#00ffcc]/18 bg-[linear-gradient(180deg,rgba(3,10,14,0.86),rgba(4,8,12,0.72))] px-6 py-4 text-right shadow-[0_0_40px_rgba(0,0,0,0.35)] backdrop-blur-xl">
           <div className="text-[11px] uppercase tracking-[0.34em] text-[#7debd6]">{hierarchyMeta.eyebrow}</div>
           <div className="mt-2 text-2xl font-semibold text-white">{hierarchyMeta.title}</div>
           <div className="mt-2 text-sm text-white/55">{hierarchyMeta.trail}</div>
@@ -2248,10 +2252,10 @@ export default function App() {
 
       <AnimatePresence>
         {showSearch && isLocked && (
-          <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="hc-panel absolute top-10 right-10 z-50 w-[35rem] p-6" data-tv-scope="ui">
+          <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="hc-panel hc-tv-safe-top-right absolute z-50 w-[35rem] p-6" data-tv-scope="ui">
             <div className="flex items-center gap-4">
               <div className="hc-badge px-4 py-4 text-[#00ffcc]"><Search size={24} /></div>
-              <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="חפש סרט או סדרה..." className="flex-1 bg-transparent border-none text-2xl outline-none" />
+              <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="חפש סרט או סדרה..." className="hc-input flex-1 border-none bg-transparent px-0 py-0 text-2xl shadow-none focus:border-none focus:bg-transparent focus:shadow-none" />
               {isSearchingTmdb && <Loader2 className="animate-spin text-[#00ffcc]" />}
               <button onClick={closeSearchSurface} className="hc-close-button p-2 opacity-80"><X /></button>
             </div>
@@ -2420,8 +2424,8 @@ export default function App() {
       />
 
       {selectedMovie && !activeMedia && (
-        <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/90 p-10" data-tv-scope="ui">
-          <div className="bg-[#111] border border-white/10 rounded-[50px] p-12 flex gap-12 max-w-6xl w-full">
+        <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/90 p-[var(--hc-tv-safe-y)]" data-tv-scope="ui">
+          <div className="hc-panel flex w-full max-w-6xl gap-12 rounded-[50px] p-12">
             <img src={selectedMovie.poster} className="w-96 rounded-[30px] shadow-2xl" />
             <div className="flex flex-col flex-1">
               <h2 className="text-6xl font-bold mb-6">{selectedMovie.title}</h2>
@@ -2438,8 +2442,8 @@ export default function App() {
               </div>
               <p className="text-2xl text-gray-400 leading-relaxed mb-10">{selectedMovie.desc}</p>
               <div className="flex gap-6 mt-auto">
-                <button onClick={handleSelectedMoviePrimaryAction} className="flex-1 py-6 bg-[#2AABEE] text-white text-3xl font-bold rounded-3xl">{selectedMoviePrimaryActionLabel}</button>
-                <button onClick={() => { setShowCinemaScreen(false); setSelectedMovie(null); }} className="px-12 py-6 bg-white/10 text-2xl rounded-3xl">סגור</button>
+                <button onClick={handleSelectedMoviePrimaryAction} className="hc-button hc-button--telegram flex-1 rounded-3xl py-6 text-3xl font-bold">{selectedMoviePrimaryActionLabel}</button>
+                <button onClick={() => { setShowCinemaScreen(false); setSelectedMovie(null); }} className="hc-button hc-button--ghost rounded-3xl px-12 py-6 text-2xl">סגור</button>
               </div>
             </div>
           </div>

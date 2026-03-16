@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { SideMenuGroup, SideMenuItem } from '../utils/menuConfig';
+import { isTvBackKey } from '../utils/tvNavigation';
+import { getTvDirection, isTvSelectKey } from '../utils/tvRemote';
 
 type SideMenuProps = {
   isOpen: boolean;
@@ -63,12 +65,14 @@ export const SideMenu = ({ isOpen, groups, activeItemId, currentLabel, onActivat
   };
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === 'ArrowDown') {
+    const direction = getTvDirection(event);
+
+    if (direction === 'down') {
       event.preventDefault();
       moveFocus(1);
       return;
     }
-    if (event.key === 'ArrowUp') {
+    if (direction === 'up') {
       event.preventDefault();
       moveFocus(-1);
       return;
@@ -77,7 +81,7 @@ export const SideMenu = ({ isOpen, groups, activeItemId, currentLabel, onActivat
     const currentEntry = visibleEntries.find((entry) => entry.id === focusedEntryId);
     if (!currentEntry) return;
 
-    if (event.key === 'ArrowRight') {
+    if (direction === 'right') {
       event.preventDefault();
       if (currentEntry.kind === 'group') {
         setExpandedGroups((current) => ({ ...current, [currentEntry.groupId]: true }));
@@ -85,7 +89,7 @@ export const SideMenu = ({ isOpen, groups, activeItemId, currentLabel, onActivat
       return;
     }
 
-    if (event.key === 'ArrowLeft') {
+    if (direction === 'left') {
       event.preventDefault();
       if (currentEntry.kind === 'item') {
         setFocusedEntryId(`group:${currentEntry.groupId}`);
@@ -99,13 +103,13 @@ export const SideMenu = ({ isOpen, groups, activeItemId, currentLabel, onActivat
       return;
     }
 
-    if (event.key === 'Escape' || event.key === 'Backspace') {
+    if (isTvBackKey(event)) {
       event.preventDefault();
       onClose();
       return;
     }
 
-    if (event.key === 'Enter' || event.key === 'Select') {
+    if (isTvSelectKey(event)) {
       event.preventDefault();
       if (currentEntry.kind === 'group') {
         setExpandedGroups((current) => ({ ...current, [currentEntry.groupId]: !current[currentEntry.groupId] }));
@@ -127,10 +131,10 @@ export const SideMenu = ({ isOpen, groups, activeItemId, currentLabel, onActivat
             transition={{ type: 'spring', stiffness: 260, damping: 28 }}
             data-tv-scope="ui"
             data-tv-back-scope="local"
-            className="pointer-events-auto h-full w-[22rem] border-l border-[#00ffcc]/16 bg-[linear-gradient(180deg,rgba(5,15,20,0.94),rgba(2,7,10,0.82))] shadow-[-24px_0_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl"
+            className="hc-tv-safe-right hc-tv-safe-y pointer-events-auto h-full w-[22rem] border-l border-[#00ffcc]/16 bg-[linear-gradient(180deg,rgba(5,15,20,0.94),rgba(2,7,10,0.82))] shadow-[-24px_0_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl"
             onKeyDown={handleKeyDown}
           >
-            <div className="border-b border-white/10 px-6 pb-5 pt-8">
+            <div className="border-b border-white/10 px-6 pb-5 pt-2">
               <p className="text-[11px] uppercase tracking-[0.35em] text-[#7debd6]">Corridor Console</p>
               <div className="hc-card mt-4 px-5 py-4">
                 <p className="text-xs text-white/55">המסדרון הפעיל</p>

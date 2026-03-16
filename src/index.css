@@ -25,6 +25,8 @@
   --hc-radius-lg: 30px;
   --hc-radius-md: 24px;
   --hc-transition: 180ms ease;
+  --hc-tv-safe-x: clamp(1.25rem, 3vw, 3.25rem);
+  --hc-tv-safe-y: clamp(1.1rem, 2.8vh, 2.75rem);
 }
 
 html,
@@ -43,6 +45,15 @@ body {
   font-family: "Segoe UI", "Assistant", "Noto Sans Hebrew", system-ui, sans-serif;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+body.hc-tv-app {
+  overflow: hidden;
+}
+
+body.hc-modal-open {
+  touch-action: none;
 }
 
 button,
@@ -87,10 +98,16 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2rem;
+  padding: var(--hc-tv-safe-y) var(--hc-tv-safe-x);
   background:
     radial-gradient(circle at center, rgba(0, 255, 204, 0.08), transparent 28rem),
     rgba(0, 0, 0, 0.88);
+}
+
+.hc-app-shell {
+  position: relative;
+  min-height: 100vh;
+  isolation: isolate;
 }
 
 .hc-panel {
@@ -386,6 +403,25 @@ button {
   box-shadow:
     0 0 0 1px rgba(0, 255, 204, 0.14),
     0 0 28px rgba(0, 255, 204, 0.16);
+}
+
+.hc-tv-safe-top-left {
+  top: var(--hc-tv-safe-y);
+  left: var(--hc-tv-safe-x);
+}
+
+.hc-tv-safe-top-right {
+  top: var(--hc-tv-safe-y);
+  right: var(--hc-tv-safe-x);
+}
+
+.hc-tv-safe-right {
+  padding-right: var(--hc-tv-safe-x);
+}
+
+.hc-tv-safe-y {
+  padding-top: var(--hc-tv-safe-y);
+  padding-bottom: var(--hc-tv-safe-y);
 }
 
 .hc-empty-state {
