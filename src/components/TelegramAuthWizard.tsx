@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, ShieldCheck, X } from 'lucide-react';
+import { Loader2, X } from 'lucide-react';
 import type { TelegramAuthStatus } from '../utils/telegramPlayer';
 import { TELEGRAM_DEFAULT_COUNTRY_CODE } from '../utils/telegramLogin';
 import { isTvBackKey } from '../utils/tvNavigation';
@@ -25,13 +25,19 @@ type TelegramAuthWizardProps = {
   onClose: () => void;
 };
 
-const STEP_LABELS = {
-  phone: 'נא להכניס טלפון',
-  code: 'הכנס קוד אימות',
-  password: 'הכנס קוד אימות דו שלבי'
-} as const;
+type WizardStep = 'phone' | 'code' | 'password';
 
-type WizardStep = keyof typeof STEP_LABELS;
+const STEP_TITLES: Record<WizardStep, string> = {
+  phone: 'הכנס מספר טלפון',
+  code: 'הכנס קוד אימות',
+  password: 'הכנס אימות דו שלבי'
+};
+
+const STEP_TEXT: Record<WizardStep, string> = {
+  phone: 'הזן רק את המספר הנייד שלך. הקידומת +972 כבר מתווספת אוטומטית.',
+  code: 'קוד האימות נשלח לחשבון הטלגרם שלך. הזן אותו כדי להמשיך.',
+  password: 'לחשבון שלך מופעל אימות דו שלבי. הזן את הסיסמה כדי להשלים את החיבור.'
+};
 
 const getWizardStep = (status: TelegramAuthStatus): WizardStep => {
   if (status === 'passwordInput') return 'password';
@@ -84,10 +90,7 @@ export const TelegramAuthWizard = ({
   }, [focusedIndex, focusIds]);
 
   const moveFocus = (direction: 1 | -1) => {
-    setFocusedIndex((current) => {
-      const next = Math.max(0, Math.min(focusIds.length - 1, current + direction));
-      return next;
-    });
+    setFocusedIndex((current) => Math.max(0, Math.min(focusIds.length - 1, current + direction)));
   };
 
   const activateCurrent = () => {
@@ -144,150 +147,146 @@ export const TelegramAuthWizard = ({
     }
   };
 
-  const statusText = !configured
-    ? 'החיבור לטלגרם לא מוגדר כרגע בשרת.'
-    : step === 'phone'
-      ? 'הזן את מספר הנייד שלך. הקידומת +972 כבר מוכנה.'
-      : step === 'code'
-        ? 'הקוד נשלח לטלגרם. הזן אותו כדי להמשיך.'
-        : 'לחשבון שלך מופעל אימות דו שלבי. הזן את הסיסמה כדי לסיים.';
+  const renderStepContent = () => {
+    if (!configured) {
+      return (
+        <div className="rounded-[26px] border border-red-400/15 bg-red-500/10 px-6 py-5 text-sm text-red-100">
+          חיבור Telegram לא מוגדר כרגע בשרת. צריך להגדיר `TG_API_ID` ו־`TG_API_HASH`.
+        </div>
+      );
+    }
+
+    if (step === 'phone') {
+      return (
+        <>
+          <label className="block text-sm text-white/55">מספר טלפון</label>
+          <div className="mt-3 flex items-center gap-3">
+            <div className="hc-telegram-prefix">{TELEGRAM_DEFAULT_COUNTRY_CODE}</div>
+            <input
+              ref={(node) => { fieldRefs.current[focusIds.indexOf('phone')] = node; }}
+              value={phoneDigits}
+              onFocus={() => setFocusedIndex(focusIds.indexOf('phone'))}
+              onChange={(event) => onPhoneChange(event.target.value)}
+              inputMode="numeric"
+              autoFocus
+              autoComplete="tel-national"
+              maxLength={10}
+              disabled={busy}
+              placeholder="501234567"
+              className="hc-input flex-1 text-left text-2xl"
+            />
+          </div>
+          <div className="mt-4 text-sm text-white/55">
+            המספר שיישלח: <span className="text-white">{phoneE164 || `${TELEGRAM_DEFAULT_COUNTRY_CODE}...`}</span>
+          </div>
+          <button
+            ref={(node) => { fieldRefs.current[focusIds.indexOf('submit')] = node; }}
+            onFocus={() => setFocusedIndex(focusIds.indexOf('submit'))}
+            onClick={onStartLogin}
+            disabled={busy || !canStartLogin}
+            className="hc-button hc-button--telegram mt-8 w-full justify-center px-6 py-4 text-base"
+          >
+            {busy ? <Loader2 size={18} className="animate-spin" /> : null}
+            <span>{phoneE164 ? `שלח קוד ל־${phoneE164}` : 'שלח קוד אימות'}</span>
+          </button>
+        </>
+      );
+    }
+
+    if (step === 'code') {
+      return (
+        <>
+          <label className="block text-sm text-white/55">קוד אימות</label>
+          <input
+            ref={(node) => { fieldRefs.current[focusIds.indexOf('code')] = node; }}
+            value={code}
+            onFocus={() => setFocusedIndex(focusIds.indexOf('code'))}
+            onChange={(event) => onCodeChange(event.target.value)}
+            inputMode="numeric"
+            autoFocus
+            placeholder="12345"
+            className="hc-input mt-3 text-center text-3xl tracking-[0.28em]"
+          />
+          <button
+            ref={(node) => { fieldRefs.current[focusIds.indexOf('submit')] = node; }}
+            onFocus={() => setFocusedIndex(focusIds.indexOf('submit'))}
+            onClick={onSubmitCode}
+            disabled={busy || !code.trim()}
+            className="hc-button hc-button--telegram mt-8 w-full justify-center px-6 py-4 text-base"
+          >
+            {busy ? <Loader2 size={18} className="animate-spin" /> : null}
+            <span>אמת קוד</span>
+          </button>
+          <button
+            ref={(node) => { fieldRefs.current[focusIds.indexOf('resend')] = node; }}
+            onFocus={() => setFocusedIndex(focusIds.indexOf('resend'))}
+            onClick={onResendCode}
+            disabled={busy || !canStartLogin}
+            className="hc-button hc-button--ghost mt-3 w-full justify-center px-6 py-4 text-base"
+          >
+            שלח שוב קוד
+          </button>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <label className="block text-sm text-white/55">אימות דו שלבי</label>
+        <input
+          ref={(node) => { fieldRefs.current[focusIds.indexOf('password')] = node; }}
+          value={password}
+          onFocus={() => setFocusedIndex(focusIds.indexOf('password'))}
+          onChange={(event) => onPasswordChange(event.target.value)}
+          type="password"
+          autoFocus
+          placeholder="הזן את הסיסמה"
+          className="hc-input mt-3 text-xl"
+        />
+        <button
+          ref={(node) => { fieldRefs.current[focusIds.indexOf('submit')] = node; }}
+          onFocus={() => setFocusedIndex(focusIds.indexOf('submit'))}
+          onClick={onSubmitPassword}
+          disabled={busy || !password.trim()}
+          className="hc-button hc-button--telegram mt-8 w-full justify-center px-6 py-4 text-base"
+        >
+          {busy ? <Loader2 size={18} className="animate-spin" /> : null}
+          <span>סיים התחברות</span>
+        </button>
+      </>
+    );
+  };
 
   return (
     <div className="hc-screen-overlay" data-tv-scope="ui">
-      <div
-        className="hc-panel hc-panel--compact p-8"
-        data-tv-back-scope="local"
-        onKeyDown={handleKeyDown}
-      >
-        <div className="flex items-start justify-between gap-6">
-          <div>
-            <div className="hc-badge hc-badge--telegram">
-              <ShieldCheck size={16} />
-              <span>חיבור לטלגרם</span>
-            </div>
-            <h2 className="mt-4 text-4xl font-bold text-white">{STEP_LABELS[step]}</h2>
-            <p className="hc-subtitle mt-3 max-w-2xl text-base">{statusText}</p>
+      <div className="hc-telegram-wizard" data-tv-back-scope="local" onKeyDown={handleKeyDown}>
+        <button
+          ref={(node) => { fieldRefs.current[focusIds.indexOf('close')] = node; }}
+          onFocus={() => setFocusedIndex(focusIds.indexOf('close'))}
+          onClick={onClose}
+          className="hc-close-button absolute left-6 top-6 p-3"
+          aria-label="סגור חיבור לטלגרם"
+        >
+          <X size={22} />
+        </button>
+
+        <div className="text-center">
+          <div className="hc-telegram-step-indicator">
+            שלב {step === 'phone' ? '1' : step === 'code' ? '2' : '3'}
           </div>
-          <button
-            ref={(node) => { fieldRefs.current[focusIds.indexOf('close')] = node; }}
-            onFocus={() => setFocusedIndex(focusIds.indexOf('close'))}
-            onClick={onClose}
-            className="hc-close-button p-3"
-            aria-label="סגור חיבור לטלגרם"
-          >
-            <X size={22} />
-          </button>
+          <h2 className="mt-6 text-5xl font-bold text-white">{STEP_TITLES[step]}</h2>
+          <p className="hc-subtitle mx-auto mt-4 max-w-3xl text-lg">{STEP_TEXT[step]}</p>
         </div>
 
         {error && (
-          <div className="mt-6 rounded-[24px] border border-red-400/20 bg-red-500/10 px-5 py-4 text-sm text-red-100">
+          <div className="mt-8 rounded-[26px] border border-red-400/15 bg-red-500/10 px-6 py-5 text-sm text-red-100">
             {error}
           </div>
         )}
 
-        {!configured ? null : (
-          <div className="hc-card mt-8 p-6">
-            {step === 'phone' && (
-              <>
-                <label className="block text-sm text-white/55">מספר טלפון</label>
-                <div className="mt-3 flex items-center gap-3">
-                  <div className="hc-input w-auto min-w-[7rem] bg-white/[0.03] text-center text-lg text-white">
-                    {TELEGRAM_DEFAULT_COUNTRY_CODE}
-                  </div>
-                  <input
-                    ref={(node) => { fieldRefs.current[focusIds.indexOf('phone')] = node; }}
-                    value={phoneDigits}
-                    onFocus={() => setFocusedIndex(focusIds.indexOf('phone'))}
-                    onChange={(event) => onPhoneChange(event.target.value)}
-                    inputMode="numeric"
-                    autoFocus
-                    autoComplete="tel-national"
-                    maxLength={10}
-                    disabled={busy}
-                    placeholder="501234567"
-                    className="hc-input flex-1 text-left text-lg"
-                  />
-                </div>
-                <div className="mt-3 text-sm text-white/55">
-                  המספר שיישלח: <span className="text-white">{phoneE164 || `${TELEGRAM_DEFAULT_COUNTRY_CODE}...`}</span>
-                </div>
-                <button
-                  ref={(node) => { fieldRefs.current[focusIds.indexOf('submit')] = node; }}
-                  onFocus={() => setFocusedIndex(focusIds.indexOf('submit'))}
-                  onClick={onStartLogin}
-                  disabled={busy || !canStartLogin}
-                  className="hc-button hc-button--telegram mt-6 w-full justify-center px-6 py-4 text-base"
-                >
-                  {busy ? <Loader2 size={18} className="animate-spin" /> : <ShieldCheck size={18} />}
-                  <span>{phoneE164 ? `שלח קוד ל־${phoneE164}` : 'שלח קוד אימות'}</span>
-                </button>
-              </>
-            )}
-
-            {step === 'code' && (
-              <>
-                <label className="block text-sm text-white/55">קוד אימות</label>
-                <input
-                  ref={(node) => { fieldRefs.current[focusIds.indexOf('code')] = node; }}
-                  value={code}
-                  onFocus={() => setFocusedIndex(focusIds.indexOf('code'))}
-                  onChange={(event) => onCodeChange(event.target.value)}
-                  inputMode="numeric"
-                  autoFocus
-                  placeholder="12345"
-                  className="hc-input mt-3 text-center text-2xl tracking-[0.32em]"
-                />
-                <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                  <button
-                    ref={(node) => { fieldRefs.current[focusIds.indexOf('submit')] = node; }}
-                    onFocus={() => setFocusedIndex(focusIds.indexOf('submit'))}
-                    onClick={onSubmitCode}
-                    disabled={busy || !code.trim()}
-                    className="hc-button hc-button--telegram flex-1 justify-center px-6 py-4 text-base"
-                  >
-                    {busy ? <Loader2 size={18} className="animate-spin" /> : <ShieldCheck size={18} />}
-                    <span>אמת קוד</span>
-                  </button>
-                  <button
-                    ref={(node) => { fieldRefs.current[focusIds.indexOf('resend')] = node; }}
-                    onFocus={() => setFocusedIndex(focusIds.indexOf('resend'))}
-                    onClick={onResendCode}
-                    disabled={busy || !canStartLogin}
-                    className="hc-button hc-button--ghost flex-1 justify-center px-6 py-4 text-base"
-                  >
-                    שלח שוב קוד
-                  </button>
-                </div>
-              </>
-            )}
-
-            {step === 'password' && (
-              <>
-                <label className="block text-sm text-white/55">קוד אימות דו שלבי</label>
-                <input
-                  ref={(node) => { fieldRefs.current[focusIds.indexOf('password')] = node; }}
-                  value={password}
-                  onFocus={() => setFocusedIndex(focusIds.indexOf('password'))}
-                  onChange={(event) => onPasswordChange(event.target.value)}
-                  type="password"
-                  autoFocus
-                  placeholder="הזן את הקוד"
-                  className="hc-input mt-3 text-lg"
-                />
-                <button
-                  ref={(node) => { fieldRefs.current[focusIds.indexOf('submit')] = node; }}
-                  onFocus={() => setFocusedIndex(focusIds.indexOf('submit'))}
-                  onClick={onSubmitPassword}
-                  disabled={busy || !password.trim()}
-                  className="hc-button hc-button--magenta mt-6 w-full justify-center px-6 py-4 text-base"
-                >
-                  {busy ? <Loader2 size={18} className="animate-spin" /> : <ShieldCheck size={18} />}
-                  <span>סיים התחברות</span>
-                </button>
-              </>
-            )}
-          </div>
-        )}
+        <div className="mt-10 rounded-[32px] border border-white/8 bg-black/18 px-8 py-8">
+          {renderStepContent()}
+        </div>
       </div>
     </div>
   );

@@ -70,7 +70,7 @@ export const TelegramConsolePanel = ({
             <ShieldCheck size={16} />
             <span>טלגרם</span>
           </div>
-          <h3 className="mt-4 text-3xl font-semibold text-white">חיבור טלגרם עדיין לא מוגדר</h3>
+          <h3 className="mt-4 text-3xl font-semibold text-white">חיבור Telegram עדיין לא מוגדר</h3>
           <p className="hc-subtitle mt-3 text-base">
             כדי להשתמש בטלגרם צריך להגדיר בשרת את <code>TG_API_ID</code> ואת <code>TG_API_HASH</code>.
           </p>
@@ -81,16 +81,12 @@ export const TelegramConsolePanel = ({
 
   if (!isLoggedIn) {
     return (
-      <section className="hc-panel-section mt-8 p-8">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+      <section className="hc-panel-section mt-8 p-6">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <div className="hc-badge hc-badge--telegram">
-              <ShieldCheck size={16} />
-              <span>חיבור טלגרם</span>
-            </div>
-            <h3 className="mt-4 text-3xl font-semibold text-white">החשבון לא מחובר כרגע</h3>
-            <p className="hc-subtitle mt-3 max-w-2xl text-base">
-              כדי להתחבר, פתח את קטגוריית טלגרם בתפריט הראשי. שם ייפתח wizard קצר של טלפון, קוד אימות, ואם צריך גם אימות דו שלבי.
+            <div className="text-2xl font-semibold text-white">Telegram עדיין לא מחובר</div>
+            <p className="hc-subtitle mt-2 max-w-2xl text-sm">
+              את החיבור מבצעים מתוך קטגוריית טלגרם בתפריט הראשי. אחרי ההתחברות יופיעו כאן מצב החשבון וכלי הניהול.
             </p>
           </div>
           <button
@@ -103,8 +99,12 @@ export const TelegramConsolePanel = ({
           </button>
         </div>
 
+        <div className="mt-5 rounded-[22px] border border-white/8 bg-white/[0.03] px-5 py-4 text-sm text-white/65">
+          פתח את קטגוריית טלגרם, הזן מספר טלפון, אחר כך קוד אימות, ואם צריך גם אימות דו שלבי. אין צורך לפתוח חיבור מתוך מסך ההגדרות.
+        </div>
+
         {error && (
-          <div className="mt-6 rounded-[24px] border border-red-400/20 bg-red-500/10 px-5 py-4 text-sm text-red-100">
+          <div className="mt-5 rounded-[22px] border border-red-400/20 bg-red-500/10 px-5 py-4 text-sm text-red-100">
             {error}
           </div>
         )}
