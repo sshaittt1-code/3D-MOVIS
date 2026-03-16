@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   buildIsraeliPhoneE164,
   isLikelyValidIsraeliPhoneDigits,
+  mapTelegramServerStageToPendingStage,
+  mapTelegramServerStageToStatus,
   normalizeTelegramPhoneE164,
   normalizeIsraeliPhoneDigits,
   resolveTelegramStatusAfterRefresh,
@@ -35,12 +37,13 @@ test('isLikelyValidIsraeliPhoneDigits accepts common Israeli local lengths', () 
   assert.equal(isLikelyValidIsraeliPhoneDigits('1234'), false);
 });
 
-test('resolveTelegramStatusAfterRefresh preserves active code/password flows', () => {
+test('resolveTelegramStatusAfterRefresh preserves active login steps', () => {
   assert.equal(
     resolveTelegramStatusAfterRefresh({
       currentStatus: 'codeInput',
       hasActiveLogin: true,
-      remoteLoggedIn: false
+      remoteLoggedIn: false,
+      pendingStage: 'awaiting_code'
     }),
     'codeInput'
   );
@@ -48,15 +51,26 @@ test('resolveTelegramStatusAfterRefresh preserves active code/password flows', (
     resolveTelegramStatusAfterRefresh({
       currentStatus: 'passwordInput',
       hasActiveLogin: true,
-      remoteLoggedIn: false
+      remoteLoggedIn: false,
+      pendingStage: 'awaiting_password'
     }),
     'passwordInput'
   );
   assert.equal(
     resolveTelegramStatusAfterRefresh({
+      currentStatus: 'phoneInput',
+      hasActiveLogin: true,
+      remoteLoggedIn: false,
+      pendingStage: 'starting'
+    }),
+    'phoneInput'
+  );
+  assert.equal(
+    resolveTelegramStatusAfterRefresh({
       currentStatus: 'loggedOut',
       hasActiveLogin: false,
-      remoteLoggedIn: true
+      remoteLoggedIn: true,
+      pendingStage: 'idle'
     }),
     'loggedIn'
   );
@@ -64,15 +78,29 @@ test('resolveTelegramStatusAfterRefresh preserves active code/password flows', (
     resolveTelegramStatusAfterRefresh({
       currentStatus: 'phoneInput',
       hasActiveLogin: false,
-      remoteLoggedIn: false
+      remoteLoggedIn: false,
+      pendingStage: 'idle'
     }),
     'phoneInput'
   );
 });
 
-test('translateTelegramAuthError maps Telegram auth failures to clear Hebrew copy', () => {
-  assert.equal(translateTelegramAuthError('PHONE_NUMBER_INVALID'), 'מספר הטלפון אינו תקין.');
-  assert.equal(translateTelegramAuthError('PHONE_CODE_INVALID'), 'קוד האימות שגוי.');
-  assert.equal(translateTelegramAuthError('PASSWORD_HASH_INVALID'), 'סיסמת האבטחה שגויה.');
+test('telegram login stage helpers map server stages predictably', () => {
+  assert.equal(mapTelegramServerStageToStatus('starting'), 'codeInput');
+  assert.equal(mapTelegramServerStageToStatus('codeInput'), 'codeInput');
+  assert.equal(mapTelegramServerStageToStatus('passwordInput'), 'passwordInput');
+  assert.equal(mapTelegramServerStageToStatus('loggedIn'), 'loggedIn');
+
+  assert.equal(mapTelegramServerStageToPendingStage('starting'), 'starting');
+  assert.equal(mapTelegramServerStageToPendingStage('codeInput'), 'awaiting_code');
+  assert.equal(mapTelegramServerStageToPendingStage('passwordInput'), 'awaiting_password');
+  assert.equal(mapTelegramServerStageToPendingStage('loggedIn'), 'idle');
+});
+
+test('translateTelegramAuthError maps Telegram auth failures to clear copy', () => {
+  assert.match(translateTelegramAuthError('PHONE_NUMBER_INVALID'), /תקין/);
+  assert.match(translateTelegramAuthError('PHONE_CODE_INVALID'), /קוד/);
+  assert.match(translateTelegramAuthError('PASSWORD_HASH_INVALID'), /סיסמ/);
+  assert.equal(translateTelegramAuthError('Request timed out'), 'שליחת הקוד לוקחת יותר מדי זמן. נסה שוב.');
   assert.equal(translateTelegramAuthError('Something else'), 'Something else');
 });

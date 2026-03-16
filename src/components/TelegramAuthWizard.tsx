@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import type { TelegramAuthStatus } from '../utils/telegramPlayer';
-import { TELEGRAM_DEFAULT_COUNTRY_CODE } from '../utils/telegramLogin';
+import {
+  TELEGRAM_DEFAULT_COUNTRY_CODE,
+  type TelegramAuthPendingStage
+} from '../utils/telegramLogin';
 import { isTvBackKey } from '../utils/tvNavigation';
 import { getTvDirection, isTvSelectKey, stopTvEvent } from '../utils/tvRemote';
 
@@ -9,6 +12,7 @@ type TelegramAuthWizardProps = {
   configured: boolean;
   status: TelegramAuthStatus;
   busy: boolean;
+  pendingStage: TelegramAuthPendingStage;
   error: string | null;
   phoneDigits: string;
   phoneE164: string;
@@ -30,13 +34,13 @@ type WizardStep = 'phone' | 'code' | 'password';
 const STEP_TITLES: Record<WizardStep, string> = {
   phone: 'הכנס מספר טלפון',
   code: 'הכנס קוד אימות',
-  password: 'הכנס אימות דו שלבי'
+  password: 'הכנס קוד אימות דו שלבי'
 };
 
 const STEP_TEXT: Record<WizardStep, string> = {
   phone: 'הזן רק את המספר הנייד שלך. הקידומת +972 כבר מתווספת אוטומטית.',
   code: 'קוד האימות נשלח לחשבון הטלגרם שלך. הזן אותו כדי להמשיך.',
-  password: 'לחשבון שלך מופעל אימות דו שלבי. הזן את הסיסמה כדי להשלים את החיבור.'
+  password: 'אם בחשבון שלך מופעל אימות דו שלבי, הזן כאן את סיסמת האבטחה.'
 };
 
 const getWizardStep = (status: TelegramAuthStatus): WizardStep => {
@@ -49,6 +53,7 @@ export const TelegramAuthWizard = ({
   configured,
   status,
   busy,
+  pendingStage,
   error,
   phoneDigits,
   phoneE164,
@@ -65,6 +70,7 @@ export const TelegramAuthWizard = ({
   onClose
 }: TelegramAuthWizardProps) => {
   const step = getWizardStep(status);
+  const isStarting = pendingStage === 'starting';
   const [focusedIndex, setFocusedIndex] = useState(0);
   const fieldRefs = useRef<Array<HTMLElement | null>>([]);
 
@@ -72,22 +78,43 @@ export const TelegramAuthWizard = ({
     if (!configured) {
       return ['close'];
     }
+
+    if (step === 'phone' && isStarting) {
+      return ['close'];
+    }
+
     if (step === 'phone') {
       return ['phone', 'submit', 'close'];
     }
+
     if (step === 'code') {
       return ['code', 'submit', 'resend', 'close'];
     }
+
     return ['password', 'submit', 'close'];
-  }, [configured, step]);
+  }, [configured, isStarting, step]);
 
   useEffect(() => {
     setFocusedIndex(0);
-  }, [step]);
+  }, [step, pendingStage]);
 
   useEffect(() => {
     fieldRefs.current[focusedIndex]?.focus();
-  }, [focusedIndex, focusIds]);
+  }, [focusIds, focusedIndex]);
+
+  const bindFieldRef = (id: string) => (node: HTMLElement | null) => {
+    const index = focusIds.indexOf(id);
+    if (index >= 0) {
+      fieldRefs.current[index] = node;
+    }
+  };
+
+  const focusField = (id: string) => () => {
+    const index = focusIds.indexOf(id);
+    if (index >= 0) {
+      setFocusedIndex(index);
+    }
+  };
 
   const moveFocus = (direction: 1 | -1) => {
     setFocusedIndex((current) => Math.max(0, Math.min(focusIds.length - 1, current + direction)));
@@ -150,8 +177,8 @@ export const TelegramAuthWizard = ({
   const renderStepContent = () => {
     if (!configured) {
       return (
-        <div className="rounded-[26px] border border-red-400/15 bg-red-500/10 px-6 py-5 text-sm text-red-100">
-          חיבור Telegram לא מוגדר כרגע בשרת. צריך להגדיר `TG_API_ID` ו־`TG_API_HASH`.
+        <div className="rounded-[26px] border border-red-400/20 bg-red-500/10 px-6 py-5 text-sm text-red-100">
+          חיבור Telegram לא מוגדר כרגע בשרת. צריך להגדיר <code>TG_API_ID</code> ו־<code>TG_API_HASH</code>.
         </div>
       );
     }
@@ -163,15 +190,15 @@ export const TelegramAuthWizard = ({
           <div className="mt-3 flex items-center gap-3">
             <div className="hc-telegram-prefix">{TELEGRAM_DEFAULT_COUNTRY_CODE}</div>
             <input
-              ref={(node) => { fieldRefs.current[focusIds.indexOf('phone')] = node; }}
+              ref={bindFieldRef('phone')}
               value={phoneDigits}
-              onFocus={() => setFocusedIndex(focusIds.indexOf('phone'))}
+              onFocus={focusField('phone')}
               onChange={(event) => onPhoneChange(event.target.value)}
               inputMode="numeric"
               autoFocus
               autoComplete="tel-national"
               maxLength={10}
-              disabled={busy}
+              disabled={busy || isStarting}
               placeholder="501234567"
               className="hc-input flex-1 text-left text-2xl"
             />
@@ -180,14 +207,14 @@ export const TelegramAuthWizard = ({
             המספר שיישלח: <span className="text-white">{phoneE164 || `${TELEGRAM_DEFAULT_COUNTRY_CODE}...`}</span>
           </div>
           <button
-            ref={(node) => { fieldRefs.current[focusIds.indexOf('submit')] = node; }}
-            onFocus={() => setFocusedIndex(focusIds.indexOf('submit'))}
+            ref={bindFieldRef('submit')}
+            onFocus={focusField('submit')}
             onClick={onStartLogin}
-            disabled={busy || !canStartLogin}
+            disabled={busy || isStarting || !canStartLogin}
             className="hc-button hc-button--telegram mt-8 w-full justify-center px-6 py-4 text-base"
           >
-            {busy ? <Loader2 size={18} className="animate-spin" /> : null}
-            <span>{phoneE164 ? `שלח קוד ל־${phoneE164}` : 'שלח קוד אימות'}</span>
+            {busy || isStarting ? <Loader2 size={18} className="animate-spin" /> : null}
+            <span>{isStarting ? 'שולח קוד לטלגרם...' : (phoneE164 ? `שלח קוד ל־${phoneE164}` : 'שלח קוד אימות')}</span>
           </button>
         </>
       );
@@ -198,9 +225,9 @@ export const TelegramAuthWizard = ({
         <>
           <label className="block text-sm text-white/55">קוד אימות</label>
           <input
-            ref={(node) => { fieldRefs.current[focusIds.indexOf('code')] = node; }}
+            ref={bindFieldRef('code')}
             value={code}
-            onFocus={() => setFocusedIndex(focusIds.indexOf('code'))}
+            onFocus={focusField('code')}
             onChange={(event) => onCodeChange(event.target.value)}
             inputMode="numeric"
             autoFocus
@@ -208,8 +235,8 @@ export const TelegramAuthWizard = ({
             className="hc-input mt-3 text-center text-3xl tracking-[0.28em]"
           />
           <button
-            ref={(node) => { fieldRefs.current[focusIds.indexOf('submit')] = node; }}
-            onFocus={() => setFocusedIndex(focusIds.indexOf('submit'))}
+            ref={bindFieldRef('submit')}
+            onFocus={focusField('submit')}
             onClick={onSubmitCode}
             disabled={busy || !code.trim()}
             className="hc-button hc-button--telegram mt-8 w-full justify-center px-6 py-4 text-base"
@@ -218,8 +245,8 @@ export const TelegramAuthWizard = ({
             <span>אמת קוד</span>
           </button>
           <button
-            ref={(node) => { fieldRefs.current[focusIds.indexOf('resend')] = node; }}
-            onFocus={() => setFocusedIndex(focusIds.indexOf('resend'))}
+            ref={bindFieldRef('resend')}
+            onFocus={focusField('resend')}
             onClick={onResendCode}
             disabled={busy || !canStartLogin}
             className="hc-button hc-button--ghost mt-3 w-full justify-center px-6 py-4 text-base"
@@ -234,18 +261,18 @@ export const TelegramAuthWizard = ({
       <>
         <label className="block text-sm text-white/55">אימות דו שלבי</label>
         <input
-          ref={(node) => { fieldRefs.current[focusIds.indexOf('password')] = node; }}
+          ref={bindFieldRef('password')}
           value={password}
-          onFocus={() => setFocusedIndex(focusIds.indexOf('password'))}
+          onFocus={focusField('password')}
           onChange={(event) => onPasswordChange(event.target.value)}
           type="password"
           autoFocus
-          placeholder="הזן את הסיסמה"
+          placeholder="הזן את סיסמת האבטחה"
           className="hc-input mt-3 text-xl"
         />
         <button
-          ref={(node) => { fieldRefs.current[focusIds.indexOf('submit')] = node; }}
-          onFocus={() => setFocusedIndex(focusIds.indexOf('submit'))}
+          ref={bindFieldRef('submit')}
+          onFocus={focusField('submit')}
           onClick={onSubmitPassword}
           disabled={busy || !password.trim()}
           className="hc-button hc-button--telegram mt-8 w-full justify-center px-6 py-4 text-base"
@@ -261,8 +288,8 @@ export const TelegramAuthWizard = ({
     <div className="hc-screen-overlay" data-tv-scope="ui">
       <div className="hc-telegram-wizard" data-tv-back-scope="local" onKeyDown={handleKeyDown}>
         <button
-          ref={(node) => { fieldRefs.current[focusIds.indexOf('close')] = node; }}
-          onFocus={() => setFocusedIndex(focusIds.indexOf('close'))}
+          ref={bindFieldRef('close')}
+          onFocus={focusField('close')}
           onClick={onClose}
           className="hc-close-button absolute left-6 top-6 p-3"
           aria-label="סגור חיבור לטלגרם"
@@ -278,11 +305,18 @@ export const TelegramAuthWizard = ({
           <p className="hc-subtitle mx-auto mt-4 max-w-3xl text-lg">{STEP_TEXT[step]}</p>
         </div>
 
-        {error && (
+        {isStarting ? (
+          <div className="mt-8 flex items-center justify-center gap-3 rounded-[26px] border border-cyan-400/20 bg-cyan-500/10 px-6 py-5 text-sm text-cyan-50">
+            <Loader2 size={18} className="animate-spin" />
+            <span>שולח קוד לטלגרם. זה יכול לקחת כמה שניות...</span>
+          </div>
+        ) : null}
+
+        {error && !isStarting ? (
           <div className="mt-8 rounded-[26px] border border-red-400/15 bg-red-500/10 px-6 py-5 text-sm text-red-100">
             {error}
           </div>
-        )}
+        ) : null}
 
         <div className="mt-10 rounded-[32px] border border-white/8 bg-black/18 px-8 py-8">
           {renderStepContent()}

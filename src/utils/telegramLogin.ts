@@ -2,6 +2,8 @@ import type { TelegramAuthStatus } from './telegramPlayer';
 
 export const TELEGRAM_DEFAULT_COUNTRY_CODE = '+972';
 export const TELEGRAM_DEFAULT_COUNTRY_DIGITS = '972';
+export type TelegramAuthPendingStage = 'idle' | 'starting' | 'awaiting_code' | 'awaiting_password';
+export type TelegramLoginServerStage = 'starting' | 'codeInput' | 'passwordInput' | 'loggedIn';
 
 const TELEGRAM_ERROR_TRANSLATIONS: Array<{ match: RegExp; message: string }> = [
   { match: /PHONE_NUMBER_INVALID/i, message: 'מספר הטלפון אינו תקין.' },
@@ -14,6 +16,7 @@ const TELEGRAM_ERROR_TRANSLATIONS: Array<{ match: RegExp; message: string }> = [
   { match: /Login session expired|session expired|not found/i, message: 'סשן ההתחברות פג. שלח קוד מחדש.' },
   { match: /Not waiting for code/i, message: 'השרת לא ממתין כרגע לקוד אימות. שלח קוד מחדש.' },
   { match: /Not waiting for password/i, message: 'השרת לא ממתין כרגע לסיסמת האבטחה. נסה להתחבר מחדש.' },
+  { match: /Request timed out/i, message: 'שליחת הקוד לוקחת יותר מדי זמן. נסה שוב.' },
   { match: /not configured/i, message: 'Telegram API לא מוגדר בשרת.' }
 ];
 
@@ -54,18 +57,44 @@ export const isLikelyValidIsraeliPhoneDigits = (value: string) => {
 export const resolveTelegramStatusAfterRefresh = ({
   currentStatus,
   hasActiveLogin,
-  remoteLoggedIn
+  remoteLoggedIn,
+  pendingStage = 'idle'
 }: {
   currentStatus: TelegramAuthStatus;
   hasActiveLogin: boolean;
   remoteLoggedIn: boolean;
+  pendingStage?: TelegramAuthPendingStage;
 }): TelegramAuthStatus => {
   if (remoteLoggedIn) return 'loggedIn';
-  if (hasActiveLogin && (currentStatus === 'codeInput' || currentStatus === 'passwordInput')) {
+  if (hasActiveLogin && (
+    pendingStage === 'starting'
+    || currentStatus === 'codeInput'
+    || currentStatus === 'passwordInput'
+  )) {
     return currentStatus;
   }
   if (currentStatus === 'phoneInput') return 'phoneInput';
   return 'loggedOut';
+};
+
+export const mapTelegramServerStageToStatus = (
+  stage: TelegramLoginServerStage | TelegramAuthStatus | null | undefined
+): TelegramAuthStatus => {
+  if (stage === 'passwordInput') return 'passwordInput';
+  if (stage === 'loggedIn') return 'loggedIn';
+  if (stage === 'codeInput' || stage === 'starting') return 'codeInput';
+  if (stage === 'phoneInput') return 'phoneInput';
+  if (stage === 'loggedOut') return 'loggedOut';
+  return 'phoneInput';
+};
+
+export const mapTelegramServerStageToPendingStage = (
+  stage: TelegramLoginServerStage | TelegramAuthStatus | null | undefined
+): TelegramAuthPendingStage => {
+  if (stage === 'starting') return 'starting';
+  if (stage === 'passwordInput') return 'awaiting_password';
+  if (stage === 'codeInput') return 'awaiting_code';
+  return 'idle';
 };
 
 export const translateTelegramAuthError = (message: string) => {

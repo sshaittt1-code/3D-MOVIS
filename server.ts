@@ -70,6 +70,9 @@ interface LoginSession {
   stage: 'none' | 'starting' | 'pending_code' | 'pending_password' | 'success' | 'error';
   errorMsg: string;
   phone: string;
+  sessionString: string | null;
+  createdAt: number;
+  updatedAt: number;
 }
 const loginSessions = new Map<string, LoginSession>();
 
@@ -80,6 +83,7 @@ const MIN_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 40;
 const TELEGRAM_ACCESS_TOKEN_TTL_MS = 1000 * 60 * 60 * 8;
 const SEARCH_CACHE_TTL_MS = 1000 * 60 * 10;
+const TELEGRAM_LOGIN_SESSION_TTL_MS = 1000 * 60 * 5;
 const TVMAZE_GENRE_MAP: Record<number, string[]> = {
   28: ['Action'],
   35: ['Comedy'],
@@ -270,6 +274,46 @@ const waitForLoginSessionStage = async (
   }
   return session.stage;
 };
+
+const touchLoginSession = (session: LoginSession) => {
+  session.updatedAt = Date.now();
+};
+
+const disconnectLoginSessionClient = async (session: LoginSession) => {
+  if (session.sessionString && activeClients.get(session.sessionString) === session.client) {
+    return;
+  }
+  await session.client.disconnect().catch(() => null);
+};
+
+const cleanupExpiredLoginSessions = async (now = Date.now()) => {
+  const expiredEntries = Array.from(loginSessions.entries()).filter(([, session]) => (
+    now - session.updatedAt > TELEGRAM_LOGIN_SESSION_TTL_MS
+  ));
+
+  await Promise.all(expiredEntries.map(async ([loginId, session]) => {
+    loginSessions.delete(loginId);
+    await disconnectLoginSessionClient(session);
+  }));
+};
+
+const mapLoginSessionStage = (stage: LoginSession['stage']) => {
+  if (stage === 'pending_code') return 'codeInput';
+  if (stage === 'pending_password') return 'passwordInput';
+  if (stage === 'success') return 'loggedIn';
+  if (stage === 'starting') return 'starting';
+  return 'starting';
+};
+
+const buildLoginSessionResponse = (loginId: string, session: LoginSession) => ({
+  success: session.stage !== 'error',
+  loginId,
+  stage: mapLoginSessionStage(session.stage),
+  phone: session.phone,
+  error: session.stage === 'error' ? (session.errorMsg || 'לא ניתן היה להשלים את ההתחברות ל-Telegram.') : undefined,
+  configured: true,
+  sessionString: session.stage === 'success' ? session.sessionString ?? undefined : undefined
+});
 
 const readPositiveInt = (value: unknown) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -535,6 +579,7 @@ const getClientParam = async (sessionStr: string) => {
 // Start Login Flow
 app.post('/api/tg/startLogin', async (req, res) => {
   try {
+    await cleanupExpiredLoginSessions();
     const phone = normalizeTelegramPhoneE164(readStringValue(req.body?.phone));
     if (!phone) {
       return res.status(400).json({ error: 'מספר הטלפון חייב להיות בפורמט בינלאומי מלא.' });
@@ -552,7 +597,10 @@ app.post('/api/tg/startLogin', async (req, res) => {
       rejectLogin: null,
       stage: 'starting',
       errorMsg: '',
-      phone
+      phone,
+      sessionString: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
     };
     loginSessions.set(loginId, sessionObj);
 
@@ -563,23 +611,32 @@ app.post('/api/tg/startLogin', async (req, res) => {
         phoneNumber: phone,
         phoneCode: async () => {
           sessionObj.stage = 'pending_code';
+          touchLoginSession(sessionObj);
           return new Promise((resolve) => { sessionObj.resolveCode = resolve; });
         },
         password: async () => {
           sessionObj.stage = 'pending_password';
+          touchLoginSession(sessionObj);
           return new Promise((resolve) => { sessionObj.resolvePassword = resolve; });
         },
         onError: (err) => {
           sessionObj.stage = 'error';
           sessionObj.errorMsg = translateTelegramAuthError(err.message);
+          touchLoginSession(sessionObj);
           if (sessionObj.rejectLogin) sessionObj.rejectLogin(err);
         }
       }
     ).then(() => {
       sessionObj.stage = 'success';
+      sessionObj.sessionString = (sessionObj.client.session as StringSession).save() as unknown as string;
+      if (sessionObj.sessionString) {
+        activeClients.set(sessionObj.sessionString, sessionObj.client);
+      }
+      touchLoginSession(sessionObj);
     }).catch(err => {
       sessionObj.stage = 'error';
       sessionObj.errorMsg = translateTelegramAuthError(err.message);
+      touchLoginSession(sessionObj);
       console.error('Login error:', err);
     });
 
@@ -594,15 +651,41 @@ app.post('/api/tg/startLogin', async (req, res) => {
       return res.status(400).json({ error: sessionObj.errorMsg || 'לא ניתן היה להתחיל את ההתחברות ל-Telegram.' });
     }
 
-    res.json({ success: true, loginId, stage: 'codeInput', phone });
+    res.json(buildLoginSessionResponse(loginId, sessionObj));
   } catch (e: any) {
     const message = translateTelegramAuthError(getErrorMessage(e));
     res.status(message.includes('לא מוגדר') ? 503 : 500).json({ error: message });
   }
 });
 
+app.get('/api/tg/login-status', async (req, res) => {
+  await cleanupExpiredLoginSessions();
+  const loginId = readStringValue(req.query.loginId);
+  if (!loginId) {
+    return res.status(400).json({ error: 'חסר מזהה התחברות.' });
+  }
+
+  const sessionObj = loginSessions.get(loginId);
+  if (!sessionObj) {
+    return res.status(404).json({
+      success: false,
+      configured: true,
+      error: 'סשן ההתחברות פג. שלח קוד מחדש.'
+    });
+  }
+
+  touchLoginSession(sessionObj);
+
+  if (sessionObj.stage === 'error') {
+    return res.status(400).json(buildLoginSessionResponse(loginId, sessionObj));
+  }
+
+  return res.json(buildLoginSessionResponse(loginId, sessionObj));
+});
+
 // Submit Code
 app.post('/api/tg/submitCode', async (req, res) => {
+  await cleanupExpiredLoginSessions();
   const loginId = readStringValue(req.body?.loginId);
   const code = readStringValue(req.body?.code);
   if (!loginId || !code) return res.status(400).json({ error: 'חסרים מזהה התחברות או קוד אימות.' });
@@ -612,6 +695,7 @@ app.post('/api/tg/submitCode', async (req, res) => {
   if (sessionObj.resolveCode) {
     const resolveCode = sessionObj.resolveCode;
     sessionObj.resolveCode = null;
+    touchLoginSession(sessionObj);
     resolveCode(code);
 
     // Wait for the signInUser promise to progress to either success, error, or password state
@@ -622,13 +706,16 @@ app.post('/api/tg/submitCode', async (req, res) => {
     }
 
     if (sessionObj.stage === 'pending_password') {
+      touchLoginSession(sessionObj);
       res.json({ success: true, requiresPassword: true, stage: 'passwordInput' });
     } else if (sessionObj.stage === 'success') {
-      const finalSessionStr = (sessionObj.client.session as StringSession).save() as unknown as string;
+      const finalSessionStr = sessionObj.sessionString || ((sessionObj.client.session as StringSession).save() as unknown as string);
+      sessionObj.sessionString = finalSessionStr;
       activeClients.set(finalSessionStr, sessionObj.client);
-      loginSessions.delete(loginId);
+      touchLoginSession(sessionObj);
       res.json({ success: true, stage: 'loggedIn', sessionString: finalSessionStr });
     } else {
+      touchLoginSession(sessionObj);
       res.status(400).json({ error: sessionObj.errorMsg || 'קוד האימות לא אומת. נסה שוב.' });
     }
   } else {
@@ -638,6 +725,7 @@ app.post('/api/tg/submitCode', async (req, res) => {
 
 // Submit Password (2FA)
 app.post('/api/tg/submitPassword', async (req, res) => {
+  await cleanupExpiredLoginSessions();
   const loginId = readStringValue(req.body?.loginId);
   const password = readStringValue(req.body?.password);
   if (!loginId || !password) return res.status(400).json({ error: 'חסרים מזהה התחברות או סיסמת אבטחה.' });
@@ -647,6 +735,7 @@ app.post('/api/tg/submitPassword', async (req, res) => {
   if (sessionObj.resolvePassword) {
     const resolvePassword = sessionObj.resolvePassword;
     sessionObj.resolvePassword = null;
+    touchLoginSession(sessionObj);
     resolvePassword(password);
 
     let attempts = 0;
@@ -656,11 +745,13 @@ app.post('/api/tg/submitPassword', async (req, res) => {
     }
 
     if (sessionObj.stage === 'success') {
-      const finalSessionStr = (sessionObj.client.session as StringSession).save() as unknown as string;
+      const finalSessionStr = sessionObj.sessionString || ((sessionObj.client.session as StringSession).save() as unknown as string);
+      sessionObj.sessionString = finalSessionStr;
       activeClients.set(finalSessionStr, sessionObj.client);
-      loginSessions.delete(loginId);
+      touchLoginSession(sessionObj);
       res.json({ success: true, stage: 'loggedIn', sessionString: finalSessionStr });
     } else {
+      touchLoginSession(sessionObj);
       res.status(400).json({ error: sessionObj.errorMsg || 'סיסמת האבטחה לא אומתה. נסה שוב.' });
     }
   } else {
@@ -688,6 +779,7 @@ app.post('/api/tg/logout', async (req, res) => {
 // Check Auth Status
 app.get('/api/tg/status', async (req, res) => {
   try {
+    await cleanupExpiredLoginSessions();
     const sessionStr = req.headers['x-tg-session'] as string;
     if (!sessionStr) return res.json({ loggedIn: false });
     const client = await getClientParam(sessionStr);

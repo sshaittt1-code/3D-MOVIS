@@ -106,8 +106,12 @@ import {
 import {
   buildIsraeliPhoneE164,
   isLikelyValidIsraeliPhoneDigits,
+  mapTelegramServerStageToPendingStage,
+  mapTelegramServerStageToStatus,
   normalizeIsraeliPhoneDigits,
   resolveTelegramStatusAfterRefresh,
+  type TelegramAuthPendingStage,
+  type TelegramLoginServerStage,
   TELEGRAM_DEFAULT_COUNTRY_CODE,
   translateTelegramAuthError
 } from './utils/telegramLogin';
@@ -608,6 +612,7 @@ export default function App() {
   const [tgBusy, setTgBusy] = useState(false);
   const [tgError, setTgError] = useState<string | null>(null);
   const [tgLoginId, setTgLoginId] = useState<string | null>(null);
+  const [tgAuthPendingStage, setTgAuthPendingStage] = useState<TelegramAuthPendingStage>('idle');
   const [tgPhoneDigits, setTgPhoneDigits] = useState('');
   const [tgCode, setTgCode] = useState('');
   const [tgPassword, setTgPassword] = useState('');
@@ -639,6 +644,8 @@ export default function App() {
   const settingsReturnToSidebarRef = useRef(false);
   const telegramAuthReturnToSidebarRef = useRef(false);
   const telegramPendingRouteRef = useRef<Extract<MenuRoute, { target: 'telegram' }> | null>(null);
+  const telegramLoginPollAbortRef = useRef<AbortController | null>(null);
+  const telegramLoginPollRunRef = useRef(0);
   const mediaStateMapRef = useRef(mediaStateMap);
   const playbackCacheMapRef = useRef(playbackCacheMap);
   const activeMediaRef = useRef<ActivePlayback | null>(null);
@@ -1003,15 +1010,28 @@ export default function App() {
     }
   }, []);
 
+  const stopTelegramLoginPolling = useCallback(() => {
+    telegramLoginPollRunRef.current += 1;
+    telegramLoginPollAbortRef.current?.abort();
+    telegramLoginPollAbortRef.current = null;
+  }, []);
+
   const closeTelegramAuthSurface = useCallback(() => {
+    stopTelegramLoginPolling();
     const shouldReturnToSidebar = telegramAuthReturnToSidebarRef.current;
     telegramAuthReturnToSidebarRef.current = false;
     telegramPendingRouteRef.current = null;
+    setTgLoginId(null);
+    setTgAuthPendingStage('idle');
+    setTgCode('');
+    setTgPassword('');
+    setTgError(null);
+    setTgStatus(tgPhoneDigits ? 'phoneInput' : 'loggedOut');
     setShowTelegramAuthModal(false);
     if (shouldReturnToSidebar) {
       setIsLocked(false);
     }
-  }, []);
+  }, [stopTelegramLoginPolling, tgPhoneDigits]);
 
   const openSettingsPanel = useCallback((panel: SettingsPanel, options: { returnToSidebar?: boolean } = {}) => {
     if (panel === 'telegram') {
@@ -1035,6 +1055,7 @@ export default function App() {
     telegramAuthReturnToSidebarRef.current = Boolean(options.returnToSidebar);
     settingsReturnToSidebarRef.current = false;
     searchReturnToSidebarRef.current = false;
+    stopTelegramLoginPolling();
     setShowCinemaScreen(false);
     setShowSearch(false);
     setShowSettings(false);
@@ -1042,6 +1063,9 @@ export default function App() {
     setPosterContextMovie(null);
     setShowTelegramAuthModal(true);
     setIsLocked(true);
+    setTgCode('');
+    setTgPassword('');
+    setTgAuthPendingStage('idle');
     setTgError(null);
     setTgStatus((current) => {
       if (current === 'codeInput' || current === 'passwordInput') {
@@ -1049,9 +1073,10 @@ export default function App() {
       }
       return 'phoneInput';
     });
-  }, []);
+  }, [stopTelegramLoginPolling]);
 
   const applyMenuRoute = useCallback((route: MenuRoute) => {
+    stopTelegramLoginPolling();
     setNavContext(null);
     setShowSearch(false);
     setShowSettings(false);
@@ -1165,7 +1190,8 @@ export default function App() {
       setTgStatus((current) => resolveTelegramStatusAfterRefresh({
         currentStatus: current,
         hasActiveLogin,
-        remoteLoggedIn: Boolean(data.loggedIn)
+        remoteLoggedIn: Boolean(data.loggedIn),
+        pendingStage: tgAuthPendingStage
       }));
       if (!data.loggedIn && !hasActiveLogin) {
         setTgLoginId(null);
@@ -1184,14 +1210,15 @@ export default function App() {
       setTgStatus((current) => resolveTelegramStatusAfterRefresh({
         currentStatus: current,
         hasActiveLogin,
-        remoteLoggedIn: false
+        remoteLoggedIn: false,
+        pendingStage: tgAuthPendingStage
       }));
     } finally {
       if (requestId === telegramStatusRequestRef.current && !options.quiet) {
         setTgBusy(false);
       }
     }
-  }, [normalizedApiBase, tgLoginId]);
+  }, [normalizedApiBase, tgAuthPendingStage, tgLoginId]);
 
   const resetTelegramSearchState = useCallback((options: { preserveQuery?: boolean } = {}) => {
     if (!options.preserveQuery) {
@@ -1211,12 +1238,112 @@ export default function App() {
   }, []);
 
   const handleTelegramPhoneDigitsChange = useCallback((value: string) => {
+    stopTelegramLoginPolling();
     setTgPhoneDigits(normalizeIsraeliPhoneDigits(value));
+    setTgLoginId(null);
+    setTgCode('');
+    setTgPassword('');
+    setTgAuthPendingStage('idle');
     setTgStatus((current) => (current === 'loggedOut' ? 'phoneInput' : current));
     setTgError(null);
-  }, []);
+  }, [stopTelegramLoginPolling]);
+
+  const pollTelegramLoginStatus = useCallback((loginId: string) => {
+    stopTelegramLoginPolling();
+    const runId = telegramLoginPollRunRef.current + 1;
+    telegramLoginPollRunRef.current = runId;
+    const controller = new AbortController();
+    telegramLoginPollAbortRef.current = controller;
+    const startedAt = Date.now();
+
+    void (async () => {
+      while (!controller.signal.aborted && telegramLoginPollRunRef.current === runId) {
+        if (Date.now() - startedAt > 30000) {
+          setTgAuthPendingStage('idle');
+          setTgBusy(false);
+          setTgError('שליחת הקוד לוקחת יותר מדי זמן. נסה שוב.');
+          return;
+        }
+
+        try {
+          const data = await fetchApiJson<{
+            success?: boolean;
+            stage?: TelegramLoginServerStage;
+            phone?: string;
+            error?: string;
+            configured?: boolean;
+            sessionString?: string;
+          }>(
+            buildApiUrl(normalizedApiBase, `/api/tg/login-status?loginId=${encodeURIComponent(loginId)}`),
+            { signal: controller.signal },
+            { timeoutMs: 10000, retryCount: 0 }
+          );
+
+          if (controller.signal.aborted || telegramLoginPollRunRef.current !== runId) {
+            return;
+          }
+
+          if (data.configured === false) {
+            setTgConfigured(false);
+          }
+
+          if (data.error) {
+            setTgAuthPendingStage('idle');
+            setTgBusy(false);
+            setTgError(translateTelegramAuthError(data.error));
+            return;
+          }
+
+          const nextStage = data.stage ?? 'starting';
+          if (nextStage === 'starting') {
+            setTgAuthPendingStage('starting');
+          } else if (nextStage === 'codeInput') {
+            setTgStatus('codeInput');
+            setTgAuthPendingStage('awaiting_code');
+            setTgBusy(false);
+            setTgError(null);
+            return;
+          } else if (nextStage === 'passwordInput') {
+            setTgStatus('passwordInput');
+            setTgAuthPendingStage('awaiting_password');
+            setTgBusy(false);
+            setTgError(null);
+            return;
+          } else if (nextStage === 'loggedIn' && data.sessionString) {
+            applyTelegramSession(data.sessionString);
+            setTgLoginId(null);
+            setTgCode('');
+            setTgPassword('');
+            setTgStatus('loggedIn');
+            setTgAuthPendingStage('idle');
+            setTgBusy(false);
+            setTgError(null);
+            await finalizeTelegramLogin();
+            return;
+          }
+        } catch (error: any) {
+          if (controller.signal.aborted || telegramLoginPollRunRef.current !== runId) {
+            return;
+          }
+
+          if (error?.name === 'AbortError') {
+            return;
+          }
+
+          setTgAuthPendingStage('idle');
+          setTgBusy(false);
+          setTgError(translateTelegramAuthError(error?.message || 'שליחת הקוד לוקחת יותר מדי זמן. נסה שוב.'));
+          return;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      }
+    })();
+  }, [applyTelegramSession, normalizedApiBase, stopTelegramLoginPolling]);
 
   const finalizeTelegramLogin = useCallback(async () => {
+    stopTelegramLoginPolling();
+    setTgAuthPendingStage('idle');
     await refreshTelegramStatus({ quiet: true });
     setShowTelegramAuthModal(false);
 
@@ -1233,7 +1360,7 @@ export default function App() {
     if (shouldReturnToSidebar) {
       setIsLocked(false);
     }
-  }, [applyMenuRoute, refreshTelegramStatus]);
+  }, [applyMenuRoute, refreshTelegramStatus, stopTelegramLoginPolling]);
 
   const startTelegramLogin = useCallback(async () => {
     if (!canStartTelegramLogin || !tgPhoneE164) {
@@ -1241,16 +1368,19 @@ export default function App() {
       return;
     }
 
+    stopTelegramLoginPolling();
     setTgBusy(true);
     setTgError(null);
+    setTgAuthPendingStage('starting');
     try {
-      const data = await fetchApiJson<{ loginId?: string; success?: boolean; stage?: TelegramAuthStatus; phone?: string }>(
+      const data = await fetchApiJson<{ loginId?: string; success?: boolean; stage?: TelegramLoginServerStage; phone?: string; sessionString?: string }>(
         buildApiUrl(normalizedApiBase, '/api/tg/startLogin'),
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ phone: tgPhoneE164 })
-        }
+        },
+        { timeoutMs: 25000, retryCount: 0 }
       );
 
       if (!data.loginId) {
@@ -1260,14 +1390,32 @@ export default function App() {
       setTgLoginId(data.loginId);
       setTgCode('');
       setTgPassword('');
-      setTgStatus(data.stage === 'passwordInput' ? 'passwordInput' : 'codeInput');
+      const nextStage = data.stage ?? 'starting';
+      setTgStatus(mapTelegramServerStageToStatus(nextStage));
+      setTgAuthPendingStage(mapTelegramServerStageToPendingStage(nextStage));
+
+      if (nextStage === 'loggedIn' && data.sessionString) {
+        applyTelegramSession(data.sessionString);
+        setTgLoginId(null);
+        setTgStatus('loggedIn');
+        await finalizeTelegramLogin();
+        return;
+      }
+
+      if (nextStage === 'starting') {
+        pollTelegramLoginStatus(data.loginId);
+        return;
+      }
     } catch (error: any) {
       console.error('Telegram login start failed', error);
+      setTgAuthPendingStage('idle');
       setTgError(translateTelegramAuthError(error?.message || 'Failed to start Telegram login'));
     } finally {
-      setTgBusy(false);
+      if (telegramLoginPollAbortRef.current == null) {
+        setTgBusy(false);
+      }
     }
-  }, [canStartTelegramLogin, normalizedApiBase, tgPhoneE164]);
+  }, [applyTelegramSession, canStartTelegramLogin, finalizeTelegramLogin, normalizedApiBase, pollTelegramLoginStatus, stopTelegramLoginPolling, tgPhoneE164]);
 
   const submitTelegramCode = useCallback(async () => {
     if (!tgLoginId || !tgCode.trim()) {
@@ -1284,11 +1432,13 @@ export default function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ loginId: tgLoginId, code: tgCode.trim() })
-        }
+        },
+        { timeoutMs: 25000, retryCount: 0 }
       );
 
       if (data.requiresPassword) {
         setTgStatus('passwordInput');
+        setTgAuthPendingStage('awaiting_password');
         return;
       }
 
@@ -1301,9 +1451,11 @@ export default function App() {
       setTgCode('');
       setTgPassword('');
       setTgStatus('loggedIn');
+      setTgAuthPendingStage('idle');
       await finalizeTelegramLogin();
     } catch (error: any) {
       console.error('Telegram code verification failed', error);
+      setTgAuthPendingStage('awaiting_code');
       setTgError(translateTelegramAuthError(error?.message || 'Failed to verify the Telegram code'));
     } finally {
       setTgBusy(false);
@@ -1325,7 +1477,8 @@ export default function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ loginId: tgLoginId, password: tgPassword })
-        }
+        },
+        { timeoutMs: 25000, retryCount: 0 }
       );
 
       if (!data.sessionString) {
@@ -1337,9 +1490,11 @@ export default function App() {
       setTgCode('');
       setTgPassword('');
       setTgStatus('loggedIn');
+      setTgAuthPendingStage('idle');
       await finalizeTelegramLogin();
     } catch (error: any) {
       console.error('Telegram password verification failed', error);
+      setTgAuthPendingStage('awaiting_password');
       setTgError(translateTelegramAuthError(error?.message || 'Failed to verify the Telegram password'));
     } finally {
       setTgBusy(false);
@@ -1347,6 +1502,7 @@ export default function App() {
   }, [applyTelegramSession, finalizeTelegramLogin, normalizedApiBase, tgLoginId, tgPassword]);
 
   const logoutTelegram = useCallback(async () => {
+    stopTelegramLoginPolling();
     setTgBusy(true);
     setTgError(null);
     try {
@@ -1358,6 +1514,7 @@ export default function App() {
       setTgLoginId(null);
       setTgCode('');
       setTgPassword('');
+      setTgAuthPendingStage('idle');
       setTelegramItems([]);
       resetTelegramSearchState();
       setTgStatus(tgPhoneDigits ? 'phoneInput' : 'loggedOut');
@@ -1366,7 +1523,7 @@ export default function App() {
       setShowTelegramAuthModal(false);
       setTgBusy(false);
     }
-  }, [applyTelegramSession, normalizedApiBase, resetTelegramSearchState, tgPhoneDigits]);
+  }, [applyTelegramSession, normalizedApiBase, resetTelegramSearchState, stopTelegramLoginPolling, tgPhoneDigits]);
 
   const searchTelegramSubtitlesForItem = useCallback(async (
     item: CorridorItem,
@@ -1734,6 +1891,10 @@ export default function App() {
   useEffect(() => {
     void refreshTelegramStatus();
   }, [refreshTelegramStatus]);
+
+  useEffect(() => () => {
+    stopTelegramLoginPolling();
+  }, [stopTelegramLoginPolling]);
 
   useEffect(() => {
     if (!showSettings || settingsPanel !== 'telegram') return;
@@ -3022,6 +3183,7 @@ export default function App() {
               configured={tgConfigured}
               status={tgStatus}
               busy={tgBusy}
+              pendingStage={tgAuthPendingStage}
               error={tgError}
               phoneDigits={tgPhoneDigits}
               phoneE164={tgPhoneE164}
