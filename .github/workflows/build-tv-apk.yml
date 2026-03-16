@@ -31,8 +31,8 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Build Web App (creates dist/)
-        run: npm run build
+      - name: Run Quality Gate
+        run: npm run quality:gate
 
       - name: Sync Capacitor (copies dist/ into Android assets)
         run: npx cap sync android
