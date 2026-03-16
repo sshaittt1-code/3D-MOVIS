@@ -4,9 +4,20 @@ export interface MediaSnapshot {
   id: number | string;
   mediaType: string;
   title: string;
+  localizedTitle?: string;
+  originalTitle?: string;
   seriesTitle?: string;
+  genre?: string;
   poster?: string;
+  posterThumb?: string;
   desc?: string;
+  year?: number | null;
+  language?: string;
+  peerId?: string;
+  username?: string;
+  telegramType?: 'group' | 'channel';
+  unreadCount?: number;
+  memberCount?: number;
   seriesId?: number;
   seasonNum?: number;
   season_number?: number;
@@ -44,9 +55,20 @@ export const createMediaSnapshot = (item: any): MediaSnapshot => ({
   id: item.id,
   mediaType: item.mediaType,
   title: item.title,
+  localizedTitle: item.localizedTitle,
+  originalTitle: item.originalTitle,
   seriesTitle: item.seriesTitle,
+  genre: item.genre,
   poster: item.poster,
+  posterThumb: item.posterThumb,
   desc: item.desc,
+  year: item.year,
+  language: item.language,
+  peerId: item.peerId,
+  username: item.username,
+  telegramType: item.telegramType,
+  unreadCount: item.unreadCount,
+  memberCount: item.memberCount,
   seriesId: item.seriesId,
   seasonNum: item.seasonNum ?? item.season_number,
   season_number: item.season_number,

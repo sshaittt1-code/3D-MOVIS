@@ -57,12 +57,16 @@ const toCorridorItem = (entry: MediaStateEntry): CorridorItem | null =>
   normalizeCorridorItem(
     {
       ...entry.snapshot,
-      posterThumb: entry.snapshot.poster
+      posterThumb: entry.snapshot.posterThumb || entry.snapshot.poster
     },
     entry.snapshot.mediaType === 'episode'
       ? 'episode'
       : entry.snapshot.mediaType === 'season'
         ? 'season'
+        : entry.snapshot.mediaType === 'telegram_channel'
+          ? 'telegram_channel'
+          : entry.snapshot.mediaType === 'telegram_group'
+            ? 'telegram_group'
         : entry.snapshot.mediaType === 'tv'
           ? 'tv'
           : 'movie'

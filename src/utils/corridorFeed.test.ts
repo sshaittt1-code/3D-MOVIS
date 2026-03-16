@@ -64,6 +64,18 @@ test('resolveRootRouteState clears irrelevant filters when switching to series',
   });
 });
 
+test('resolveRootRouteState supports telegram dialog categories', () => {
+  const next = resolveRootRouteState({ target: 'telegram', category: 'channels' });
+  assert.deepEqual(next, {
+    librarySection: 'telegram',
+    telegramCategory: 'channels',
+    movieGenreId: null,
+    seriesGenreFilter: null,
+    yearFilter: 'all',
+    refreshShuffle: false
+  });
+});
+
 test('resolveRootRouteState ignores library-only routes', () => {
   assert.equal(resolveRootRouteState({ target: 'favorites' }), null);
   assert.equal(resolveRootRouteState({ target: 'history' }), null);
@@ -75,9 +87,12 @@ test('buildRootRequestKey stays isolated across root datasets', () => {
   const movies = buildRootRequestKey({ target: 'movies', category: 'popular', genreId: 28, year: '2025' });
   const series = buildRootRequestKey({ target: 'series', category: 'popular', year: '2025' });
   const israeli = buildRootRequestKey({ target: 'israeli', category: 'popular', year: '2025' });
+  const telegram = buildRootRequestKey({ target: 'telegram', category: 'channels', year: 'all' });
   assert.notEqual(movies, series);
   assert.notEqual(movies, israeli);
   assert.notEqual(series, israeli);
+  assert.notEqual(telegram, movies);
+  assert.notEqual(telegram, series);
 });
 
 test('mergeCorridorItems deduplicates by media type and id', () => {

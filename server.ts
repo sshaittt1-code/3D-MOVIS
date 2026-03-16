@@ -18,6 +18,12 @@ import {
   normalizeTelegramPhoneE164,
   translateTelegramAuthError
 } from './src/utils/telegramLogin';
+import {
+  buildTelegramDialogDescription,
+  buildTelegramDialogPoster,
+  getTelegramDialogMediaType,
+  type TelegramDialogCategory
+} from './src/utils/telegramDialogs';
 
 const app = express();
 app.use(cors());
@@ -80,6 +86,49 @@ const getErrorMessage = (error: unknown) =>
 
 const readStringValue = (value: unknown) =>
   typeof value === 'string' ? value.trim() : '';
+
+const readTelegramDialogCategory = (value: unknown): TelegramDialogCategory => {
+  const normalized = readStringValue(value).toLowerCase();
+  return normalized === 'groups' || normalized === 'channels' ? normalized : 'all';
+};
+
+const matchesTelegramDialogCategory = (dialog: { isGroup?: boolean; isChannel?: boolean }, category: TelegramDialogCategory) => {
+  if (category === 'groups') return Boolean(dialog.isGroup);
+  if (category === 'channels') return Boolean(dialog.isChannel);
+  return Boolean(dialog.isGroup || dialog.isChannel);
+};
+
+const mapTelegramDialogToItem = (dialog: any) => {
+  const entity = dialog?.entity as any;
+  const kind = dialog?.isChannel ? 'channel' : 'group';
+  const peerId = String(dialog?.id ?? entity?.id ?? '');
+  const title = readStringValue(dialog?.title || dialog?.name || entity?.title || [entity?.firstName, entity?.lastName].filter(Boolean).join(' ')) || 'Telegram';
+  const username = readStringValue(entity?.username || entity?.usernames?.[0]?.username).replace(/^@/, '');
+  const memberCount = readPositiveInt(entity?.participantsCount || entity?.participants_count || entity?.membersCount);
+  const unreadCount = readPositiveInt(dialog?.unreadCount);
+  const mediaType = getTelegramDialogMediaType(kind);
+  const poster = buildTelegramDialogPoster({ title, kind });
+
+  return {
+    id: `tg:${kind}:${peerId}`,
+    peerId,
+    title,
+    localizedTitle: title,
+    originalTitle: title,
+    genre: kind === 'channel' ? 'Telegram Channel' : 'Telegram Group',
+    rating: 0,
+    popularity: Number(dialog?.date || 0),
+    poster,
+    posterThumb: poster,
+    desc: buildTelegramDialogDescription({ kind, username, unreadCount, memberCount }),
+    mediaType,
+    telegramType: kind,
+    username,
+    unreadCount: unreadCount ?? 0,
+    memberCount,
+    language: 'he'
+  };
+};
 
 const getTelegramApiConfig = () => {
   const apiId = readPositiveInt(process.env.TELEGRAM_API_ID || process.env.TG_API_ID);
@@ -526,6 +575,42 @@ app.get('/api/tg/status', async (req, res) => {
     res.json({ loggedIn: isAuth });
   } catch (e) {
     res.json({ loggedIn: false, configured: !getErrorMessage(e).includes('not configured') });
+  }
+});
+
+app.get('/api/tg/dialogs', async (req, res) => {
+  try {
+    const sessionStr = readStringValue(req.headers['x-tg-session']);
+    if (!sessionStr) return res.status(401).json({ error: 'Connect Telegram first.' });
+
+    const page = readPositiveInt(req.query.page) ?? 1;
+    const pageSize = readBoundedInt(req.query.page_size, MIN_PAGE_SIZE, MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE);
+    const category = readTelegramDialogCategory(req.query.type ?? req.query.category);
+    const client = await getClientParam(sessionStr);
+
+    const fetchLimit = Math.min(300, Math.max(pageSize * page * 3, pageSize * 2));
+    const dialogs = await client.getDialogs({
+      limit: fetchLimit,
+      archived: false,
+      ignoreMigrated: true
+    });
+
+    const normalizedDialogs = Array.from(dialogs)
+      .filter((dialog) => matchesTelegramDialogCategory(dialog, category))
+      .map((dialog) => mapTelegramDialogToItem(dialog))
+      .filter((item) => item.peerId);
+
+    const startIndex = (page - 1) * pageSize;
+    const endIndex = startIndex + pageSize;
+    const items = normalizedDialogs.slice(startIndex, endIndex);
+    const hasMore = normalizedDialogs.length > endIndex || Array.from(dialogs).length >= fetchLimit;
+
+    res.json({
+      dialogs: normalizeCatalogPage(items, 'telegram_group'),
+      hasMore
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: translateTelegramAuthError(getErrorMessage(e)) });
   }
 });
 

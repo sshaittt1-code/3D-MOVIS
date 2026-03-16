@@ -1,5 +1,6 @@
 import type { LibrarySection, SortMode, YearFilter } from './catalog';
 import type { FeedCategory } from './menuConfig';
+import type { TelegramDialogCategory } from './telegramDialogs';
 
 export type RootCatalogState = {
   librarySection: LibrarySection;
@@ -10,6 +11,7 @@ export type RootCatalogState = {
   movieCategory: FeedCategory;
   seriesCategory: FeedCategory;
   israeliCategory: FeedCategory;
+  telegramCategory: TelegramDialogCategory;
 };
 
 export const DEFAULT_ROOT_CATALOG_STATE: RootCatalogState = {
@@ -20,7 +22,8 @@ export const DEFAULT_ROOT_CATALOG_STATE: RootCatalogState = {
   movieGenreId: null,
   movieCategory: 'popular',
   seriesCategory: 'popular',
-  israeliCategory: 'popular'
+  israeliCategory: 'popular',
+  telegramCategory: 'all'
 };
 
 export type AppShellSnapshot = {

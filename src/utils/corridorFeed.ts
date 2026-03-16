@@ -1,6 +1,7 @@
 import type { LibrarySection, YearFilter } from './catalog';
 import type { FeedCategory, MenuRoute } from './menuConfig';
 import type { FeedTarget } from './contentModel';
+import type { TelegramDialogCategory } from './telegramDialogs';
 
 export {
   FALLBACK_LIBRARY,
@@ -19,6 +20,7 @@ type RootRouteState = {
   movieCategory?: FeedCategory;
   seriesCategory?: FeedCategory;
   israeliCategory?: FeedCategory;
+  telegramCategory?: TelegramDialogCategory;
   movieGenreId: number | null;
   seriesGenreFilter: string | null;
   yearFilter: YearFilter;
@@ -31,7 +33,13 @@ export const getActiveGenreFilterForSection = (
 ) => (librarySection === 'series' ? seriesGenreFilter : null);
 
 export const getFeedTargetForSection = (librarySection: LibrarySection): FeedTarget =>
-  librarySection === 'series' ? 'series' : librarySection === 'israeli' ? 'israeli' : 'movies';
+  librarySection === 'series'
+    ? 'series'
+    : librarySection === 'israeli'
+      ? 'israeli'
+      : librarySection === 'telegram'
+        ? 'telegram'
+        : 'movies';
 
 export const buildRootRequestKey = ({
   target,
@@ -41,7 +49,7 @@ export const buildRootRequestKey = ({
   seed
 }: {
   target: FeedTarget;
-  category: FeedCategory;
+  category: string;
   genreId?: number | null;
   year?: YearFilter;
   seed?: number;
@@ -82,6 +90,17 @@ export const resolveRootRouteState = (route: MenuRoute): RootRouteState | null =
       seriesGenreFilter: route.genreLabel ?? null,
       yearFilter: route.year ?? 'all',
       refreshShuffle: route.category === 'random'
+    };
+  }
+
+  if (route.target === 'telegram') {
+    return {
+      librarySection: 'telegram',
+      telegramCategory: route.category ?? 'all',
+      movieGenreId: null,
+      seriesGenreFilter: null,
+      yearFilter: 'all',
+      refreshShuffle: false
     };
   }
 

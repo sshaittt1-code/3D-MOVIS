@@ -125,6 +125,10 @@ import {
   summarizeSearchResultsBySource
 } from './utils/libraryState';
 import {
+  isTelegramDialogMediaType,
+  type TelegramDialogCategory
+} from './utils/telegramDialogs';
+import {
   getTvDirection,
   hasLocalBackHandlerTarget,
   isTvNavigationKey,
@@ -556,6 +560,7 @@ export default function App() {
   const [baseMovies, setBaseMovies] = useState<CorridorItem[]>(() => readInitialFeedItems('movies'));
   const [seriesItems, setSeriesItems] = useState<CorridorItem[]>(() => readInitialFeedItems('series'));
   const [israeliItems, setIsraeliItems] = useState<CorridorItem[]>(() => readInitialFeedItems('israeli'));
+  const [telegramItems, setTelegramItems] = useState<CorridorItem[]>(() => readInitialFeedItems('telegram'));
   const [selectedMovie, setSelectedMovie] = useState<CorridorItem | null>(null);
   const [isLocked, setIsLocked] = useState(true);
   const [focusedId, setFocusedId] = useState<string | null>(null);
@@ -571,6 +576,7 @@ export default function App() {
   const [movieCategory, setMovieCategory] = useState<FeedCategory>(DEFAULT_ROOT_CATALOG_STATE.movieCategory);
   const [seriesCategory, setSeriesCategory] = useState<FeedCategory>(DEFAULT_ROOT_CATALOG_STATE.seriesCategory);
   const [israeliCategory, setIsraeliCategory] = useState<FeedCategory>(DEFAULT_ROOT_CATALOG_STATE.israeliCategory);
+  const [telegramCategory, setTelegramCategory] = useState<TelegramDialogCategory>(DEFAULT_ROOT_CATALOG_STATE.telegramCategory);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>('general');
   const [shuffleSeed, setShuffleSeed] = useState(() => Date.now());
   const [cameraZ, setCameraZ] = useState(2);
@@ -664,8 +670,8 @@ export default function App() {
 
   const libraryCollections = useMemo(() => deriveLibraryCollections({
     mediaStateMap,
-    catalogItems: [...baseMovies, ...seriesItems, ...israeliItems]
-  }), [mediaStateMap, baseMovies, seriesItems, israeliItems]);
+    catalogItems: [...baseMovies, ...seriesItems, ...israeliItems, ...telegramItems]
+  }), [mediaStateMap, baseMovies, seriesItems, israeliItems, telegramItems]);
   const favorites = libraryCollections.favorites;
   const watchHistory = libraryCollections.history;
   const continueWatching = libraryCollections.continueWatching;
@@ -805,6 +811,7 @@ export default function App() {
         setTgSources([]);
         setTgSubtitleResults([]);
         setTgSelectedSubtitleUrl(null);
+        setTelegramItems([]);
       }
     } catch (error: any) {
       if (requestId !== telegramStatusRequestRef.current) return;
@@ -971,6 +978,7 @@ export default function App() {
       setTgLoginId(null);
       setTgCode('');
       setTgPassword('');
+      setTelegramItems([]);
       resetTelegramSearchState();
       setTgStatus(tgPhoneDigits ? 'phoneInput' : 'loggedOut');
       setTgBusy(false);
@@ -1552,22 +1560,27 @@ export default function App() {
       setSeriesItems(items);
       return;
     }
+    if (target === 'telegram') {
+      setTelegramItems(items);
+      return;
+    }
     setIsraeliItems(items);
   }, []);
 
   const getItemsForTarget = useCallback((target: FeedTarget) => {
     if (target === 'movies') return baseMovies;
     if (target === 'series') return seriesItems;
+    if (target === 'telegram') return telegramItems;
     return israeliItems;
-  }, [baseMovies, seriesItems, israeliItems]);
+  }, [baseMovies, seriesItems, telegramItems, israeliItems]);
 
-  const getCategorySeed = useCallback((category: FeedCategory, page = 1) => (
+  const getCategorySeed = useCallback((category: string, page = 1) => (
     category === 'random' ? shuffleSeed + page : undefined
   ), [shuffleSeed]);
 
   const readCachedCategoryPage = useCallback((
     target: FeedTarget,
-    category: FeedCategory,
+    category: string,
     options: { genreId?: number | null; year?: YearFilter; page?: number } = {}
   ) => {
     const { genreId, year, page = 1 } = options;
@@ -1630,7 +1643,7 @@ export default function App() {
 
   const hydrateTargetFromLocalSources = useCallback((
     target: FeedTarget,
-    category: FeedCategory,
+    category: string,
     options: { genreId?: number | null; year?: YearFilter; page?: number } = {}
   ) => {
     const cached = readCachedCategoryPage(target, category, options);
@@ -1657,7 +1670,7 @@ export default function App() {
 
   const fetchCategoryContent = useCallback(async (
     target: FeedTarget,
-    category: FeedCategory,
+    category: string,
     options: { genreId?: number | null; year?: YearFilter; page?: number; signal?: AbortSignal; prefetchPosters?: boolean } = {}
   ) => {
     const { genreId, year, page = 1, signal, prefetchPosters = true } = options;
@@ -1694,12 +1707,22 @@ export default function App() {
     const params = new URLSearchParams();
     params.set('page', String(page));
     params.set('page_size', String(posterBatchSize));
-    params.set('category', category);
+    if (target === 'telegram') {
+      params.set('type', category);
+    } else {
+      params.set('category', category);
+    }
     if (genreId) params.set('genre_id', String(genreId));
     if (year && year !== 'all') params.set('year', String(year).replace(/[^0-9]/g, '').slice(0, 4));
     if (seed) params.set('seed', String(seed));
 
-    const endpoint = target === 'movies' ? '/api/movies' : target === 'series' ? '/api/series' : '/api/israeli';
+    const endpoint = target === 'movies'
+      ? '/api/movies'
+      : target === 'series'
+        ? '/api/series'
+        : target === 'telegram'
+          ? '/api/tg/dialogs'
+          : '/api/israeli';
     const url = buildApiUrl(normalizedApiBase, `${endpoint}?${params.toString()}`);
 
     const requestPromise = (async () => {
@@ -1723,7 +1746,7 @@ export default function App() {
 
   const prefetchNextCategoryPage = useCallback(async (
     target: FeedTarget,
-    category: FeedCategory,
+    category: string,
     options: { genreId?: number | null; year?: YearFilter; page: number; prefetchPosters?: boolean }
   ) => {
     const { genreId, year, page, prefetchPosters = runtimePerformanceProfile.prefetchPostersForNextPage } = options;
@@ -1760,8 +1783,11 @@ export default function App() {
     if (target === 'series') {
       return { target, category: seriesCategory, genreId: null, year: yearFilter };
     }
+    if (target === 'telegram') {
+      return { target, category: telegramCategory, genreId: null, year: 'all' as YearFilter };
+    }
     return { target, category: israeliCategory, genreId: null, year: yearFilter };
-  }, [librarySection, movieCategory, movieGenreId, seriesCategory, israeliCategory, yearFilter]);
+  }, [librarySection, movieCategory, movieGenreId, seriesCategory, telegramCategory, israeliCategory, yearFilter]);
 
   const getCurrentRootRequestKey = useCallback(() => {
     const { target, category, genreId, year } = getCurrentRootContext();
@@ -1772,6 +1798,13 @@ export default function App() {
   const loadContentForCurrentSection = useCallback(async () => {
     if (showSearch || navContext) return;
     if (librarySection === 'favorites' || librarySection === 'history' || librarySection === 'continue_watching') return;
+    if (librarySection === 'telegram' && tgStatus !== 'loggedIn') {
+      setTelegramItems([]);
+      setHasMore(false);
+      setIsLoadingContent(false);
+      setFetchError(null);
+      return;
+    }
 
     const { target, category, genreId, year } = getCurrentRootContext();
     const rootRequestKey = getCurrentRootRequestKey();
@@ -1826,7 +1859,7 @@ export default function App() {
         setIsLoadingContent(false);
       }
     }
-  }, [showSearch, navContext, librarySection, getCurrentRootContext, getCurrentRootRequestKey, getItemsForTarget, hydrateTargetFromLocalSources, fetchCategoryContent, setItemsForTarget, prefetchNextCategoryPage]);
+  }, [showSearch, navContext, librarySection, tgStatus, getCurrentRootContext, getCurrentRootRequestKey, getItemsForTarget, hydrateTargetFromLocalSources, fetchCategoryContent, setItemsForTarget, prefetchNextCategoryPage]);
 
   useEffect(() => {
     loadContentForCurrentSection();
@@ -1873,11 +1906,12 @@ export default function App() {
     setFetchError(null);
     setFocusedId(null);
     setFocusedHeartId(null);
-  }, [librarySection, movieCategory, seriesCategory, israeliCategory, movieGenreId, seriesGenreFilter, yearFilter, shuffleSeed]);
+  }, [librarySection, movieCategory, seriesCategory, israeliCategory, telegramCategory, movieGenreId, seriesGenreFilter, yearFilter, shuffleSeed]);
 
   const loadMoreContent = useCallback(async () => {
     if (isLoadingMore || !hasMore || showSearch || navContext) return;
     if (librarySection === 'favorites' || librarySection === 'history' || librarySection === 'continue_watching') return;
+    if (librarySection === 'telegram' && tgStatus !== 'loggedIn') return;
 
     const { target, category, genreId, year } = getCurrentRootContext();
     const rootRequestKey = getCurrentRootRequestKey();
@@ -1910,6 +1944,8 @@ export default function App() {
           setBaseMovies((prev) => mergeCorridorItems(prev, result.items));
         } else if (target === 'series') {
           setSeriesItems((prev) => mergeCorridorItems(prev, result.items));
+        } else if (target === 'telegram') {
+          setTelegramItems((prev) => mergeCorridorItems(prev, result.items));
         } else {
           setIsraeliItems((prev) => mergeCorridorItems(prev, result.items));
         }
@@ -1944,7 +1980,7 @@ export default function App() {
       }
       setIsLoadingMore(false);
     }
-  }, [isLoadingMore, hasMore, showSearch, navContext, librarySection, contentPage, getCurrentRootContext, getCurrentRootRequestKey, fetchCategoryContent, prefetchNextCategoryPage]);
+  }, [isLoadingMore, hasMore, showSearch, navContext, librarySection, tgStatus, contentPage, getCurrentRootContext, getCurrentRootRequestKey, fetchCategoryContent, prefetchNextCategoryPage]);
 
   const handleCategoryNavigation = useCallback((item: SideMenuItem) => {
     if (item.kind !== 'route') return;
@@ -1989,6 +2025,7 @@ export default function App() {
       if (nextRouteState.movieCategory) setMovieCategory(nextRouteState.movieCategory);
       if (nextRouteState.seriesCategory) setSeriesCategory(nextRouteState.seriesCategory);
       if (nextRouteState.israeliCategory) setIsraeliCategory(nextRouteState.israeliCategory);
+      if (nextRouteState.telegramCategory) setTelegramCategory(nextRouteState.telegramCategory);
       setMovieGenreId(nextRouteState.movieGenreId);
       setSeriesGenreFilter(nextRouteState.seriesGenreFilter);
       setYearFilter(nextRouteState.yearFilter);
@@ -2152,17 +2189,23 @@ export default function App() {
     ? 'עונות'
     : selectedMovie?.mediaType === 'season'
       ? 'פרקים'
+      : selectedMovie?.mediaType && isTelegramDialogMediaType(selectedMovie.mediaType)
+        ? 'טלגרם'
       : 'צפייה';
 
   const handleSelectedMoviePrimaryAction = useCallback(() => {
     if (!selectedMovie) return;
+    if (selectedMovie.mediaType && isTelegramDialogMediaType(selectedMovie.mediaType)) {
+      openSettingsPanel('telegram');
+      return;
+    }
     const selectionAction = getSeriesSelectionAction(selectedMovie);
     if (selectionAction === 'openDetails') {
       setShowCinemaScreen(true);
       return;
     }
     void handlePosterSelect(selectedMovie);
-  }, [handlePosterSelect, selectedMovie]);
+  }, [handlePosterSelect, openSettingsPanel, selectedMovie]);
 
   const handleTelegramSourceSearch = useCallback(() => {
     if (!telegramPlayableItem) {
@@ -2202,21 +2245,25 @@ export default function App() {
     if (librarySection === 'continue_watching') return decorateCorridorItems(continueWatching, 'continue_watching');
     if (librarySection === 'favorites') return decorateCorridorItems(favorites, 'favorites');
     if (librarySection === 'history') return decorateCorridorItems(watchHistory, 'history');
+    if (librarySection === 'telegram') return decorateCorridorItems(telegramItems, currentRootRequestKey);
 
     let base = librarySection === 'series' ? seriesItems : librarySection === 'israeli' ? israeliItems : baseMovies;
     return decorateCorridorItems(
       applyCatalogFilters(base, { sortMode, yearFilter, genreFilter: activeGenreFilter, randomSeed: shuffleSeed }),
       currentRootRequestKey
     );
-  }, [showSearch, searchResults, navContext, librarySection, continueWatching, favorites, watchHistory, seriesItems, israeliItems, baseMovies, sortMode, yearFilter, activeGenreFilter, shuffleSeed, currentRootRequestKey]);
+  }, [showSearch, searchResults, navContext, librarySection, continueWatching, favorites, watchHistory, telegramItems, seriesItems, israeliItems, baseMovies, sortMode, yearFilter, activeGenreFilter, shuffleSeed, currentRootRequestKey]);
 
   const emptyLibraryStateMessage = useMemo(() => {
     if (showSearch || navContext || isLoadingContent || displayMovies.length > 0) return null;
     if (librarySection === 'continue_watching') return 'עדיין אין תכנים להמשך צפייה';
     if (librarySection === 'favorites') return 'עדיין לא סימנת תכנים כמועדפים';
     if (librarySection === 'history') return 'היסטוריית הצפייה שלך תופיע כאן אחרי שתתחיל לצפות';
+    if (librarySection === 'telegram' && !tgConfigured) return 'Telegram עדיין לא מוגדר בשרת';
+    if (librarySection === 'telegram' && tgStatus !== 'loggedIn') return 'התחבר לחשבון Telegram כדי להציג את הקבוצות והערוצים שלך';
+    if (librarySection === 'telegram') return 'לא נמצאו קבוצות או ערוצים להצגה בחשבון Telegram הזה';
     return null;
-  }, [showSearch, navContext, isLoadingContent, displayMovies.length, librarySection]);
+  }, [showSearch, navContext, isLoadingContent, displayMovies.length, librarySection, tgConfigured, tgStatus]);
 
   const displayMoviesRef = useRef(displayMovies);
   useEffect(() => { displayMoviesRef.current = displayMovies; }, [displayMovies]);
@@ -2436,9 +2483,15 @@ export default function App() {
             <div className="text-xl font-semibold text-white">{emptyLibraryStateMessage}</div>
             <div className="mt-2 text-sm text-white/55">אפשר לפתוח את הסרגל הראשי ולעבור לקטלוג, לחיפוש או לטלגרם.</div>
           </div>
-          <button onClick={() => setIsLocked(false)} className="hc-button hc-button--accent px-6 py-3 text-sm">
-            פתח תפריט ראשי
-          </button>
+          {librarySection === 'telegram' && tgStatus !== 'loggedIn' ? (
+            <button onClick={() => openSettingsPanel('telegram')} className="hc-button hc-button--accent px-6 py-3 text-sm">
+              פתח חיבור טלגרם
+            </button>
+          ) : (
+            <button onClick={() => setIsLocked(false)} className="hc-button hc-button--accent px-6 py-3 text-sm">
+              פתח תפריט ראשי
+            </button>
+          )}
         </div>
       )}
 
@@ -2585,7 +2638,9 @@ export default function App() {
           seriesGenres: [],
           continueWatchingCount: continueWatching.length,
           favoritesCount: favorites.length,
-          historyCount: watchHistory.length
+          historyCount: watchHistory.length,
+          telegramCount: telegramItems.length,
+          telegramConnected: tgStatus === 'loggedIn'
         })}
         activeItemId={getActiveMenuItemId({
           librarySection,
@@ -2595,6 +2650,7 @@ export default function App() {
           movieCategory,
           seriesCategory,
           israeliCategory,
+          telegramCategory,
           showSearch
         })}
         currentLabel={
@@ -2602,6 +2658,7 @@ export default function App() {
             : librarySection === 'continue_watching' ? 'המשך צפייה'
             : librarySection === 'favorites' ? 'מועדפים'
               : librarySection === 'history' ? 'היסטוריה'
+                : librarySection === 'telegram' ? 'טלגרם'
                 : librarySection === 'series' ? 'סדרות'
                   : librarySection === 'israeli' ? 'ישראלי'
                     : 'סרטים'
@@ -2631,6 +2688,8 @@ export default function App() {
                     ? 'Series Corridor'
                     : selectedMovie.mediaType === 'season'
                       ? 'Season Corridor'
+                      : selectedMovie.mediaType && isTelegramDialogMediaType(selectedMovie.mediaType)
+                        ? 'Telegram Corridor'
                       : selectedMovie.mediaType === 'episode'
                         ? 'Episode Details'
                         : 'Movie Details'}

@@ -27,7 +27,8 @@ test('default root catalog state launches into Movies Popular', () => {
     movieGenreId: null,
     movieCategory: 'popular',
     seriesCategory: 'popular',
-    israeliCategory: 'popular'
+    israeliCategory: 'popular',
+    telegramCategory: 'all'
   });
 });
 

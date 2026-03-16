@@ -1,5 +1,7 @@
-export type FeedTarget = 'movies' | 'series' | 'israeli';
-export type CatalogMediaType = 'movie' | 'tv';
+import type { TelegramDialogMediaType } from './telegramDialogs';
+
+export type FeedTarget = 'movies' | 'series' | 'israeli' | 'telegram';
+export type CatalogMediaType = 'movie' | 'tv' | TelegramDialogMediaType;
 export type ContentMediaType = CatalogMediaType | 'season' | 'episode';
 
 export type CorridorItem = {
@@ -16,6 +18,11 @@ export type CorridorItem = {
   mediaType: ContentMediaType;
   year?: number | null;
   language?: string;
+  peerId?: string;
+  username?: string;
+  telegramType?: 'group' | 'channel';
+  unreadCount?: number;
+  memberCount?: number;
   seriesId?: number;
   seriesTitle?: string;
   seasonNum?: number;
@@ -68,7 +75,11 @@ const asOptionalPositiveInt = (value: unknown): number | undefined => {
 };
 
 export const getCatalogFallbackMediaType = (target: FeedTarget): CatalogMediaType =>
-  target === 'series' ? 'tv' : 'movie';
+  target === 'series'
+    ? 'tv'
+    : target === 'telegram'
+      ? 'telegram_group'
+      : 'movie';
 
 export const coerceContentMediaType = (
   value: unknown,
@@ -77,6 +88,8 @@ export const coerceContentMediaType = (
   const normalized = String(value ?? '').trim().toLowerCase();
   if (normalized === 'movie') return 'movie';
   if (normalized === 'tv' || normalized === 'series' || normalized === 'show') return 'tv';
+  if (normalized === 'telegram_group' || normalized === 'group') return 'telegram_group';
+  if (normalized === 'telegram_channel' || normalized === 'channel') return 'telegram_channel';
   if (normalized === 'season') return 'season';
   if (normalized === 'episode') return 'episode';
   return fallbackMediaType;
@@ -123,6 +136,15 @@ export const normalizeContentItem = (
     mediaType,
     year,
     language: String(item.language || item.original_language || ''),
+    peerId: item.peerId ? String(item.peerId) : undefined,
+    username: item.username ? String(item.username).replace(/^@/, '') : undefined,
+    telegramType: item.telegramType === 'channel' || mediaType === 'telegram_channel'
+      ? 'channel'
+      : item.telegramType === 'group' || mediaType === 'telegram_group'
+        ? 'group'
+        : undefined,
+    unreadCount: asOptionalPositiveInt(item.unreadCount),
+    memberCount: asOptionalPositiveInt(item.memberCount),
     seriesId,
     seriesTitle: item.seriesTitle ? String(item.seriesTitle) : undefined,
     seasonNum: seasonNumber,
@@ -180,7 +202,9 @@ export const normalizeCatalogResponse = (
     ? response?.movies
     : target === 'series'
       ? response?.series
-      : response?.items;
+      : target === 'telegram'
+        ? response?.dialogs ?? response?.items
+        : response?.items;
 
   return {
     items: normalizeCatalogPage(rawItems, getCatalogFallbackMediaType(target)),
@@ -234,5 +258,6 @@ export const FALLBACK_LIBRARY: Record<FeedTarget, CorridorItem[]> = {
     buildFallbackItem({ id: 130965, title: 'Tehran', genre: 'Thriller', rating: 7.5, popularity: 69, poster: 'https://picsum.photos/seed/tehran/500/750', desc: 'An Israeli agent goes undercover in a hostile capital.', mediaType: 'tv', year: 2020, language: 'he' }),
     buildFallbackItem({ id: 888, title: 'Waltz with Bashir', genre: 'Animation', rating: 8.0, popularity: 61, poster: 'https://picsum.photos/seed/bashir/500/750', desc: 'A veteran reconstructs lost memories from war.', mediaType: 'movie', year: 2008, language: 'he' }),
     buildFallbackItem({ id: 4122, title: 'Beaufort', genre: 'War', rating: 7.0, popularity: 52, poster: 'https://picsum.photos/seed/beaufort/500/750', desc: 'Soldiers endure the final days of an isolated outpost.', mediaType: 'movie', year: 2007, language: 'he' })
-  ]
+  ],
+  telegram: []
 };

@@ -1,4 +1,5 @@
 import type { LibrarySection, YearFilter } from './catalog';
+import type { TelegramDialogCategory } from './telegramDialogs';
 
 export type FeedCategory = 'popular' | 'top_rated' | 'trending' | 'new_releases' | 'recently_active' | 'random';
 export type SettingsPanel = 'general' | 'telegram' | 'updates';
@@ -7,6 +8,7 @@ export type MenuRoute =
   | { target: 'movies'; category?: FeedCategory; genreId?: number | null; year?: YearFilter }
   | { target: 'series'; category?: FeedCategory; genreLabel?: string | null; year?: YearFilter }
   | { target: 'israeli'; category?: FeedCategory; year?: YearFilter }
+  | { target: 'telegram'; category?: TelegramDialogCategory }
   | { target: 'continue_watching' }
   | { target: 'favorites' }
   | { target: 'history' }
@@ -55,7 +57,7 @@ const movieCategoryItem = (id: string, label: string, description: string, categ
   id,
   label,
   description,
-  icon: category === 'popular' ? '🎥' : category === 'top_rated' ? '★' : category === 'trending' ? '↗' : category === 'new_releases' ? '🆕' : '🎲',
+  icon: category === 'popular' ? '🎬' : category === 'top_rated' ? '★' : category === 'trending' ? '↗' : category === 'new_releases' ? '🆕' : '🎲',
   kind: 'route',
   route: { target: 'movies', category }
 });
@@ -78,18 +80,36 @@ const israeliCategoryItem = (id: string, label: string, description: string, cat
   route: { target: 'israeli', category }
 });
 
+const telegramRouteItem = (
+  id: string,
+  label: string,
+  description: string,
+  category: TelegramDialogCategory
+): SideMenuItem => ({
+  id,
+  label,
+  description,
+  icon: category === 'channels' ? '◉' : category === 'groups' ? '◎' : '✈',
+  kind: 'route',
+  route: { target: 'telegram', category }
+});
+
 export const buildSideMenuGroups = ({
   movieGenres,
   seriesGenres,
   continueWatchingCount,
   favoritesCount,
-  historyCount
+  historyCount,
+  telegramCount,
+  telegramConnected
 }: {
   movieGenres: GenreOption[];
   seriesGenres: string[];
   continueWatchingCount: number;
   favoritesCount: number;
   historyCount: number;
+  telegramCount: number;
+  telegramConnected: boolean;
 }): SideMenuGroup[] => {
   const movieGenreItems = movieGenres
     .filter((genre) => genre.tmdbId)
@@ -98,7 +118,7 @@ export const buildSideMenuGroups = ({
       id: `movies-genre-${genre.tmdbId}`,
       label: genre.name,
       description: `סרטים בז'אנר ${genre.name}`,
-      icon: '✦',
+      icon: '⌬',
       kind: 'route' as const,
       route: { target: 'movies' as const, category: 'popular' as const, genreId: genre.tmdbId }
     }));
@@ -116,7 +136,7 @@ export const buildSideMenuGroups = ({
     id: `series-genre-${genreLabel}`,
     label: genreLabel,
     description: `סדרות בז'אנר ${genreLabel}`,
-    icon: '✦',
+    icon: '⌬',
     kind: 'route' as const,
     route: { target: 'series' as const, category: 'popular' as const, genreLabel }
   }));
@@ -137,12 +157,21 @@ export const buildSideMenuGroups = ({
       subtitle: 'החלפה מיידית של המסדרון',
       defaultExpanded: true,
       items: [
-        { id: 'quick-movies', label: 'סרטים', description: 'המסדרון הראשי של הסרטים', icon: '🎥', tone: 'accent', kind: 'route', route: { target: 'movies', category: 'popular' } },
-        { id: 'quick-series', label: 'סדרות', description: 'מסדרון הסדרות הראשי', icon: '📺', tone: 'accent', kind: 'route', route: { target: 'series', category: 'popular' } },
-        { id: 'quick-israeli', label: 'ישראלי', description: 'סרטים וסדרות ישראליים במסדרון נפרד', icon: '🇮🇱', tone: 'accent', kind: 'route', route: { target: 'israeli', category: 'popular' } },
+        { id: 'quick-movies', label: 'סרטים', description: 'המסדרון הראשי של הסרטים', icon: '🎬', tone: 'accent', kind: 'route', route: { target: 'movies', category: 'popular' } },
+        { id: 'quick-series', label: 'סדרות', description: 'המסדרון הראשי של הסדרות', icon: '📺', tone: 'accent', kind: 'route', route: { target: 'series', category: 'popular' } },
+        { id: 'quick-israeli', label: 'ישראלי', description: 'תוכן ישראלי במסדרון נפרד', icon: '🇮🇱', tone: 'accent', kind: 'route', route: { target: 'israeli', category: 'popular' } },
+        {
+          id: 'quick-telegram',
+          label: `טלגרם (${telegramCount})`,
+          description: telegramConnected ? 'ערוצים וקבוצות מחשבון Telegram שלך' : 'התחבר ל-Telegram כדי לפתוח את מסדרון הערוצים והקבוצות',
+          icon: '✈',
+          tone: 'accent',
+          kind: 'route',
+          route: { target: 'telegram', category: 'all' }
+        },
         { id: 'quick-continue', label: `המשך צפייה (${continueWatchingCount})`, description: 'חזרה מהירה לתוכן שעצרת באמצע', icon: '▶', kind: 'route', route: { target: 'continue_watching' } },
-        { id: 'quick-favorites', label: `מועדפים (${favoritesCount})`, description: 'כל מה שסימנת במקום אחד', icon: '♥', kind: 'route', route: { target: 'favorites' } },
-        { id: 'quick-history', label: `היסטוריה (${historyCount})`, description: 'צפיות אחרונות, מסודר לפי זמן', icon: '🕘', kind: 'route', route: { target: 'history' } },
+        { id: 'quick-favorites', label: `מועדפים (${favoritesCount})`, description: 'כל מה שסימנת במקום אחד', icon: '☆', kind: 'route', route: { target: 'favorites' } },
+        { id: 'quick-history', label: `היסטוריה (${historyCount})`, description: 'צפיות אחרונות מסודרות לפי זמן', icon: '⏱', kind: 'route', route: { target: 'history' } },
         { id: 'quick-search', label: 'חיפוש', description: 'חיפוש ישיר שמחליף את המסדרון', icon: '⌕', kind: 'route', route: { target: 'search' } }
       ]
     },
@@ -188,6 +217,18 @@ export const buildSideMenuGroups = ({
       ]
     },
     {
+      id: 'telegram',
+      title: 'טלגרם',
+      subtitle: telegramConnected
+        ? 'ערוצים וקבוצות ישירות מחשבון Telegram שלך'
+        : 'התחבר ל-Telegram כדי להציג את הערוצים והקבוצות שלך במסדרון',
+      items: [
+        telegramRouteItem('telegram-all', 'הכל', telegramConnected ? `כל ה-dialogs הזמינים (${telegramCount})` : 'כל הערוצים והקבוצות יופיעו כאן אחרי החיבור', 'all'),
+        telegramRouteItem('telegram-groups', 'קבוצות', 'רק קבוצות וסופר-קבוצות', 'groups'),
+        telegramRouteItem('telegram-channels', 'ערוצים', 'רק ערוצי broadcast ותוכן', 'channels')
+      ]
+    },
+    {
       id: 'settings',
       title: 'מערכת',
       subtitle: 'הגדרות, טלגרם ועדכונים',
@@ -195,7 +236,7 @@ export const buildSideMenuGroups = ({
         { id: 'settings-general', label: 'הגדרות כלליות', description: 'ניגון, ממשק והתנהגות כללית', icon: '⚙', tone: 'settings', kind: 'settings', panel: 'general' },
         { id: 'settings-telegram', label: 'חיבור טלגרם', description: 'התחברות או ניתוק לחשבון', icon: '✈', tone: 'settings', kind: 'settings', panel: 'telegram' },
         { id: 'settings-updates', label: 'עדכוני APK', description: 'בדיקה, הורדה והתקנה של גרסאות', icon: '⬇', tone: 'settings', kind: 'settings', panel: 'updates' },
-        { id: 'settings-exit', label: 'יציאה', description: 'סגירת האפליקציה מהמכשיר', icon: '⏻', tone: 'settings', kind: 'action', action: 'exit' }
+        { id: 'settings-exit', label: 'יציאה', description: 'סגירת האפליקציה מהמכשיר', icon: '⎋', tone: 'settings', kind: 'action', action: 'exit' }
       ]
     }
   ];
@@ -209,6 +250,7 @@ export const getActiveMenuItemId = ({
   movieCategory,
   seriesCategory,
   israeliCategory,
+  telegramCategory = 'all',
   showSearch
 }: {
   librarySection: LibrarySection;
@@ -218,9 +260,17 @@ export const getActiveMenuItemId = ({
   movieCategory: FeedCategory;
   seriesCategory: FeedCategory;
   israeliCategory: FeedCategory;
+  telegramCategory?: TelegramDialogCategory;
   showSearch: boolean;
 }) => {
   if (showSearch) return 'quick-search';
+  if (librarySection === 'telegram') {
+    return telegramCategory === 'groups'
+      ? 'telegram-groups'
+      : telegramCategory === 'channels'
+        ? 'telegram-channels'
+        : 'telegram-all';
+  }
   if (librarySection === 'continue_watching') return 'quick-continue';
   if (librarySection === 'favorites') return 'quick-favorites';
   if (librarySection === 'history') return 'quick-history';

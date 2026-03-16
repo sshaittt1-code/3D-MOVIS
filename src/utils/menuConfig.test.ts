@@ -38,3 +38,17 @@ test('getActiveMenuItemId surfaces history and continue watching roots', () => {
     showSearch: false
   }), 'quick-continue');
 });
+
+test('getActiveMenuItemId highlights telegram corridor filters', () => {
+  assert.equal(getActiveMenuItemId({
+    librarySection: 'telegram',
+    activeGenreId: null,
+    seriesGenreFilter: null,
+    yearFilter: 'all',
+    movieCategory: 'popular',
+    seriesCategory: 'popular',
+    israeliCategory: 'popular',
+    telegramCategory: 'channels',
+    showSearch: false
+  }), 'telegram-channels');
+});

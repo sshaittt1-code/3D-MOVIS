@@ -25,6 +25,20 @@ test('normalizeCorridorItem canonicalizes posters and media type aliases', () =>
   assert.equal(item?.mediaType, 'tv');
 });
 
+test('normalizeCorridorItem preserves telegram dialog media types', () => {
+  const item = normalizeCorridorItem({
+    id: 'tg:channel:1',
+    title: 'News Feed',
+    poster: 'data:image/svg+xml,%3Csvg/%3E',
+    mediaType: 'telegram_channel',
+    peerId: '1'
+  }, 'telegram_group');
+
+  assert.ok(item);
+  assert.equal(item?.mediaType, 'telegram_channel');
+  assert.equal(item?.peerId, '1');
+});
+
 test('normalizeCatalogResponse extracts the correct envelope by target', () => {
   const movies = normalizeCatalogResponse({
     movies: [{ id: 1, title: 'Movie', poster: 'https://example.com/movie.jpg' }],
@@ -38,12 +52,17 @@ test('normalizeCatalogResponse extracts the correct envelope by target', () => {
     items: [{ id: 3, title: 'Israeli', poster: 'https://example.com/israeli.jpg', mediaType: 'movie' }],
     hasMore: true
   }, 'israeli');
+  const telegram = normalizeCatalogResponse({
+    dialogs: [{ id: 'tg:group:7', title: 'Group', poster: 'data:image/svg+xml,%3Csvg/%3E', mediaType: 'telegram_group' }],
+    hasMore: false
+  }, 'telegram');
 
   assert.equal(movies.items[0]?.mediaType, 'movie');
   assert.equal(movies.hasMore, true);
   assert.equal(series.items[0]?.mediaType, 'tv');
   assert.equal(series.hasMore, false);
   assert.equal(israeli.items[0]?.title, 'Israeli');
+  assert.equal(telegram.items[0]?.mediaType, 'telegram_group');
 });
 
 test('normalizeSeasonPage enriches seasons with series identity', () => {
@@ -104,10 +123,12 @@ test('catalog fallback media types remain isolated by root target', () => {
   assert.equal(getCatalogFallbackMediaType('movies'), 'movie');
   assert.equal(getCatalogFallbackMediaType('series'), 'tv');
   assert.equal(getCatalogFallbackMediaType('israeli'), 'movie');
+  assert.equal(getCatalogFallbackMediaType('telegram'), 'telegram_group');
 });
 
 test('fallback library stays populated for all root catalogs', () => {
   assert.ok(normalizeCatalogPage(FALLBACK_LIBRARY.movies, 'movie').length >= 8);
   assert.ok(normalizeCatalogPage(FALLBACK_LIBRARY.series, 'tv').length >= 4);
   assert.ok(normalizeCatalogPage(FALLBACK_LIBRARY.israeli, 'movie').length >= 3);
+  assert.deepEqual(normalizeCatalogPage(FALLBACK_LIBRARY.telegram, 'telegram_group'), []);
 });

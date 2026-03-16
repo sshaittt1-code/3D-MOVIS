@@ -121,3 +121,26 @@ test('search result summaries classify results by source lookup', () => {
   assert.equal(classifySearchSource(results[0], collections.sourceLookup), 'favorites');
   assert.equal(classifySearchSource(results[1], collections.sourceLookup), 'catalog');
 });
+
+test('telegram favorites round-trip into corridor collections', () => {
+  const collections = deriveLibraryCollections({
+    mediaStateMap: {
+      a: createEntry({
+        key: 'telegram_group:tg:group:42:::',
+        snapshot: {
+          id: 'tg:group:42',
+          mediaType: 'telegram_group',
+          title: 'Cinema Group',
+          poster: 'data:image/svg+xml,%3Csvg/%3E',
+          desc: 'Telegram Group'
+        },
+        favorite: true
+      })
+    },
+    catalogItems: []
+  });
+
+  assert.equal(collections.favorites.length, 1);
+  assert.equal(collections.favorites[0]?.mediaType, 'telegram_group');
+  assert.equal(collections.favorites[0]?.title, 'Cinema Group');
+});
