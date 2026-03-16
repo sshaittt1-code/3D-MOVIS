@@ -16,6 +16,9 @@ import { PosterContextMenu } from './components/PosterContextMenu';
 import { AppSettingsPanel } from './components/AppSettingsPanel';
 import { CinemaGate } from './components/CinemaGate';
 import { TelegramConsolePanel } from './components/TelegramConsolePanel';
+import { CorridorShell } from './components/CorridorShell';
+import { CorridorFocusOverlay } from './components/CorridorFocusOverlay';
+import { CorridorPosterSlot } from './components/CorridorPosterSlot';
 import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
 import { safeGetJson, safeGetString, safeParseJson, safeRemove, safeSetJson, safeSetString } from './utils/safeStorage';
 import {
@@ -47,10 +50,8 @@ import {
   buildPosterLayout,
   CORRIDOR_INITIAL_CAMERA_Z,
   decorateCorridorItems,
-  getCorridorRenderAheadCount,
   getLastPosterZ,
-  getNearEndTriggerZ,
-  getRenderedPosterLayout
+  getNearEndTriggerZ
 } from './utils/corridorEngine';
 import {
   FALLBACK_LIBRARY,
@@ -110,6 +111,13 @@ import {
   resolveRuntimePerformanceProfile,
   shouldRunBackgroundWarmup
 } from './utils/runtimePerformance';
+import {
+  buildPosterSlotWindow,
+  getCorridorTierConfig,
+  IMAX_CORRIDOR_SHELL_CONFIG,
+  resolvePosterTextureIntents,
+  type PosterTextureState
+} from './utils/corridorScene';
 import {
   classifySearchSource,
   deriveLibraryCollections,
@@ -627,6 +635,16 @@ export default function App() {
   const telegramContextKeyRef = useRef('');
   const telegramStatusRequestRef = useRef(0);
   const runtimePerformanceProfile = useMemo(() => resolveRuntimePerformanceProfile(), []);
+  const corridorTierConfig = useMemo(
+    () => getCorridorTierConfig(runtimePerformanceProfile.tier),
+    [runtimePerformanceProfile.tier]
+  );
+  const [corridorTextureStates, setCorridorTextureStates] = useState<Record<string, PosterTextureState>>({});
+  const [showCorridorDebug] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('hc_debug') === '1' || safeGetString(localStorage, 'hc_corridor_debug') === '1';
+  });
 
   useEffect(() => { mediaStateMapRef.current = mediaStateMap; safeSetJson(localStorage, MEDIA_STATE_STORAGE_KEY, mediaStateMap); }, [mediaStateMap]);
   useEffect(() => { playbackCacheMapRef.current = playbackCacheMap; writePlaybackCacheMap(localStorage, playbackCacheMap); }, [playbackCacheMap]);
@@ -1589,7 +1607,7 @@ export default function App() {
 
     const priorityLimit = Math.min(
       validItems.length,
-      Math.max(priorityCount, runtimePerformanceProfile.priorityPosterCount)
+      Math.max(priorityCount, Math.min(runtimePerformanceProfile.priorityPosterCount, corridorTierConfig.maxThumbPrefetch))
     );
     const secondaryLimit = runtimePerformanceProfile.allowSecondaryPosterPrefetch
       ? runtimePerformanceProfile.secondaryPosterCount
@@ -1597,24 +1615,18 @@ export default function App() {
     const priorityItems = validItems.slice(0, priorityLimit);
 
     const priorityUrls = priorityItems.map((item) => item.posterThumb || item.poster);
-    const fullUpgradeUrls = priorityItems
-      .map((item) => item.poster)
-      .filter((url, index) => url && url !== priorityUrls[index]);
-    const secondaryUrls = [
-      ...fullUpgradeUrls,
-      ...(secondaryLimit > 0
-        ? validItems
-            .slice(priorityLimit, priorityLimit + secondaryLimit)
-            .map((item) => item.posterThumb || item.poster)
-        : [])
-    ];
+    const secondaryUrls = secondaryLimit > 0
+      ? validItems
+          .slice(priorityLimit, priorityLimit + secondaryLimit)
+          .map((item) => item.posterThumb || item.poster)
+      : [];
 
     void textureManager.prefetchPriority(
       priorityUrls,
       secondaryUrls,
       runtimePerformanceProfile.texturePrefetchConcurrency
     );
-  }, [appVisible, runtimePerformanceProfile]);
+  }, [appVisible, corridorTierConfig.maxThumbPrefetch, runtimePerformanceProfile]);
 
   const hydrateTargetFromLocalSources = useCallback((
     target: FeedTarget,
@@ -2210,20 +2222,60 @@ export default function App() {
   useEffect(() => { displayMoviesRef.current = displayMovies; }, [displayMovies]);
 
   const posterLayout = useMemo(() => buildPosterLayout(displayMovies), [displayMovies]);
-
-  const renderedPosterLayout = useMemo(() => {
-    return getRenderedPosterLayout(posterLayout, cameraZ, getCorridorRenderAheadCount(posterBatchSize));
-  }, [cameraZ, posterLayout, posterBatchSize]);
+  const posterSlots = useMemo(
+    () => buildPosterSlotWindow(posterLayout, cameraZ, corridorTierConfig),
+    [cameraZ, corridorTierConfig, posterLayout]
+  );
+  const posterTextureIntents = useMemo(
+    () => resolvePosterTextureIntents(posterSlots, focusedId, corridorTierConfig),
+    [corridorTierConfig, focusedId, posterSlots]
+  );
 
   const lastPosterZ = useMemo(() => getLastPosterZ(posterLayout), [posterLayout]);
+  const focusedCorridorItem = useMemo(
+    () => displayMovies.find((item) => item.uniqueId === focusedId) ?? null,
+    [displayMovies, focusedId]
+  );
+  const focusedMediaState = useMemo(
+    () => (
+      focusedCorridorItem
+        ? mediaStateMap[buildMediaKey(focusedCorridorItem)] ?? createDefaultMediaStateEntry(focusedCorridorItem)
+        : null
+    ),
+    [focusedCorridorItem, mediaStateMap]
+  );
+  const corridorTextureStats = useMemo(() => {
+    const counts: Record<PosterTextureState, number> = { empty: 0, thumb: 0, full: 0, failed: 0 };
+    Object.values(corridorTextureStates).forEach((state) => {
+      counts[state] += 1;
+    });
+    return counts;
+  }, [corridorTextureStates]);
+
+  const handlePosterTextureStateChange = useCallback((slotId: string, state: PosterTextureState) => {
+    setCorridorTextureStates((current) => {
+      if (current[slotId] === state) return current;
+      return {
+        ...current,
+        [slotId]: state
+      };
+    });
+  }, []);
 
   useEffect(() => {
-    prefetchPostersForItems(displayMovies.slice(0, posterBatchSize));
-  }, [displayMovies, posterBatchSize, prefetchPostersForItems]);
+    prefetchPostersForItems(displayMovies.slice(0, corridorTierConfig.maxThumbPrefetch), corridorTierConfig.maxThumbPrefetch);
+  }, [corridorTierConfig.maxThumbPrefetch, displayMovies, prefetchPostersForItems]);
 
   useEffect(() => {
-    prefetchPostersForItems(renderedPosterLayout.map((entry: any) => entry.movie), 6);
-  }, [renderedPosterLayout, prefetchPostersForItems]);
+    const visibleItems = posterSlots
+      .map((slot) => slot.item)
+      .filter((item): item is CorridorItem => Boolean(item));
+    prefetchPostersForItems(visibleItems, corridorTierConfig.maxThumbPrefetch);
+  }, [corridorTierConfig.maxThumbPrefetch, posterSlots, prefetchPostersForItems]);
+
+  useEffect(() => {
+    setCorridorTextureStates({});
+  }, [corridorScopeKey]);
 
   // --- Remote Control logic ---
   const performBackAction = useCallback(() => {
@@ -2306,17 +2358,49 @@ export default function App() {
   return (
     <div className="hc-app-shell w-full h-screen overflow-hidden bg-black text-white" dir="rtl">
       <Canvas camera={{ position: [0, 1.6, 2], fov: 75 }}>
-        <ambientLight intensity={0.8} />
+        <ambientLight intensity={0.52} />
+        <directionalLight position={[0, 6.8, 6]} intensity={0.9} color="#d7f7ff" />
         <Suspense fallback={null}>
           <group>
-            <gridHelper args={[100, 50, '#00ffcc', '#001111']} position={[0, 0, -50]} />
-            {renderedPosterLayout.map((p: any) => (
-              <Poster key={p.movie.uniqueId} movie={p.movie} isFocused={focusedId === p.movie.uniqueId} isFavorited={!!mediaStateMap[buildMediaKey(p.movie)]?.favorite} isHeartFocused={focusedHeartId === p.movie.uniqueId} watchStatus={mediaStateMap[buildMediaKey(p.movie)]?.watchStatus} position={p.position} rotation={p.rotation} />
+            <CorridorShell
+              cameraZ={cameraZ}
+              config={IMAX_CORRIDOR_SHELL_CONFIG}
+              tierConfig={corridorTierConfig}
+            />
+            {posterSlots.map((slot) => (
+              <CorridorPosterSlot
+                key={slot.slotId}
+                slot={slot}
+                textureIntent={posterTextureIntents.get(slot.slotId) ?? 'thumb'}
+                isFocused={focusedId === slot.uniqueId}
+                isFavorited={Boolean(slot.item && mediaStateMap[buildMediaKey(slot.item)]?.favorite)}
+                watchStatus={slot.item ? (mediaStateMap[buildMediaKey(slot.item)]?.watchStatus ?? 'unwatched') : 'unwatched'}
+                onTextureStateChange={handlePosterTextureStateChange}
+              />
             ))}
           </group>
           <TVController posterLayout={posterLayout} isLocked={isLocked} onPosterSelect={handlePosterSelect} onPosterLongPress={setPosterContextMovie} onHeartToggle={handleHeartToggle} setFocusedId={setFocusedId} setFocusedHeartId={setFocusedHeartId} isAnyModalOpen={isAnyShellOverlayOpen} lastPosterZ={lastPosterZ} nearEndTriggerKey={nearEndTriggerKey} cameraResetKey={corridorScopeKey} onNearEnd={loadMoreContent} onCameraMove={setCameraZ} />
         </Suspense>
       </Canvas>
+
+      {!showSearch && !selectedMovie && !showCinemaScreen && !showSettings && !posterContextMovie && focusedCorridorItem && focusedMediaState && (
+        <CorridorFocusOverlay
+          item={focusedCorridorItem}
+          isFavorited={Boolean(focusedMediaState.favorite)}
+          watchStatus={focusedMediaState.watchStatus}
+        />
+      )}
+
+      {showCorridorDebug && (
+        <div className="hc-tv-safe-top-left absolute z-40 mt-16 rounded-[24px] border border-white/10 bg-black/75 px-4 py-3 text-xs text-white/70 backdrop-blur-xl">
+          <div className="font-semibold text-[#7debd6]">Corridor Debug</div>
+          <div className="mt-2">Tier: {corridorTierConfig.tier}</div>
+          <div>Visible slots: {posterSlots.filter((slot) => slot.item).length}/{corridorTierConfig.visiblePosterSlots}</div>
+          <div>Thumb: {corridorTextureStats.thumb} | Full: {corridorTextureStats.full}</div>
+          <div>Failed: {corridorTextureStats.failed} | Empty: {corridorTextureStats.empty}</div>
+          <div>Cache: {textureManager.getStats().cached} | Pending: {textureManager.getStats().pending}</div>
+        </div>
+      )}
 
       {(isLoadingContent || isLoadingMore) && (
         <div className="hc-tv-safe-top-left absolute z-30 flex items-center gap-3 rounded-full border border-[#00ffcc]/20 bg-black/70 px-5 py-3 backdrop-blur-md">

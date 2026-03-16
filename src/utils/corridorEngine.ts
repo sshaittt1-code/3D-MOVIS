@@ -22,6 +22,8 @@ export type CorridorLayoutEntry<T = CorridorRenderableItem> = {
   rotation: [number, number, number];
 };
 
+export type CorridorPosterTransform = Pick<CorridorLayoutEntry, 'position' | 'rotation'>;
+
 const buildCorridorBaseKey = (item: CorridorRenderableItem, fallbackIndex: number) => {
   const mediaKey = buildMediaKey(item as Parameters<typeof buildMediaKey>[0]);
   if (mediaKey) return mediaKey;
@@ -46,13 +48,10 @@ export const decorateCorridorItems = <T extends CorridorRenderableItem>(
   });
 };
 
-export const buildPosterLayout = <T extends CorridorRenderableItem>(
-  items: Array<CorridorRenderItem<T>>
-): Array<CorridorLayoutEntry<T>> => items.map((movie, index) => {
+export const getPosterTransformForIndex = (index: number): CorridorPosterTransform => {
   const zIndex = Math.floor(index / 2);
   const isLeft = index % 2 === 0;
   return {
-    movie,
     position: [
       isLeft ? -CORRIDOR_POSTER_X_OFFSET : CORRIDOR_POSTER_X_OFFSET,
       CORRIDOR_POSTER_Y,
@@ -60,7 +59,14 @@ export const buildPosterLayout = <T extends CorridorRenderableItem>(
     ],
     rotation: [0, isLeft ? Math.PI / 2.2 : -Math.PI / 2.2, 0]
   };
-});
+};
+
+export const buildPosterLayout = <T extends CorridorRenderableItem>(
+  items: Array<CorridorRenderItem<T>>
+): Array<CorridorLayoutEntry<T>> => items.map((movie, index) => ({
+  movie,
+  ...getPosterTransformForIndex(index)
+}));
 
 export const getCorridorCurrentIndex = (cameraZ: number) =>
   Math.max(0, Math.floor((CORRIDOR_INITIAL_CAMERA_Z - cameraZ) / CORRIDOR_POSTER_PAIR_SPACING) * 2);

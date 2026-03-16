@@ -67,19 +67,23 @@ class TextureManager {
           texture.colorSpace = THREE.SRGBColorSpace;
           texture.generateMipmaps = false;
           texture.minFilter = THREE.LinearFilter;
+          texture.needsUpdate = true;
           
           if (texture.image && typeof texture.image.decode === 'function') {
             texture.image.decode().then(() => {
+              texture.needsUpdate = true;
               this.rememberTexture(url, texture);
               this.pending.delete(url);
               resolve(texture);
             }).catch((err) => {
               console.warn("TextureManager: async decode failed, fallback to sync", err);
+              texture.needsUpdate = true;
               this.rememberTexture(url, texture);
               this.pending.delete(url);
               resolve(texture);
             });
           } else {
+            texture.needsUpdate = true;
             this.rememberTexture(url, texture);
             this.pending.delete(url);
             resolve(texture);
