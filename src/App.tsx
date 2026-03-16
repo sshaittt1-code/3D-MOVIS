@@ -120,6 +120,7 @@ import {
   shouldRunBackgroundWarmup
 } from './utils/runtimePerformance';
 import {
+  DEFAULT_API_BASE_URL,
   ensurePersistedStorageContract,
   LAST_GOOD_FEED_STORAGE_KEY,
   PERSISTED_STORAGE_KEYS
@@ -161,7 +162,7 @@ import {
 } from './utils/tvRemote';
 
 // --- API Helpers ---
-const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://threed-movis.onrender.com';
+const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL;
 
 if (typeof localStorage !== 'undefined') {
   ensurePersistedStorageContract(localStorage);

@@ -86,7 +86,7 @@ test('resolveTelegramStatusAfterRefresh preserves active login steps', () => {
 });
 
 test('telegram login stage helpers map server stages predictably', () => {
-  assert.equal(mapTelegramServerStageToStatus('starting'), 'codeInput');
+  assert.equal(mapTelegramServerStageToStatus('starting'), 'phoneInput');
   assert.equal(mapTelegramServerStageToStatus('codeInput'), 'codeInput');
   assert.equal(mapTelegramServerStageToStatus('passwordInput'), 'passwordInput');
   assert.equal(mapTelegramServerStageToStatus('loggedIn'), 'loggedIn');

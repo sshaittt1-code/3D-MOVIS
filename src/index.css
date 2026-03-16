@@ -214,7 +214,7 @@ button {
   border-color: rgba(60, 255, 191, 0.34);
   background: rgba(18, 92, 74, 0.32);
   color: white;
-  box-shadow: 0 0 0 1px rgba(60, 255, 191, 0.16), 0 0 28px rgba(0, 255, 204, 0.18);
+  box-shadow: 0 0 0 1px rgba(60, 255, 191, 0.22), 0 0 38px rgba(0, 255, 170, 0.24);
   outline: none;
 }
 
@@ -245,7 +245,7 @@ button {
   border-color: rgba(60, 255, 191, 0.34);
   background: rgba(18, 92, 74, 0.28);
   color: white;
-  box-shadow: 0 0 0 1px rgba(60, 255, 191, 0.14), 0 0 24px rgba(0, 255, 204, 0.14);
+  box-shadow: 0 0 0 1px rgba(60, 255, 191, 0.18), 0 0 34px rgba(0, 255, 170, 0.2);
   outline: none;
 }
 
@@ -323,7 +323,7 @@ button {
 .hc-button--ghost:focus-visible {
   border-color: rgba(60, 255, 191, 0.3);
   background: rgba(18, 92, 74, 0.24);
-  box-shadow: 0 0 24px rgba(0, 255, 204, 0.12);
+  box-shadow: 0 0 0 1px rgba(60, 255, 191, 0.16), 0 0 32px rgba(0, 255, 170, 0.22);
 }
 
 .hc-button--danger {

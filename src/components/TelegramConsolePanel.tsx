@@ -64,16 +64,18 @@ export const TelegramConsolePanel = ({
 
   if (!configured) {
     return (
-      <section className="hc-panel-section mt-8 p-8">
-        <div className="max-w-3xl">
-          <div className="hc-badge hc-badge--telegram">
-            <ShieldCheck size={16} />
-            <span>טלגרם</span>
+      <section className="hc-panel-section mt-8 p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="hc-badge hc-badge--telegram">
+              <ShieldCheck size={16} />
+              <span>טלגרם</span>
+            </div>
+            <h3 className="mt-4 text-2xl font-semibold text-white">Telegram לא מוגדר בשרת</h3>
+            <p className="hc-subtitle mt-3 max-w-2xl text-sm">
+              כדי להשתמש בטלגרם צריך להגדיר בשרת את <code>TG_API_ID</code> ואת <code>TG_API_HASH</code>.
+            </p>
           </div>
-          <h3 className="mt-4 text-3xl font-semibold text-white">חיבור Telegram עדיין לא מוגדר</h3>
-          <p className="hc-subtitle mt-3 text-base">
-            כדי להשתמש בטלגרם צריך להגדיר בשרת את <code>TG_API_ID</code> ואת <code>TG_API_HASH</code>.
-          </p>
         </div>
       </section>
     );
@@ -81,12 +83,16 @@ export const TelegramConsolePanel = ({
 
   if (!isLoggedIn) {
     return (
-      <section className="hc-panel-section mt-8 p-6">
+      <section className="hc-panel-section mt-8 p-6" data-tv-scope="ui">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <div className="text-2xl font-semibold text-white">Telegram עדיין לא מחובר</div>
-            <p className="hc-subtitle mt-2 max-w-2xl text-sm">
-              את החיבור מבצעים מתוך קטגוריית טלגרם בתפריט הראשי. אחרי ההתחברות יופיעו כאן מצב החשבון וכלי הניהול.
+            <div className="hc-badge hc-badge--telegram">
+              <ShieldCheck size={16} />
+              <span>טלגרם</span>
+            </div>
+            <h3 className="mt-4 text-2xl font-semibold text-white">החשבון עדיין לא מחובר</h3>
+            <p className="hc-subtitle mt-3 max-w-2xl text-sm">
+              את ההתחברות עצמה מבצעים מתוך קטגוריית טלגרם בתפריט הראשי. כאן רואים רק את מצב החשבון.
             </p>
           </div>
           <button
@@ -95,19 +101,15 @@ export const TelegramConsolePanel = ({
             className="hc-button hc-button--ghost px-4 py-3 text-sm"
           >
             <RefreshCw size={16} className={busy ? 'animate-spin' : ''} />
-            <span>רענון</span>
+            <span>רענון מצב</span>
           </button>
         </div>
 
-        <div className="mt-5 rounded-[22px] border border-white/8 bg-white/[0.03] px-5 py-4 text-sm text-white/65">
-          פתח את קטגוריית טלגרם, הזן מספר טלפון, אחר כך קוד אימות, ואם צריך גם אימות דו שלבי. אין צורך לפתוח חיבור מתוך מסך ההגדרות.
-        </div>
-
-        {error && (
+        {error ? (
           <div className="mt-5 rounded-[22px] border border-red-400/20 bg-red-500/10 px-5 py-4 text-sm text-red-100">
             {error}
           </div>
-        )}
+        ) : null}
       </section>
     );
   }
@@ -123,7 +125,7 @@ export const TelegramConsolePanel = ({
             </div>
             <h3 className="mt-4 text-3xl font-semibold text-white">החשבון שלך מוכן לשימוש</h3>
             <p className="hc-subtitle mt-3 text-base">
-              בחר סרט או פרק, חפש מקורות, ושלח את מה שמצאת לנגן.
+              בחר סרט או פרק, חפש מקורות, ושלח את התוצאה לנגן.
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
@@ -146,31 +148,31 @@ export const TelegramConsolePanel = ({
           </div>
         </div>
 
-        {preparedNextTitle && (
+        {preparedNextTitle ? (
           <div className="mt-6 rounded-[24px] border border-emerald-400/20 bg-emerald-500/10 px-5 py-4 text-sm text-emerald-100">
             הפרק הבא כבר מוכן: {preparedNextTitle}
           </div>
-        )}
+        ) : null}
 
-        {error && (
+        {error ? (
           <div className="mt-6 rounded-[24px] border border-red-400/20 bg-red-500/10 px-5 py-4 text-sm text-red-100">
             {error}
           </div>
-        )}
+        ) : null}
 
         <div className="hc-card mt-6 p-5">
           <div className="text-sm text-white/55">התוכן שנבחר</div>
           <div className="mt-2 text-2xl font-semibold text-white">
             {currentItem ? currentItem.title : 'עדיין לא נבחר תוכן'}
           </div>
-          {currentItem?.seriesTitle && (
+          {currentItem?.seriesTitle ? (
             <div className="mt-2 text-sm text-[#7debd6]">{currentItem.seriesTitle}</div>
-          )}
-          {currentPlaybackTitle && (
+          ) : null}
+          {currentPlaybackTitle ? (
             <div className="mt-4 rounded-full border border-emerald-400/20 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-100">
               מנגן עכשיו: {currentPlaybackTitle}
             </div>
-          )}
+          ) : null}
 
           {!playableSelection ? (
             <div className="hc-card mt-5 px-4 py-3 text-sm text-white/65">
@@ -198,7 +200,7 @@ export const TelegramConsolePanel = ({
           )}
         </div>
 
-        {playableSelection && (
+        {playableSelection ? (
           <div className="hc-card mt-6 p-5">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3 text-white">
@@ -238,7 +240,7 @@ export const TelegramConsolePanel = ({
               <div className="mt-4 text-sm text-white/50">עדיין לא נמצאו כתוביות לתוכן הזה.</div>
             )}
           </div>
-        )}
+        ) : null}
       </section>
 
       <section className="hc-panel-section p-6">
@@ -247,9 +249,9 @@ export const TelegramConsolePanel = ({
           כאן מופיעות תוצאות החיפוש מטלגרם. בחר מקור אחד כדי לפתוח אותו בנגן.
         </p>
 
-        {playableSelection && sources.length === 0 && !sourceSearchBusy && (
+        {playableSelection && sources.length === 0 && !sourceSearchBusy ? (
           <div className="hc-card mt-6 px-5 py-4 text-sm text-white/55">עדיין אין מקורות. הפעל חיפוש כדי למלא את הרשימה.</div>
-        )}
+        ) : null}
 
         <div className="mt-6 space-y-4">
           {sources.map((source) => {
@@ -262,15 +264,9 @@ export const TelegramConsolePanel = ({
                     <div className="mt-2 text-sm text-white/45">{source.chatName || 'ערוץ טלגרם'}</div>
                   </div>
                   <div className="hc-chip-row text-xs text-white/55">
-                    {source.fileName && <span className="hc-chip">{source.fileName}</span>}
-                    {source.sizeBytes ? (
-                      <span className="hc-chip">{formatBytes(source.sizeBytes)}</span>
-                    ) : source.size ? (
-                      <span className="hc-chip">{source.size}</span>
-                    ) : null}
-                    {source.durationSeconds ? (
-                      <span className="hc-chip">{Math.round(source.durationSeconds / 60)} דקות</span>
-                    ) : null}
+                    {source.fileName ? <span className="hc-chip">{source.fileName}</span> : null}
+                    {source.sizeBytes ? <span className="hc-chip">{formatBytes(source.sizeBytes)}</span> : source.size ? <span className="hc-chip">{source.size}</span> : null}
+                    {source.durationSeconds ? <span className="hc-chip">{Math.round(source.durationSeconds / 60)} דקות</span> : null}
                   </div>
                   <button
                     onClick={() => onPlaySource(source)}

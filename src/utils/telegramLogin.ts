@@ -82,7 +82,8 @@ export const mapTelegramServerStageToStatus = (
 ): TelegramAuthStatus => {
   if (stage === 'passwordInput') return 'passwordInput';
   if (stage === 'loggedIn') return 'loggedIn';
-  if (stage === 'codeInput' || stage === 'starting') return 'codeInput';
+  if (stage === 'codeInput') return 'codeInput';
+  if (stage === 'starting') return 'phoneInput';
   if (stage === 'phoneInput') return 'phoneInput';
   if (stage === 'loggedOut') return 'loggedOut';
   return 'phoneInput';

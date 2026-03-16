@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_API_BASE_URL,
   ensurePersistedStorageContract,
   getPersistedUserStateKeys,
   PERSISTED_STORAGE_KEYS,
@@ -41,6 +42,17 @@ test('ensurePersistedStorageContract migrates legacy keys and stamps schema vers
   assert.equal(storage.getItem(STORAGE_SCHEMA_VERSION_KEY), STORAGE_SCHEMA_VERSION);
   assert.equal(storage.getItem('tg_session_string'), null);
   assert.equal(storage.getItem('api_base_url'), null);
+});
+
+test('ensurePersistedStorageContract upgrades stale api base urls to the current cloud run backend', () => {
+  const storage = createStorage({
+    [PERSISTED_STORAGE_KEYS.apiBase]: 'https://threed-movis.onrender.com'
+  });
+
+  const result = ensurePersistedStorageContract(storage);
+
+  assert.equal(result.schemaVersion, STORAGE_SCHEMA_VERSION);
+  assert.equal(storage.getItem(PERSISTED_STORAGE_KEYS.apiBase), DEFAULT_API_BASE_URL);
 });
 
 test('getPersistedUserStateKeys exposes the user data that must survive updates', () => {
