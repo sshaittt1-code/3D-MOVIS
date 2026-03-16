@@ -116,37 +116,33 @@ export const TelegramConsolePanel = ({
 
   return (
     <div className="mt-8 grid gap-6 xl:grid-cols-[1.25fr,0.9fr]">
-      <section className="rounded-[30px] border border-white/8 bg-white/[0.03] p-6">
+      <section className="hc-panel-section p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="inline-flex items-center gap-3 rounded-full border border-[#2AABEE]/20 bg-[#2AABEE]/10 px-4 py-2 text-sm text-[#89d0ff]">
+            <div className="hc-badge hc-badge--telegram">
               <ShieldCheck size={16} />
               <span>Telegram Source Console</span>
             </div>
             <h3 className="mt-4 text-2xl font-semibold text-white">{statusCopy.title}</h3>
-            <p className="mt-3 max-w-2xl text-sm leading-7 text-white/60">{statusCopy.body}</p>
+            <p className="hc-subtitle mt-3 max-w-2xl text-sm">{statusCopy.body}</p>
           </div>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <button
               onClick={onRefreshStatus}
               disabled={busy}
-              className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
+              className="hc-button hc-button--ghost px-4 py-3 text-sm"
             >
-              <span className="inline-flex items-center gap-2">
-                <RefreshCw size={16} className={busy ? 'animate-spin' : ''} />
-                <span>Refresh</span>
-              </span>
+              <RefreshCw size={16} className={busy ? 'animate-spin' : ''} />
+              <span>Refresh</span>
             </button>
             {status === 'loggedIn' && (
               <button
                 onClick={onLogout}
                 disabled={busy}
-                className="rounded-full border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-100 transition hover:bg-red-500/16 disabled:cursor-not-allowed disabled:opacity-45"
+                className="hc-button hc-button--danger px-4 py-3 text-sm"
               >
-                <span className="inline-flex items-center gap-2">
-                  <LogOut size={16} />
-                  <span>Disconnect</span>
-                </span>
+                <LogOut size={16} />
+                <span>Disconnect</span>
               </button>
             )}
           </div>
@@ -158,7 +154,7 @@ export const TelegramConsolePanel = ({
           </div>
         )}
 
-        <div className={`mt-6 inline-flex items-center gap-3 rounded-full border px-4 py-2 text-sm ${statusCopy.tone}`}>
+        <div className={`hc-meter mt-6 ${statusCopy.tone}`}>
           <span className={`h-2.5 w-2.5 rounded-full ${busyIndicator ? 'animate-pulse bg-current' : 'bg-current'}`} />
           <span>{statusCopy.title}</span>
         </div>
@@ -170,40 +166,38 @@ export const TelegramConsolePanel = ({
         )}
 
         {(status === 'loggedOut' || status === 'phoneInput') && (
-          <div className="mt-8 rounded-[28px] border border-white/8 bg-black/20 p-5">
+          <div className="hc-card mt-8 p-5">
             <label className="block text-sm text-white/55">Phone number</label>
             <input
               value={phone}
               onChange={(event) => onPhoneChange(event.target.value)}
               placeholder="+972501234567"
-              className="mt-3 w-full rounded-[20px] border border-white/10 bg-black/30 px-5 py-4 text-lg text-white outline-none transition focus:border-[#2AABEE]/40"
+              className="hc-input mt-3 text-lg"
             />
             <button
               onClick={onStartLogin}
               disabled={busy || !phone.trim() || !configured}
-              className="mt-5 rounded-full border border-[#2AABEE]/30 bg-[#2AABEE]/15 px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#2AABEE]/22 disabled:cursor-not-allowed disabled:opacity-45"
+              className="hc-button hc-button--telegram mt-5 px-6 py-3 text-sm"
             >
-              <span className="inline-flex items-center gap-2">
-                <LogIn size={16} />
-                <span>Send code</span>
-              </span>
+              <LogIn size={16} />
+              <span>Send code</span>
             </button>
           </div>
         )}
 
         {status === 'codeInput' && (
-          <div className="mt-8 rounded-[28px] border border-white/8 bg-black/20 p-5">
+          <div className="hc-card mt-8 p-5">
             <label className="block text-sm text-white/55">Verification code</label>
             <input
               value={code}
               onChange={(event) => onCodeChange(event.target.value)}
               placeholder="12345"
-              className="mt-3 w-full rounded-[20px] border border-white/10 bg-black/30 px-5 py-4 text-lg text-white outline-none transition focus:border-[#2AABEE]/40"
+              className="hc-input mt-3 text-lg"
             />
             <button
               onClick={onSubmitCode}
               disabled={busy || !code.trim()}
-              className="mt-5 rounded-full border border-[#2AABEE]/30 bg-[#2AABEE]/15 px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#2AABEE]/22 disabled:cursor-not-allowed disabled:opacity-45"
+              className="hc-button hc-button--telegram mt-5 px-6 py-3 text-sm"
             >
               Confirm code
             </button>
@@ -211,19 +205,19 @@ export const TelegramConsolePanel = ({
         )}
 
         {status === 'passwordInput' && (
-          <div className="mt-8 rounded-[28px] border border-white/8 bg-black/20 p-5">
+          <div className="hc-card mt-8 p-5">
             <label className="block text-sm text-white/55">Telegram 2FA password</label>
             <input
               value={password}
               onChange={(event) => onPasswordChange(event.target.value)}
               type="password"
               placeholder="Password"
-              className="mt-3 w-full rounded-[20px] border border-white/10 bg-black/30 px-5 py-4 text-lg text-white outline-none transition focus:border-[#2AABEE]/40"
+              className="hc-input mt-3 text-lg"
             />
             <button
               onClick={onSubmitPassword}
               disabled={busy || !password.trim()}
-              className="mt-5 rounded-full border border-fuchsia-400/30 bg-fuchsia-500/14 px-6 py-3 text-sm font-semibold text-white transition hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-45"
+              className="hc-button hc-button--magenta mt-5 px-6 py-3 text-sm"
             >
               Confirm password
             </button>
@@ -232,7 +226,7 @@ export const TelegramConsolePanel = ({
 
         {status === 'loggedIn' && (
           <div className="mt-8 space-y-5">
-            <div className="rounded-[28px] border border-white/8 bg-black/20 p-5">
+            <div className="hc-card p-5">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <div className="text-sm text-white/55">Selected media</div>
@@ -251,7 +245,7 @@ export const TelegramConsolePanel = ({
               </div>
 
               {!playableSelection && (
-                <div className="mt-5 rounded-[20px] border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-white/65">
+                <div className="hc-card mt-5 px-4 py-3 text-sm text-white/65">
                   Pick a movie or a specific episode to search Telegram sources. Series and seasons stay in the corridor hierarchy until you drill down to a playable item.
                 </div>
               )}
@@ -263,12 +257,12 @@ export const TelegramConsolePanel = ({
                     <input
                       value={searchQuery}
                       onChange={(event) => onSearchQueryChange(event.target.value)}
-                      className="flex-1 rounded-[20px] border border-white/10 bg-black/30 px-5 py-4 text-base text-white outline-none transition focus:border-[#2AABEE]/40"
+                      className="hc-input flex-1 text-base"
                     />
                     <button
                       onClick={onSearchSources}
                       disabled={busy || sourceSearchBusy || !searchQuery.trim()}
-                      className="rounded-full border border-[#2AABEE]/30 bg-[#2AABEE]/15 px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#2AABEE]/22 disabled:cursor-not-allowed disabled:opacity-45"
+                      className="hc-button hc-button--telegram px-6 py-3 text-sm"
                     >
                       {sourceSearchBusy ? 'Searching...' : 'Find sources'}
                     </button>
@@ -278,7 +272,7 @@ export const TelegramConsolePanel = ({
             </div>
 
             {playableSelection && (
-              <div className="rounded-[28px] border border-white/8 bg-black/20 p-5">
+              <div className="hc-card p-5">
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div className="flex items-center gap-3 text-white">
                     <Subtitles size={18} className="text-[#7debd6]" />
@@ -290,7 +284,7 @@ export const TelegramConsolePanel = ({
                   <button
                     onClick={onSearchSubtitles}
                     disabled={busy || subtitleSearchBusy}
-                    className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
+                    className="hc-button hc-button--ghost px-4 py-3 text-sm"
                   >
                     {subtitleSearchBusy ? 'Searching...' : 'Refresh subtitles'}
                   </button>
@@ -302,7 +296,7 @@ export const TelegramConsolePanel = ({
                     <select
                       value={selectedSubtitleUrl ?? ''}
                       onChange={(event) => onSelectedSubtitleChange(event.target.value || null)}
-                      className="w-full rounded-[18px] border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none"
+                      className="hc-select text-sm"
                     >
                       <option value="">No subtitles</option>
                       {subtitles.map((subtitle) => (
@@ -321,12 +315,12 @@ export const TelegramConsolePanel = ({
         )}
       </section>
 
-      <section className="rounded-[30px] border border-white/8 bg-white/[0.03] p-6">
+      <section className="hc-panel-section p-6">
         <div className="flex items-center gap-3 text-white">
           <Tv size={18} className="text-[#7debd6]" />
           <h3 className="text-2xl font-semibold">Playback queue</h3>
         </div>
-        <p className="mt-3 text-sm leading-7 text-white/60">
+        <p className="hc-subtitle mt-3 text-sm">
           These are the Telegram video matches for the currently selected content. Choose a source to hand it off to the native player.
         </p>
 
@@ -337,7 +331,7 @@ export const TelegramConsolePanel = ({
         )}
 
         {status === 'loggedIn' && playableSelection && sources.length === 0 && !sourceSearchBusy && (
-          <div className="mt-6 rounded-[24px] border border-white/8 bg-black/20 px-5 py-4 text-sm text-white/55">
+          <div className="hc-card mt-6 px-5 py-4 text-sm text-white/55">
             Run a Telegram search to populate this queue.
           </div>
         )}
@@ -346,45 +340,30 @@ export const TelegramConsolePanel = ({
           {sources.map((source) => {
             const preparing = preparingSourceId === source.id;
             return (
-              <div
-                key={`${source.peerId}:${source.id}`}
-                className="rounded-[24px] border border-white/8 bg-black/20 p-4"
-              >
+              <div key={`${source.peerId}:${source.id}`} className="hc-card p-4">
                 <div className="flex flex-col gap-3">
                   <div>
                     <div className="text-base font-semibold text-white">{source.title}</div>
                     <div className="mt-2 text-sm text-white/45">{source.chatName || 'Telegram chat'}</div>
                   </div>
-                  <div className="flex flex-wrap gap-2 text-xs text-white/55">
-                    {source.fileName && (
-                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1">
-                        {source.fileName}
-                      </span>
-                    )}
+                  <div className="hc-chip-row text-xs text-white/55">
+                    {source.fileName && <span className="hc-chip">{source.fileName}</span>}
                     {source.sizeBytes ? (
-                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1">
-                        {formatBytes(source.sizeBytes)}
-                      </span>
+                      <span className="hc-chip">{formatBytes(source.sizeBytes)}</span>
                     ) : source.size ? (
-                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1">
-                        {source.size}
-                      </span>
+                      <span className="hc-chip">{source.size}</span>
                     ) : null}
                     {source.durationSeconds ? (
-                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1">
-                        {Math.round(source.durationSeconds / 60)} min
-                      </span>
+                      <span className="hc-chip">{Math.round(source.durationSeconds / 60)} min</span>
                     ) : null}
                   </div>
                   <button
                     onClick={() => onPlaySource(source)}
                     disabled={busy || preparing}
-                    className="rounded-full border border-[#2AABEE]/30 bg-[#2AABEE]/15 px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#2AABEE]/22 disabled:cursor-not-allowed disabled:opacity-45"
+                    className="hc-button hc-button--telegram w-full px-5 py-3 text-sm"
                   >
-                    <span className="inline-flex items-center gap-2">
-                      {preparing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-                      <span>{preparing ? 'Preparing playback...' : 'Play in MX / Native Player'}</span>
-                    </span>
+                    {preparing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                    <span>{preparing ? 'Preparing playback...' : 'Play in MX / Native Player'}</span>
                   </button>
                 </div>
               </div>

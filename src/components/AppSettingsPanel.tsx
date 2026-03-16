@@ -1,5 +1,5 @@
 import React from 'react';
-import { Loader2, Settings, Search, Film, X } from 'lucide-react';
+import { Film, Loader2, Search, Settings, X } from 'lucide-react';
 import type { SettingsPanel } from '../utils/menuConfig';
 
 type AppSettingsPanelProps = {
@@ -33,36 +33,32 @@ export const AppSettingsPanel = ({
   apiBase,
   telegramPanelContent
 }: AppSettingsPanelProps) => (
-  <div className="absolute inset-0 z-[120] flex items-center justify-center bg-black/88 p-8" data-tv-scope="ui">
-    <div className="w-full max-w-5xl rounded-[42px] border border-[#00ffcc]/20 bg-[linear-gradient(180deg,rgba(8,16,20,0.98),rgba(4,8,12,0.94))] p-8 shadow-[0_0_80px_rgba(0,0,0,0.5)]">
+  <div className="hc-screen-overlay" data-tv-scope="ui">
+    <div className="hc-panel hc-panel--wide p-8">
       <div className="flex items-start justify-between gap-6">
         <div>
-          <div className="inline-flex items-center gap-3 rounded-full border border-[#00ffcc]/20 bg-[#00ffcc]/8 px-4 py-2 text-sm text-[#7debd6]">
+          <div className="hc-badge">
             <Settings size={16} />
             <span>System Console</span>
           </div>
           <h2 className="mt-4 text-4xl font-bold text-white">הגדרות המערכת</h2>
-          <p className="mt-3 max-w-2xl text-base text-white/60">
-            מעטפת הגדרות אחת, ברורה ויציבה, שמחזיקה את חוויית Android TV בלי מצבים מתים.
+          <p className="hc-subtitle mt-3 max-w-2xl text-base">
+            מעטפת הגדרות אחת, ברורה ויציבה, שמחזיקה את חוויית Android TV בלי מצבים מתים ובלי קפיצות בין פאנלים.
           </p>
         </div>
-        <button onClick={onClose} className="rounded-full border border-white/10 bg-white/5 p-3 text-white/70 transition hover:bg-white/10 hover:text-white">
+        <button onClick={onClose} className="hc-close-button p-3">
           <X size={22} />
         </button>
       </div>
 
-      <div className="mt-8 flex gap-3">
+      <div className="mt-8 flex flex-wrap gap-3">
         {tabs.map((tab) => {
           const active = tab.id === panel;
           return (
             <button
               key={tab.id}
               onClick={() => onPanelChange(tab.id)}
-              className={`rounded-full border px-5 py-3 text-sm transition ${
-                active
-                  ? 'border-[#00ffcc]/35 bg-[#00ffcc]/15 text-white shadow-[0_0_24px_rgba(0,255,204,0.14)]'
-                  : 'border-white/10 bg-white/[0.03] text-white/70 hover:bg-white/8'
-              }`}
+              className={`hc-tab px-5 py-3 text-sm ${active ? 'is-active' : ''}`}
             >
               {tab.label}
             </button>
@@ -72,12 +68,12 @@ export const AppSettingsPanel = ({
 
       {panel === 'general' && (
         <div className="mt-8 grid gap-6 md:grid-cols-2">
-          <section className="rounded-[30px] border border-white/8 bg-white/[0.03] p-6">
+          <section className="hc-panel-section p-6">
             <div className="flex items-center gap-3 text-white">
               <Film size={18} className="text-[#7debd6]" />
               <h3 className="text-2xl font-semibold">מסדרון ופוסטרים</h3>
             </div>
-            <p className="mt-3 text-sm leading-7 text-white/60">
+            <p className="hc-subtitle mt-3 text-sm">
               שליטה ברוחב הטעינה הראשוני כדי להתאים את המסדרון גם לסטרימרים חלשים וגם למכשירים חזקים יותר.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
@@ -85,11 +81,7 @@ export const AppSettingsPanel = ({
                 <button
                   key={value}
                   onClick={() => onPosterBatchSizeChange(value)}
-                  className={`rounded-full border px-4 py-2 text-sm transition ${
-                    posterBatchSize === value
-                      ? 'border-[#00ffcc]/30 bg-[#00ffcc]/16 text-white'
-                      : 'border-white/10 bg-black/20 text-white/70 hover:bg-white/8'
-                  }`}
+                  className={`hc-pill px-4 py-2 text-sm ${posterBatchSize === value ? 'is-active' : ''}`}
                 >
                   {value} פוסטרים
                 </button>
@@ -97,32 +89,24 @@ export const AppSettingsPanel = ({
             </div>
           </section>
 
-          <section className="rounded-[30px] border border-white/8 bg-white/[0.03] p-6">
+          <section className="hc-panel-section p-6">
             <div className="flex items-center gap-3 text-white">
               <Search size={18} className="text-[#7debd6]" />
               <h3 className="text-2xl font-semibold">התנהגות צפייה</h3>
             </div>
-            <p className="mt-3 text-sm leading-7 text-white/60">
-              בחירה אם להכין אוטומטית את הפרק הבא כשהמשתמש צופה בסדרה, כדי לשמור על binge חלק.
+            <p className="hc-subtitle mt-3 text-sm">
+              בחירה אם להכין אוטומטית את הפרק הבא כשמשתמש צופה בסדרה, כדי לשמור על זרימת binge חלקה.
             </p>
-            <div className="mt-6 flex gap-3">
+            <div className="mt-6 flex flex-wrap gap-3">
               <button
                 onClick={() => onAutoPlayNextEpisodeChange(true)}
-                className={`rounded-full border px-5 py-3 text-sm transition ${
-                  autoPlayNextEpisode
-                    ? 'border-[#00ffcc]/30 bg-[#00ffcc]/16 text-white'
-                    : 'border-white/10 bg-black/20 text-white/70 hover:bg-white/8'
-                }`}
+                className={`hc-pill px-5 py-3 text-sm ${autoPlayNextEpisode ? 'is-active' : ''}`}
               >
                 הפעלה אוטומטית
               </button>
               <button
                 onClick={() => onAutoPlayNextEpisodeChange(false)}
-                className={`rounded-full border px-5 py-3 text-sm transition ${
-                  !autoPlayNextEpisode
-                    ? 'border-[#00ffcc]/30 bg-[#00ffcc]/16 text-white'
-                    : 'border-white/10 bg-black/20 text-white/70 hover:bg-white/8'
-                }`}
+                className={`hc-pill px-5 py-3 text-sm ${!autoPlayNextEpisode ? 'is-active' : ''}`}
               >
                 בחירה ידנית
               </button>
@@ -133,15 +117,15 @@ export const AppSettingsPanel = ({
 
       {panel === 'telegram' && (
         telegramPanelContent ?? (
-          <div className="mt-8 rounded-[30px] border border-white/8 bg-white/[0.03] p-6">
+          <div className="hc-panel-section mt-8 p-6">
             <div className="flex items-center gap-3 text-white">
               <Loader2 size={18} className="text-[#7debd6]" />
               <h3 className="text-2xl font-semibold">מעטפת Telegram</h3>
             </div>
-            <p className="mt-3 max-w-3xl text-sm leading-7 text-white/60">
+            <p className="hc-subtitle mt-3 max-w-3xl text-sm">
               חיבור מלא למקורות, login flow וניגון ישיר מוצגים כאן כשהם זמינים למעטפת הראשית.
             </p>
-            <div className="mt-6 inline-flex items-center gap-3 rounded-full border px-4 py-2 text-sm text-white">
+            <div className="hc-meter mt-6 text-sm text-white">
               <span className={`h-2.5 w-2.5 rounded-full ${telegramStatusTone}`} />
               <span>{telegramStatusLabel}</span>
             </div>
@@ -150,15 +134,15 @@ export const AppSettingsPanel = ({
       )}
 
       {panel === 'updates' && (
-        <div className="mt-8 rounded-[30px] border border-white/8 bg-white/[0.03] p-6">
+        <div className="hc-panel-section mt-8 p-6">
           <div className="flex items-center gap-3 text-white">
             <Settings size={18} className="text-[#7debd6]" />
             <h3 className="text-2xl font-semibold">סביבת הרצה ועדכונים</h3>
           </div>
-          <p className="mt-3 text-sm leading-7 text-white/60">
+          <p className="hc-subtitle mt-3 text-sm">
             מסך ייצוב להרצה ולשחרור: כתובת ה־API הפעילה, build ל־APK, והבסיס למסכי עדכון מתקדמים בשלבים הבאים.
           </p>
-          <div className="mt-6 rounded-[24px] border border-white/8 bg-black/20 px-5 py-4 text-sm text-white/75">
+          <div className="hc-card mt-6 px-5 py-4 text-sm text-white/75">
             <div className="text-white/50">API Base</div>
             <div className="mt-2 break-all text-white">{apiBase}</div>
           </div>

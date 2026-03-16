@@ -14,20 +14,21 @@ export const CinemaGate = ({
   onOpenGeneralSettings,
   onBackToDetails
 }: CinemaGateProps) => (
-  <div className="absolute inset-0 z-[110] flex items-center justify-center bg-black/92 p-8" data-tv-scope="ui">
-    <div className="w-full max-w-3xl rounded-[40px] border border-[#2AABEE]/25 bg-[linear-gradient(180deg,rgba(12,18,24,0.98),rgba(5,8,12,0.95))] p-8 shadow-[0_0_60px_rgba(0,0,0,0.55)]">
+  <div className="hc-screen-overlay" data-tv-scope="ui">
+    <div className="hc-panel hc-panel--compact p-8">
       <div className="flex items-start justify-between gap-6">
         <div>
-          <div className="inline-flex items-center gap-3 rounded-full border border-[#2AABEE]/20 bg-[#2AABEE]/10 px-4 py-2 text-sm text-[#89d0ff]">
+          <div className="hc-badge hc-badge--telegram">
             <Play size={16} />
             <span>Cinema Gate</span>
           </div>
           <h2 className="mt-4 text-4xl font-bold text-white">שער הצפייה</h2>
-          <p className="mt-3 text-base leading-7 text-white/60">
-            אתה עומד להכנס לזרימת הצפייה של <span className="text-white">{title}</span>. בשלב הייצוב אנחנו מחזיקים כאן כניסה מסודרת ונקייה לשכבות Telegram והנגן.
+          <p className="hc-subtitle mt-3 text-base">
+            אתה עומד להיכנס לזרימת הצפייה של <span className="text-white">{title}</span>. מכאן בוחרים אם
+            להמשיך לטלגרם, לנגן או לעבור כוונון כללי לפני הכניסה לתוכן.
           </p>
         </div>
-        <button onClick={onBackToDetails} className="rounded-full border border-white/10 bg-white/5 p-3 text-white/70 transition hover:bg-white/10 hover:text-white">
+        <button onClick={onBackToDetails} className="hc-close-button p-3">
           <X size={22} />
         </button>
       </div>
@@ -35,21 +36,25 @@ export const CinemaGate = ({
       <div className="mt-8 grid gap-4 md:grid-cols-2">
         <button
           onClick={onOpenTelegramPanel}
-          className="rounded-[28px] border border-[#2AABEE]/25 bg-[#2AABEE]/12 px-6 py-6 text-right text-white transition hover:bg-[#2AABEE]/18"
+          className="hc-card hc-focusable border-[#2AABEE]/25 bg-[#2AABEE]/12 px-6 py-6 text-right text-white"
         >
           <div className="text-2xl font-semibold">חיבור Telegram</div>
-          <div className="mt-2 text-sm text-white/65">כניסה למעטפת Telegram היציבה של המערכת.</div>
+          <div className="mt-2 text-sm text-white/65">
+            כניסה למעטפת Telegram היציבה של המערכת, עם מקורות, חיפוש כתוביות והעברה לנגן.
+          </div>
         </button>
 
         <button
           onClick={onOpenGeneralSettings}
-          className="rounded-[28px] border border-white/10 bg-white/[0.04] px-6 py-6 text-right text-white transition hover:bg-white/8"
+          className="hc-card hc-focusable px-6 py-6 text-right text-white"
         >
           <div className="flex items-center gap-3 text-2xl font-semibold">
             <Settings size={22} />
             <span>הגדרות ניגון</span>
           </div>
-          <div className="mt-2 text-sm text-white/65">שליטה בגודל הטעינה ובהכנת פרק הבא לפני שנמשיך לעומק הנגן.</div>
+          <div className="mt-2 text-sm text-white/65">
+            שליטה בטעינת מסדרון, הכנת הפרק הבא והגדרות כלליות לפני שממשיכים לשכבת הצפייה.
+          </div>
         </button>
       </div>
     </div>

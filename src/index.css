@@ -1,1 +1,397 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --hc-bg: #020608;
+  --hc-bg-elevated: rgba(8, 16, 20, 0.94);
+  --hc-bg-soft: rgba(255, 255, 255, 0.04);
+  --hc-surface: linear-gradient(180deg, rgba(7, 17, 22, 0.96), rgba(3, 8, 12, 0.9));
+  --hc-surface-strong: linear-gradient(180deg, rgba(10, 20, 26, 0.98), rgba(4, 8, 12, 0.95));
+  --hc-panel-border: rgba(255, 255, 255, 0.08);
+  --hc-panel-border-strong: rgba(0, 255, 204, 0.2);
+  --hc-accent: #00ffcc;
+  --hc-accent-soft: rgba(0, 255, 204, 0.14);
+  --hc-accent-strong: rgba(0, 255, 204, 0.24);
+  --hc-accent-glow: 0 0 32px rgba(0, 255, 204, 0.14);
+  --hc-telegram: #2aabee;
+  --hc-telegram-soft: rgba(42, 171, 238, 0.14);
+  --hc-text: #f5fffd;
+  --hc-text-soft: rgba(245, 255, 253, 0.74);
+  --hc-text-muted: rgba(245, 255, 253, 0.5);
+  --hc-shadow-xl: 0 0 80px rgba(0, 0, 0, 0.45);
+  --hc-shadow-panel: 0 0 48px rgba(0, 0, 0, 0.34);
+  --hc-backdrop: blur(24px);
+  --hc-radius-xl: 42px;
+  --hc-radius-lg: 30px;
+  --hc-radius-md: 24px;
+  --hc-transition: 180ms ease;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top center, rgba(0, 255, 204, 0.08), transparent 26rem),
+    radial-gradient(circle at 18% 18%, rgba(42, 171, 238, 0.08), transparent 20rem),
+    linear-gradient(180deg, #04090c 0%, #020507 48%, #010203 100%);
+  color: var(--hc-text);
+  font-family: "Segoe UI", "Assistant", "Noto Sans Hebrew", system-ui, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::selection {
+  background: rgba(0, 255, 204, 0.28);
+  color: white;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 255, 204, 0.28) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 204, 0.22);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hc-screen-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background:
+    radial-gradient(circle at center, rgba(0, 255, 204, 0.08), transparent 28rem),
+    rgba(0, 0, 0, 0.88);
+}
+
+.hc-panel {
+  border: 1px solid var(--hc-panel-border-strong);
+  border-radius: var(--hc-radius-xl);
+  background: var(--hc-surface);
+  box-shadow: var(--hc-shadow-xl);
+  backdrop-filter: var(--hc-backdrop);
+}
+
+.hc-panel--wide {
+  width: min(100%, 80rem);
+}
+
+.hc-panel--compact {
+  width: min(100%, 58rem);
+}
+
+.hc-panel-section {
+  border: 1px solid var(--hc-panel-border);
+  border-radius: var(--hc-radius-lg);
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: var(--hc-shadow-panel);
+}
+
+.hc-card {
+  border: 1px solid var(--hc-panel-border);
+  border-radius: var(--hc-radius-md);
+  background: rgba(0, 0, 0, 0.22);
+  transition:
+    border-color var(--hc-transition),
+    background var(--hc-transition),
+    box-shadow var(--hc-transition),
+    transform var(--hc-transition);
+}
+
+.hc-card:hover,
+.hc-card:focus-visible {
+  border-color: rgba(0, 255, 204, 0.22);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: var(--hc-accent-glow);
+  outline: none;
+}
+
+.hc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 255, 204, 0.2);
+  background: rgba(0, 255, 204, 0.1);
+  color: #92f5e4;
+  padding: 0.625rem 1rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+}
+
+.hc-badge--telegram {
+  border-color: rgba(42, 171, 238, 0.22);
+  background: rgba(42, 171, 238, 0.12);
+  color: #9ddcff;
+}
+
+.hc-subtitle {
+  color: var(--hc-text-muted);
+  line-height: 1.85;
+}
+
+.hc-close-button {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.74);
+  transition:
+    background var(--hc-transition),
+    color var(--hc-transition),
+    border-color var(--hc-transition),
+    transform var(--hc-transition);
+}
+
+.hc-close-button:hover,
+.hc-close-button:focus-visible {
+  border-color: rgba(0, 255, 204, 0.22);
+  background: rgba(0, 255, 204, 0.12);
+  color: white;
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.hc-tab {
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.72);
+  transition:
+    background var(--hc-transition),
+    border-color var(--hc-transition),
+    color var(--hc-transition),
+    box-shadow var(--hc-transition);
+}
+
+.hc-tab:hover,
+.hc-tab:focus-visible {
+  border-color: rgba(0, 255, 204, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  outline: none;
+}
+
+.hc-tab.is-active {
+  border-color: rgba(0, 255, 204, 0.3);
+  background: rgba(0, 255, 204, 0.16);
+  color: white;
+  box-shadow: var(--hc-accent-glow);
+}
+
+.hc-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.8);
+  transition:
+    border-color var(--hc-transition),
+    background var(--hc-transition),
+    color var(--hc-transition),
+    box-shadow var(--hc-transition);
+}
+
+.hc-pill:hover,
+.hc-pill:focus-visible {
+  border-color: rgba(0, 255, 204, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  outline: none;
+}
+
+.hc-pill.is-active {
+  border-color: rgba(0, 255, 204, 0.3);
+  background: rgba(0, 255, 204, 0.16);
+  color: white;
+  box-shadow: var(--hc-accent-glow);
+}
+
+.hc-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0.9rem 1.35rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  transition:
+    transform var(--hc-transition),
+    border-color var(--hc-transition),
+    background var(--hc-transition),
+    color var(--hc-transition),
+    box-shadow var(--hc-transition),
+    opacity var(--hc-transition);
+}
+
+.hc-button:hover,
+.hc-button:focus-visible {
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.hc-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+}
+
+.hc-button--accent {
+  border-color: rgba(0, 255, 204, 0.25);
+  background: rgba(0, 255, 204, 0.14);
+  color: var(--hc-text);
+}
+
+.hc-button--accent:hover,
+.hc-button--accent:focus-visible {
+  border-color: rgba(0, 255, 204, 0.34);
+  background: rgba(0, 255, 204, 0.2);
+  box-shadow: var(--hc-accent-glow);
+}
+
+.hc-button--telegram {
+  border-color: rgba(42, 171, 238, 0.26);
+  background: rgba(42, 171, 238, 0.14);
+  color: var(--hc-text);
+}
+
+.hc-button--telegram:hover,
+.hc-button--telegram:focus-visible {
+  border-color: rgba(42, 171, 238, 0.34);
+  background: rgba(42, 171, 238, 0.2);
+  box-shadow: 0 0 32px rgba(42, 171, 238, 0.16);
+}
+
+.hc-button--ghost {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.hc-button--ghost:hover,
+.hc-button--ghost:focus-visible {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.hc-button--danger {
+  border-color: rgba(248, 113, 113, 0.24);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fee2e2;
+}
+
+.hc-button--danger:hover,
+.hc-button--danger:focus-visible {
+  border-color: rgba(248, 113, 113, 0.36);
+  background: rgba(239, 68, 68, 0.18);
+  box-shadow: 0 0 28px rgba(239, 68, 68, 0.16);
+}
+
+.hc-button--magenta {
+  border-color: rgba(232, 121, 249, 0.28);
+  background: rgba(217, 70, 239, 0.14);
+  color: white;
+}
+
+.hc-button--magenta:hover,
+.hc-button--magenta:focus-visible {
+  border-color: rgba(232, 121, 249, 0.38);
+  background: rgba(217, 70, 239, 0.2);
+  box-shadow: 0 0 28px rgba(217, 70, 239, 0.16);
+}
+
+.hc-input,
+.hc-select {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--hc-text);
+  padding: 1rem 1.2rem;
+  transition:
+    border-color var(--hc-transition),
+    box-shadow var(--hc-transition),
+    background var(--hc-transition);
+}
+
+.hc-input:focus,
+.hc-select:focus {
+  border-color: rgba(0, 255, 204, 0.3);
+  background: rgba(0, 0, 0, 0.36);
+  box-shadow: 0 0 0 1px rgba(0, 255, 204, 0.15), var(--hc-accent-glow);
+  outline: none;
+}
+
+.hc-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0.65rem 1rem;
+  font-size: 0.9rem;
+}
+
+.hc-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.hc-chip {
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.78);
+  padding: 0.35rem 0.75rem;
+  font-size: 0.72rem;
+}
+
+.hc-focusable:focus-visible,
+.hc-focusable[data-focused="true"] {
+  outline: none;
+  border-color: rgba(0, 255, 204, 0.28) !important;
+  box-shadow:
+    0 0 0 1px rgba(0, 255, 204, 0.14),
+    0 0 28px rgba(0, 255, 204, 0.16);
+}
+
+.hc-empty-state {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 32px;
+  background: rgba(0, 0, 0, 0.58);
+  box-shadow: var(--hc-shadow-panel);
+  backdrop-filter: blur(20px);
+}

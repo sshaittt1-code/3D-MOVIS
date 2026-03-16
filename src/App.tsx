@@ -2236,11 +2236,11 @@ export default function App() {
 
       {emptyLibraryStateMessage && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 text-center">
-          <div className="rounded-[32px] border border-white/10 bg-black/60 px-8 py-6 backdrop-blur-xl">
+          <div className="hc-empty-state px-8 py-6">
             <div className="text-xl font-semibold text-white">{emptyLibraryStateMessage}</div>
             <div className="mt-2 text-sm text-white/55">אפשר לפתוח את הסרגל הראשי ולעבור לקטלוג, לחיפוש או לטלגרם.</div>
           </div>
-          <button onClick={() => setIsLocked(false)} className="rounded-full border border-[#00ffcc]/30 bg-[#00ffcc]/12 px-6 py-3 text-sm text-[#7debd6]">
+          <button onClick={() => setIsLocked(false)} className="hc-button hc-button--accent px-6 py-3 text-sm">
             פתח תפריט ראשי
           </button>
         </div>
@@ -2248,17 +2248,17 @@ export default function App() {
 
       <AnimatePresence>
         {showSearch && isLocked && (
-          <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="absolute top-10 right-10 z-50 w-[35rem] p-6 bg-black/80 backdrop-blur-xl border border-[#00ffcc]/30 rounded-[40px] shadow-2xl" data-tv-scope="ui">
+          <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="hc-panel absolute top-10 right-10 z-50 w-[35rem] p-6" data-tv-scope="ui">
             <div className="flex items-center gap-4">
-              <div className="bg-[#00ffcc]/20 p-4 rounded-full text-[#00ffcc]"><Search size={24} /></div>
+              <div className="hc-badge px-4 py-4 text-[#00ffcc]"><Search size={24} /></div>
               <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="חפש סרט או סדרה..." className="flex-1 bg-transparent border-none text-2xl outline-none" />
               {isSearchingTmdb && <Loader2 className="animate-spin text-[#00ffcc]" />}
-              <button onClick={closeSearchSurface} className="p-2 opacity-50"><X /></button>
+              <button onClick={closeSearchSurface} className="hc-close-button p-2 opacity-80"><X /></button>
             </div>
             {!searchError && (searchQuery.trim() ? searchResultSourceSummaries : librarySourceSummaries).length > 0 && (
-              <div className="mt-5 flex flex-wrap gap-2">
+              <div className="hc-chip-row mt-5">
                 {(searchQuery.trim() ? searchResultSourceSummaries : librarySourceSummaries).map((summary) => (
-                  <div key={summary.id} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/75">
+                  <div key={summary.id} className="hc-chip">
                     {summary.label} ({summary.count})
                   </div>
                 ))}
@@ -2277,7 +2277,7 @@ export default function App() {
               <div className="mt-6 text-center text-gray-500">לא נמצאו תוצאות</div>
             )}
             {!searchError && searchPreviewItems.length > 0 && (
-              <div className="mt-6 rounded-[28px] border border-white/8 bg-white/[0.04] p-4">
+              <div className="hc-panel-section mt-6 p-4">
                 <div className="flex items-center justify-between gap-4">
                   <div className="text-sm font-semibold text-white">
                     {searchQuery.trim() ? 'התאמות מובילות' : 'ממשיכים מאיפה שעצרת'}
@@ -2288,12 +2288,12 @@ export default function App() {
                 </div>
                 <div className="mt-3 space-y-2">
                   {searchPreviewItems.map((item) => (
-                    <div key={`${item.mediaType}:${item.id}`} className="flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-black/20 px-4 py-3">
+                    <div key={`${item.mediaType}:${item.id}`} className="hc-card flex items-center justify-between gap-3 px-4 py-3">
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-semibold text-white">{item.localizedTitle || item.title}</div>
                         <div className="mt-1 truncate text-xs text-white/45">{item.seriesTitle || item.originalTitle || item.genre || item.mediaType}</div>
                       </div>
-                      <div className="shrink-0 rounded-full border border-[#00ffcc]/20 bg-[#00ffcc]/10 px-3 py-1 text-[11px] text-[#7debd6]">
+                      <div className="hc-chip shrink-0 border-[#00ffcc]/20 bg-[#00ffcc]/10 text-[11px] text-[#7debd6]">
                         {getSearchSourceLabel(classifySearchSource(item, searchSourceLookup))}
                       </div>
                     </div>
