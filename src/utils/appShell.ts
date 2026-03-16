@@ -29,6 +29,7 @@ export const DEFAULT_ROOT_CATALOG_STATE: RootCatalogState = {
 export type AppShellSnapshot = {
   hasActiveMedia: boolean;
   hasPosterContextMovie: boolean;
+  showTelegramAuthModal: boolean;
   hasSelectedMovie: boolean;
   showCinemaScreen: boolean;
   showSearch: boolean;
@@ -40,6 +41,7 @@ export type AppShellSnapshot = {
 export type AppShellLayer =
   | 'player'
   | 'posterContext'
+  | 'telegramAuth'
   | 'settings'
   | 'cinema'
   | 'details'
@@ -51,6 +53,7 @@ export type AppShellLayer =
 export type AppBackAction =
   | 'closePlayer'
   | 'closePosterContext'
+  | 'closeTelegramAuth'
   | 'closeSettings'
   | 'closeCinemaScreen'
   | 'closeSelectedMovie'
@@ -63,6 +66,7 @@ export type AppBackAction =
 export const resolveAppShellLayer = (snapshot: AppShellSnapshot): AppShellLayer => {
   if (snapshot.hasActiveMedia) return 'player';
   if (snapshot.hasPosterContextMovie) return 'posterContext';
+  if (snapshot.showTelegramAuthModal) return 'telegramAuth';
   if (snapshot.showSettings) return 'settings';
   if (snapshot.showCinemaScreen) return 'cinema';
   if (snapshot.hasSelectedMovie) return 'details';
@@ -78,6 +82,8 @@ export const resolveAppBackAction = (snapshot: AppShellSnapshot): AppBackAction 
       return 'closePlayer';
     case 'posterContext':
       return 'closePosterContext';
+    case 'telegramAuth':
+      return 'closeTelegramAuth';
     case 'settings':
       return 'closeSettings';
     case 'cinema':

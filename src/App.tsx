@@ -15,12 +15,13 @@ import { SideMenu } from './components/SideMenu';
 import { PosterContextMenu } from './components/PosterContextMenu';
 import { AppSettingsPanel } from './components/AppSettingsPanel';
 import { CinemaGate } from './components/CinemaGate';
+import { TelegramAuthWizard } from './components/TelegramAuthWizard';
 import { TelegramConsolePanel } from './components/TelegramConsolePanel';
 import { UpdateConsolePanel } from './components/UpdateConsolePanel';
 import { CorridorShell } from './components/CorridorShell';
 import { CorridorFocusOverlay } from './components/CorridorFocusOverlay';
 import { CorridorPosterSlot } from './components/CorridorPosterSlot';
-import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
+import { buildSideMenuGroups, getActiveMenuItemId, type FeedCategory, type MenuRoute, type SettingsPanel, type SideMenuItem } from './utils/menuConfig';
 import { safeGetJson, safeGetString, safeRemove, safeSetJson, safeSetString } from './utils/safeStorage';
 import { buildApiUrl, fetchApiJson } from './utils/apiClient';
 import {
@@ -83,6 +84,7 @@ import {
   stepOutOfNavContext
 } from './utils/seriesHierarchy';
 import { shouldHandleGlobalTvBack } from './utils/tvNavigation';
+import { resolveMenuSelectionAction } from './utils/menuTransitions';
 import {
   DEFAULT_ROOT_CATALOG_STATE,
   resolveAppBackAction,
@@ -564,6 +566,7 @@ export default function App() {
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [focusedHeartId, setFocusedHeartId] = useState<string | null>(null);
   const [showCinemaScreen, setShowCinemaScreen] = useState(false);
+  const [showTelegramAuthModal, setShowTelegramAuthModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [navContext, setNavContext] = useState<NavContext>(null);
   const [librarySection, setLibrarySection] = useState<LibrarySection>(DEFAULT_ROOT_CATALOG_STATE.librarySection);
@@ -634,6 +637,8 @@ export default function App() {
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchReturnToSidebarRef = useRef(false);
   const settingsReturnToSidebarRef = useRef(false);
+  const telegramAuthReturnToSidebarRef = useRef(false);
+  const telegramPendingRouteRef = useRef<Extract<MenuRoute, { target: 'telegram' }> | null>(null);
   const mediaStateMapRef = useRef(mediaStateMap);
   const playbackCacheMapRef = useRef(playbackCacheMap);
   const activeMediaRef = useRef<ActivePlayback | null>(null);
@@ -697,13 +702,14 @@ export default function App() {
   const shellSnapshot = useMemo(() => ({
     hasActiveMedia: Boolean(activeMedia),
     hasPosterContextMovie: Boolean(posterContextMovie),
+    showTelegramAuthModal,
     hasSelectedMovie: Boolean(selectedMovie),
     showCinemaScreen,
     showSearch,
     hasNavContext: Boolean(navContext),
     showSettings,
     isSidebarOpen: !isLocked
-  }), [activeMedia, posterContextMovie, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings, isLocked]);
+  }), [activeMedia, posterContextMovie, showTelegramAuthModal, selectedMovie, showCinemaScreen, showSearch, navContext, showSettings, isLocked]);
   const activeShellLayer = useMemo(() => resolveAppShellLayer(shellSnapshot), [shellSnapshot]);
   const isAnyShellOverlayOpen = activeShellLayer !== 'corridor' && activeShellLayer !== 'sidebar' && activeShellLayer !== 'navContext';
 
@@ -997,14 +1003,102 @@ export default function App() {
     }
   }, []);
 
+  const closeTelegramAuthSurface = useCallback(() => {
+    const shouldReturnToSidebar = telegramAuthReturnToSidebarRef.current;
+    telegramAuthReturnToSidebarRef.current = false;
+    telegramPendingRouteRef.current = null;
+    setShowTelegramAuthModal(false);
+    if (shouldReturnToSidebar) {
+      setIsLocked(false);
+    }
+  }, []);
+
   const openSettingsPanel = useCallback((panel: SettingsPanel, options: { returnToSidebar?: boolean } = {}) => {
     if (panel === 'telegram') {
       telegramContextKeyRef.current = '';
     }
+    telegramPendingRouteRef.current = null;
+    telegramAuthReturnToSidebarRef.current = false;
+    setShowTelegramAuthModal(false);
     setSettingsPanel(panel);
     setShowCinemaScreen(false);
     setShowSettings(true);
     settingsReturnToSidebarRef.current = Boolean(options.returnToSidebar);
+    setIsLocked(true);
+  }, []);
+
+  const openTelegramAuthWizard = useCallback((
+    route: Extract<MenuRoute, { target: 'telegram' }> | null,
+    options: { returnToSidebar?: boolean } = {}
+  ) => {
+    telegramPendingRouteRef.current = route;
+    telegramAuthReturnToSidebarRef.current = Boolean(options.returnToSidebar);
+    settingsReturnToSidebarRef.current = false;
+    searchReturnToSidebarRef.current = false;
+    setShowCinemaScreen(false);
+    setShowSearch(false);
+    setShowSettings(false);
+    setNavContext(null);
+    setPosterContextMovie(null);
+    setShowTelegramAuthModal(true);
+    setIsLocked(true);
+    setTgError(null);
+    setTgStatus((current) => {
+      if (current === 'codeInput' || current === 'passwordInput') {
+        return current;
+      }
+      return 'phoneInput';
+    });
+  }, []);
+
+  const applyMenuRoute = useCallback((route: MenuRoute) => {
+    setNavContext(null);
+    setShowSearch(false);
+    setShowSettings(false);
+    setShowTelegramAuthModal(false);
+    setShowCinemaScreen(false);
+    setPosterContextMovie(null);
+    searchReturnToSidebarRef.current = false;
+    settingsReturnToSidebarRef.current = false;
+
+    if (route.target === 'favorites') {
+      setLibrarySection('favorites');
+      setIsLocked(true);
+      return;
+    }
+
+    if (route.target === 'history') {
+      setLibrarySection('history');
+      setIsLocked(true);
+      return;
+    }
+
+    if (route.target === 'continue_watching') {
+      setLibrarySection('continue_watching');
+      setIsLocked(true);
+      return;
+    }
+
+    const nextRouteState = resolveRootRouteState(route);
+    if (!nextRouteState) {
+      return;
+    }
+
+    setLibrarySection(nextRouteState.librarySection);
+    if (nextRouteState.movieCategory) setMovieCategory(nextRouteState.movieCategory);
+    if (nextRouteState.seriesCategory) setSeriesCategory(nextRouteState.seriesCategory);
+    if (nextRouteState.israeliCategory) setIsraeliCategory(nextRouteState.israeliCategory);
+    if (nextRouteState.telegramCategory) setTelegramCategory(nextRouteState.telegramCategory);
+    setMovieGenreId(nextRouteState.movieGenreId);
+    setSeriesGenreFilter(nextRouteState.seriesGenreFilter);
+    setYearFilter(nextRouteState.yearFilter);
+    setContentPage(1);
+    setHasMore(true);
+    setFetchError(null);
+    setFocusedId(null);
+    setFocusedHeartId(null);
+    prefetchedPageKeysRef.current.clear();
+    if (nextRouteState.refreshShuffle) setShuffleSeed(Date.now());
     setIsLocked(true);
   }, []);
 
@@ -1122,6 +1216,25 @@ export default function App() {
     setTgError(null);
   }, []);
 
+  const finalizeTelegramLogin = useCallback(async () => {
+    await refreshTelegramStatus({ quiet: true });
+    setShowTelegramAuthModal(false);
+
+    const pendingRoute = telegramPendingRouteRef.current;
+    const shouldReturnToSidebar = telegramAuthReturnToSidebarRef.current;
+    telegramPendingRouteRef.current = null;
+    telegramAuthReturnToSidebarRef.current = false;
+
+    if (pendingRoute) {
+      applyMenuRoute(pendingRoute);
+      return;
+    }
+
+    if (shouldReturnToSidebar) {
+      setIsLocked(false);
+    }
+  }, [applyMenuRoute, refreshTelegramStatus]);
+
   const startTelegramLogin = useCallback(async () => {
     if (!canStartTelegramLogin || !tgPhoneE164) {
       setTgError('הזן מספר טלפון ישראלי תקין כדי לקבל קוד אימות.');
@@ -1188,14 +1301,14 @@ export default function App() {
       setTgCode('');
       setTgPassword('');
       setTgStatus('loggedIn');
-      await refreshTelegramStatus({ quiet: true });
+      await finalizeTelegramLogin();
     } catch (error: any) {
       console.error('Telegram code verification failed', error);
       setTgError(translateTelegramAuthError(error?.message || 'Failed to verify the Telegram code'));
     } finally {
       setTgBusy(false);
     }
-  }, [applyTelegramSession, normalizedApiBase, refreshTelegramStatus, tgCode, tgLoginId]);
+  }, [applyTelegramSession, finalizeTelegramLogin, normalizedApiBase, tgCode, tgLoginId]);
 
   const submitTelegramPassword = useCallback(async () => {
     if (!tgLoginId || !tgPassword.trim()) {
@@ -1224,14 +1337,14 @@ export default function App() {
       setTgCode('');
       setTgPassword('');
       setTgStatus('loggedIn');
-      await refreshTelegramStatus({ quiet: true });
+      await finalizeTelegramLogin();
     } catch (error: any) {
       console.error('Telegram password verification failed', error);
       setTgError(translateTelegramAuthError(error?.message || 'Failed to verify the Telegram password'));
     } finally {
       setTgBusy(false);
     }
-  }, [applyTelegramSession, normalizedApiBase, refreshTelegramStatus, tgLoginId, tgPassword]);
+  }, [applyTelegramSession, finalizeTelegramLogin, normalizedApiBase, tgLoginId, tgPassword]);
 
   const logoutTelegram = useCallback(async () => {
     setTgBusy(true);
@@ -1248,6 +1361,9 @@ export default function App() {
       setTelegramItems([]);
       resetTelegramSearchState();
       setTgStatus(tgPhoneDigits ? 'phoneInput' : 'loggedOut');
+      telegramPendingRouteRef.current = null;
+      telegramAuthReturnToSidebarRef.current = false;
+      setShowTelegramAuthModal(false);
       setTgBusy(false);
     }
   }, [applyTelegramSession, normalizedApiBase, resetTelegramSearchState, tgPhoneDigits]);
@@ -2249,63 +2365,41 @@ export default function App() {
     }
   }, [isLoadingMore, hasMore, showSearch, navContext, librarySection, tgStatus, contentPage, getCurrentRootContext, getCurrentRootRequestKey, fetchCategoryContent, prefetchNextCategoryPage]);
 
-  const handleCategoryNavigation = useCallback((item: SideMenuItem) => {
-    if (item.kind !== 'route') return;
+  const handleMenuSelection = useCallback((item: SideMenuItem) => {
+    const selection = resolveMenuSelectionAction(item, { telegramConnected: tgStatus === 'loggedIn' });
 
-    const route = item.route;
-    setNavContext(null);
-    setShowSearch(false);
-    setShowSettings(false);
-    setShowCinemaScreen(false);
-    setPosterContextMovie(null);
-    searchReturnToSidebarRef.current = false;
-    settingsReturnToSidebarRef.current = false;
-
-    if (route.target === 'search') {
+    if (selection.type === 'open-search') {
+      setNavContext(null);
+      setShowTelegramAuthModal(false);
+      setShowSettings(false);
+      setShowCinemaScreen(false);
+      setPosterContextMovie(null);
       searchReturnToSidebarRef.current = true;
+      settingsReturnToSidebarRef.current = false;
       setShowSearch(true);
       setIsLocked(true);
       return;
     }
 
-    if (route.target === 'favorites') {
-      setLibrarySection('favorites');
-      setIsLocked(true);
+    if (selection.type === 'open-settings') {
+      openSettingsPanel(selection.panel, { returnToSidebar: selection.returnToSidebar });
       return;
     }
 
-    if (route.target === 'history') {
-      setLibrarySection('history');
-      setIsLocked(true);
+    if (selection.type === 'open-telegram-auth' && item.kind === 'route' && item.route.target === 'telegram') {
+      openTelegramAuthWizard(item.route, { returnToSidebar: selection.returnToSidebar });
       return;
     }
 
-    if (route.target === 'continue_watching') {
-      setLibrarySection('continue_watching');
-      setIsLocked(true);
+    if (selection.type === 'exit') {
+      CapApp.exitApp();
       return;
     }
 
-    const nextRouteState = resolveRootRouteState(route);
-    if (nextRouteState) {
-      setLibrarySection(nextRouteState.librarySection);
-      if (nextRouteState.movieCategory) setMovieCategory(nextRouteState.movieCategory);
-      if (nextRouteState.seriesCategory) setSeriesCategory(nextRouteState.seriesCategory);
-      if (nextRouteState.israeliCategory) setIsraeliCategory(nextRouteState.israeliCategory);
-      if (nextRouteState.telegramCategory) setTelegramCategory(nextRouteState.telegramCategory);
-      setMovieGenreId(nextRouteState.movieGenreId);
-      setSeriesGenreFilter(nextRouteState.seriesGenreFilter);
-      setYearFilter(nextRouteState.yearFilter);
-      setContentPage(1);
-      setHasMore(true);
-      setFetchError(null);
-      setFocusedId(null);
-      setFocusedHeartId(null);
-      prefetchedPageKeysRef.current.clear();
-      if (nextRouteState.refreshShuffle) setShuffleSeed(Date.now());
-      setIsLocked(true);
+    if (item.kind === 'route') {
+      applyMenuRoute(item.route);
     }
-  }, []);
+  }, [applyMenuRoute, openSettingsPanel, openTelegramAuthWizard, tgStatus]);
 
   // --- SEARCH ENGINE ---
 
@@ -2600,6 +2694,9 @@ export default function App() {
       case 'closePosterContext':
         setPosterContextMovie(null);
         return;
+      case 'closeTelegramAuth':
+        closeTelegramAuthSurface();
+        return;
       case 'closeSettings':
         closeSettingsSurface();
         return;
@@ -2624,7 +2721,7 @@ export default function App() {
       default:
         return;
     }
-  }, [closePlayer, closeSearchSurface, closeSettingsSurface, shellSnapshot]);
+  }, [closePlayer, closeSearchSurface, closeSettingsSurface, closeTelegramAuthSurface, shellSnapshot]);
 
   useEffect(() => {
     const sub = CapApp.addListener('backButton', performBackAction);
@@ -2715,7 +2812,7 @@ export default function App() {
         </Suspense>
       </Canvas>
 
-      {!showSearch && !selectedMovie && !showCinemaScreen && !showSettings && !posterContextMovie && focusedCorridorItem && focusedMediaState && (
+      {!showSearch && !selectedMovie && !showCinemaScreen && !showTelegramAuthModal && !showSettings && !posterContextMovie && focusedCorridorItem && focusedMediaState && (
         <CorridorFocusOverlay
           item={focusedCorridorItem}
           isFavorited={Boolean(focusedMediaState.favorite)}
@@ -2823,7 +2920,7 @@ export default function App() {
             <div className="text-xl font-semibold text-white">{emptyLibraryStateMessage}</div>
             <div className="mt-2 text-sm text-white/55">אפשר לפתוח את הסרגל הראשי ולעבור לקטלוג, לחיפוש או לטלגרם.</div>
           </div>
-          {librarySection === 'telegram' && tgStatus !== 'loggedIn' ? (
+          {false ? (
             <button onClick={() => openSettingsPanel('telegram')} className="hc-button hc-button--accent px-6 py-3 text-sm">
               פתח חיבור טלגרם
             </button>
@@ -2904,9 +3001,41 @@ export default function App() {
           <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }}>
             <CinemaGate
               title={selectedMovie.title}
-              onOpenTelegramPanel={() => openSettingsPanel('telegram')}
+              onOpenTelegramPanel={() => {
+                if (tgStatus === 'loggedIn') {
+                  openSettingsPanel('telegram');
+                } else {
+                  openTelegramAuthWizard(null);
+                }
+              }}
               onOpenGeneralSettings={() => openSettingsPanel('general')}
               onBackToDetails={() => setShowCinemaScreen(false)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showTelegramAuthModal && (
+          <motion.div initial={{ opacity: 0, scale: 0.985 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.985 }}>
+            <TelegramAuthWizard
+              configured={tgConfigured}
+              status={tgStatus}
+              busy={tgBusy}
+              error={tgError}
+              phoneDigits={tgPhoneDigits}
+              phoneE164={tgPhoneE164}
+              canStartLogin={canStartTelegramLogin}
+              code={tgCode}
+              password={tgPassword}
+              onPhoneChange={handleTelegramPhoneDigitsChange}
+              onCodeChange={setTgCode}
+              onPasswordChange={setTgPassword}
+              onStartLogin={() => { void startTelegramLogin(); }}
+              onResendCode={() => { void startTelegramLogin(); }}
+              onSubmitCode={() => { void submitTelegramCode(); }}
+              onSubmitPassword={() => { void submitTelegramPassword(); }}
+              onClose={closeTelegramAuthSurface}
             />
           </motion.div>
         )}
@@ -2956,25 +3085,13 @@ export default function App() {
                   currentItem={telegramPlayableItem}
                   currentPlaybackTitle={activeMedia?.title ?? null}
                   preparedNextTitle={preparedNextPlayback?.title ?? null}
-                  phoneDigits={tgPhoneDigits}
-                  phoneE164={tgPhoneE164}
-                  canStartLogin={canStartTelegramLogin}
-                  code={tgCode}
-                  password={tgPassword}
                   searchQuery={tgSearchQuery}
                   sources={tgSources}
                   subtitles={tgSubtitleResults}
                   selectedSubtitleUrl={tgSelectedSubtitleUrl}
-                  onPhoneChange={handleTelegramPhoneDigitsChange}
-                  onCodeChange={setTgCode}
-                  onPasswordChange={setTgPassword}
                   onSearchQueryChange={setTgSearchQuery}
                   onSelectedSubtitleChange={setTgSelectedSubtitleUrl}
                   onRefreshStatus={() => { void refreshTelegramStatus(); }}
-                  onStartLogin={() => { void startTelegramLogin(); }}
-                  onResendCode={() => { void startTelegramLogin(); }}
-                  onSubmitCode={() => { void submitTelegramCode(); }}
-                  onSubmitPassword={() => { void submitTelegramPassword(); }}
                   onLogout={() => { void logoutTelegram(); }}
                   onSearchSources={handleTelegramSourceSearch}
                   onSearchSubtitles={handleTelegramSubtitleSearch}
@@ -2998,6 +3115,7 @@ export default function App() {
           telegramCount: telegramItems.length,
           telegramConnected: tgStatus === 'loggedIn'
         })}
+        telegramConnected={tgStatus === 'loggedIn'}
         activeItemId={getActiveMenuItemId({
           librarySection,
           activeGenreId: movieGenreId,
@@ -3019,15 +3137,7 @@ export default function App() {
                   : librarySection === 'israeli' ? 'ישראלי'
                     : 'סרטים'
         }
-        onActivate={(item) => {
-          if (item.kind === 'route') {
-            handleCategoryNavigation(item);
-          } else if (item.kind === 'settings') {
-            openSettingsPanel(item.panel, { returnToSidebar: true });
-          } else if (item.kind === 'action' && item.action === 'exit') {
-            CapApp.exitApp();
-          }
-        }}
+        onActivate={handleMenuSelection}
         onClose={() => setIsLocked(true)}
       />
 

@@ -51,6 +51,21 @@ export type SideMenuGroup = {
   items: SideMenuItem[];
 };
 
+export type SideMenuSubcategoryGroup = {
+  id: string;
+  label: string;
+  items: SideMenuItem[];
+};
+
+export type SideMenuRoot = {
+  id: string;
+  label: string;
+  description: string;
+  iconKey: 'search' | 'favorites' | 'movies' | 'series' | 'israeli' | 'telegram' | 'settings' | 'exit';
+  defaultItem: SideMenuItem;
+  subgroups?: SideMenuSubcategoryGroup[];
+};
+
 type GenreOption = { id: number; name: string; tmdbId: number | null };
 
 const movieCategoryItem = (id: string, label: string, description: string, category: FeedCategory): SideMenuItem => ({
@@ -150,7 +165,7 @@ export const buildSideMenuGroups = ({
     route: { target: 'series' as const, category: 'popular' as const, year: year as YearFilter }
   }));
 
-  return [
+  const menuGroups: SideMenuGroup[] = [
     {
       id: 'quick',
       title: 'מעבר מהיר',
@@ -240,7 +255,162 @@ export const buildSideMenuGroups = ({
       ]
     }
   ];
+
+  return menuGroups;
 };
+
+const flattenMenuItems = (groups: SideMenuGroup[]) => groups.flatMap((group) => group.items);
+
+const findMenuItemById = (groups: SideMenuGroup[], id: string) =>
+  flattenMenuItems(groups).find((item) => item.id === id) ?? null;
+
+const findGroupById = (groups: SideMenuGroup[], id: string) => groups.find((group) => group.id === id) ?? null;
+
+const compactItems = (items: Array<SideMenuItem | null | undefined>): SideMenuItem[] =>
+  items.filter((item): item is SideMenuItem => Boolean(item));
+
+const buildMoviesSubgroups = (groups: SideMenuGroup[]): SideMenuSubcategoryGroup[] => {
+  const movieGroup = findGroupById(groups, 'movies');
+  if (!movieGroup) return [];
+
+  const categories = movieGroup.items.filter((item) =>
+    ['movies-popular', 'movies-top-rated', 'movies-trending', 'movies-new', 'movies-random'].includes(item.id)
+  );
+  const genres = movieGroup.items.filter((item) => item.id.startsWith('movies-genre-'));
+  const years = movieGroup.items.filter((item) => item.id.startsWith('movies-year-'));
+
+  return [
+    categories.length > 0 ? { id: 'movies-categories', label: 'קטגוריות', items: categories } : null,
+    genres.length > 0 ? { id: 'movies-genres', label: "ז'אנרים", items: genres } : null,
+    years.length > 0 ? { id: 'movies-years', label: 'לפי שנים', items: years } : null
+  ].filter((group): group is SideMenuSubcategoryGroup => Boolean(group));
+};
+
+const buildSeriesSubgroups = (groups: SideMenuGroup[]): SideMenuSubcategoryGroup[] => {
+  const seriesGroup = findGroupById(groups, 'series');
+  if (!seriesGroup) return [];
+
+  const categories = seriesGroup.items.filter((item) =>
+    ['series-popular', 'series-top-rated', 'series-trending', 'series-active', 'series-random'].includes(item.id)
+  );
+  const genres = seriesGroup.items.filter((item) => item.id.startsWith('series-genre-'));
+  const years = seriesGroup.items.filter((item) => item.id.startsWith('series-year-'));
+
+  return [
+    categories.length > 0 ? { id: 'series-categories', label: 'קטגוריות', items: categories } : null,
+    genres.length > 0 ? { id: 'series-genres', label: "ז'אנרים", items: genres } : null,
+    years.length > 0 ? { id: 'series-years', label: 'לפי שנים', items: years } : null
+  ].filter((group): group is SideMenuSubcategoryGroup => Boolean(group));
+};
+
+export const buildSideMenuRoots = (groups: SideMenuGroup[], options: { telegramConnected: boolean }): SideMenuRoot[] => {
+  const quickSearch = findMenuItemById(groups, 'quick-search');
+  const quickFavorites = findMenuItemById(groups, 'quick-favorites');
+  const quickContinue = findMenuItemById(groups, 'quick-continue');
+  const quickHistory = findMenuItemById(groups, 'quick-history');
+  const quickMovies = findMenuItemById(groups, 'quick-movies');
+  const quickSeries = findMenuItemById(groups, 'quick-series');
+  const quickIsraeli = findMenuItemById(groups, 'quick-israeli');
+  const quickTelegram = findMenuItemById(groups, 'quick-telegram');
+  const settingsGeneral = findMenuItemById(groups, 'settings-general');
+  const settingsExit = findMenuItemById(groups, 'settings-exit');
+  const telegramGroup = findGroupById(groups, 'telegram');
+
+  const roots: Array<SideMenuRoot | null> = [
+    quickSearch
+      ? {
+          id: 'root-search',
+          label: 'חיפוש',
+          description: quickSearch.description,
+          iconKey: 'search',
+          defaultItem: quickSearch
+        }
+      : null,
+    quickFavorites
+      ? {
+          id: 'root-favorites',
+          label: 'מועדפים',
+          description: quickFavorites.description,
+          iconKey: 'favorites',
+          defaultItem: quickFavorites,
+          subgroups: [
+            {
+              id: 'favorites-library',
+              label: 'האוסף שלי',
+              items: compactItems([quickFavorites, quickContinue, quickHistory])
+            }
+          ]
+        }
+      : null,
+    quickMovies
+      ? {
+          id: 'root-movies',
+          label: 'סרטים',
+          description: quickMovies.description,
+          iconKey: 'movies',
+          defaultItem: quickMovies,
+          subgroups: buildMoviesSubgroups(groups)
+        }
+      : null,
+    quickSeries
+      ? {
+          id: 'root-series',
+          label: 'סדרות',
+          description: quickSeries.description,
+          iconKey: 'series',
+          defaultItem: quickSeries,
+          subgroups: buildSeriesSubgroups(groups)
+        }
+      : null,
+    quickIsraeli
+      ? {
+          id: 'root-israeli',
+          label: 'ישראלי',
+          description: quickIsraeli.description,
+          iconKey: 'israeli',
+          defaultItem: quickIsraeli
+        }
+      : null,
+    quickTelegram
+      ? {
+          id: 'root-telegram',
+          label: 'טלגרם',
+          description: quickTelegram.description,
+          iconKey: 'telegram',
+          defaultItem: quickTelegram,
+          subgroups: options.telegramConnected && telegramGroup?.items?.length
+            ? [{ id: 'telegram-dialogs', label: 'החשבון שלי', items: telegramGroup.items }]
+            : undefined
+        }
+      : null,
+    settingsGeneral
+      ? {
+          id: 'root-settings',
+          label: 'הגדרות',
+          description: settingsGeneral.description,
+          iconKey: 'settings',
+          defaultItem: settingsGeneral
+        }
+      : null,
+    settingsExit
+      ? {
+          id: 'root-exit',
+          label: 'יציאה',
+          description: settingsExit.description,
+          iconKey: 'exit',
+          defaultItem: settingsExit
+        }
+      : null
+  ];
+
+  return roots.filter((root): root is SideMenuRoot => root !== null);
+};
+
+export const getRootIdForMenuItem = (roots: SideMenuRoot[], itemId: string) =>
+  roots.find((root) =>
+    root.defaultItem.id === itemId
+    || root.subgroups?.some((group) => group.items.some((item) => item.id === itemId))
+  )?.id ?? roots[0]?.id ?? '';
 
 export const getActiveMenuItemId = ({
   librarySection,

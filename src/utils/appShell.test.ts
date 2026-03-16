@@ -10,6 +10,7 @@ import {
 const baseSnapshot = (): AppShellSnapshot => ({
   hasActiveMedia: false,
   hasPosterContextMovie: false,
+  showTelegramAuthModal: false,
   hasSelectedMovie: false,
   showCinemaScreen: false,
   showSearch: false,
@@ -45,6 +46,20 @@ test('settings outranks selected movie in shell layering', () => {
     hasSelectedMovie: true,
     showSettings: true
   }), 'closeSettings');
+});
+
+test('telegram auth modal outranks settings and closes first on back', () => {
+  assert.equal(resolveAppShellLayer({
+    ...baseSnapshot(),
+    showTelegramAuthModal: true,
+    showSettings: true
+  }), 'telegramAuth');
+
+  assert.equal(resolveAppBackAction({
+    ...baseSnapshot(),
+    showTelegramAuthModal: true,
+    showSettings: true
+  }), 'closeTelegramAuth');
 });
 
 test('cinema screen sits above movie details', () => {
