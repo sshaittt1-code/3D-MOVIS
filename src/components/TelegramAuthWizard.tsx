@@ -59,6 +59,15 @@ const STEP_LABELS: Record<WizardStep, { step: string; title: string; subtitle: s
   }
 };
 
+const isDigitKey = (key: string) => /^[0-9]$/.test(key);
+
+const appendCharacter = (value: string, nextCharacter: string, maxLength?: number) => {
+  const nextValue = `${value}${nextCharacter}`;
+  return typeof maxLength === 'number' ? nextValue.slice(0, maxLength) : nextValue;
+};
+
+const trimLastCharacter = (value: string) => value.slice(0, -1);
+
 export const TelegramAuthWizard = ({
   configured,
   status,
@@ -129,6 +138,39 @@ export const TelegramAuthWizard = ({
     }
 
     if (currentId === 'close') onClose();
+  };
+
+  const handleFieldKeyDown = (field: 'phone' | 'code' | 'password') => (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isTvBackKey(event) || getTvDirection(event) || isTvSelectKey(event)) {
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      stopTvEvent(event);
+      if (field === 'phone') onStartLogin();
+      else if (field === 'code') onSubmitCode();
+      else onSubmitPassword();
+      return;
+    }
+
+    if (event.key === 'Backspace' || event.key === 'Delete') {
+      stopTvEvent(event);
+      if (field === 'phone') onPhoneChange(trimLastCharacter(phoneDigits));
+      else if (field === 'code') onCodeChange(trimLastCharacter(code));
+      else onPasswordChange(trimLastCharacter(password));
+      return;
+    }
+
+    if (field === 'phone' && isDigitKey(event.key)) {
+      stopTvEvent(event);
+      onPhoneChange(appendCharacter(phoneDigits, event.key, 10));
+      return;
+    }
+
+    if (field === 'code' && isDigitKey(event.key)) {
+      stopTvEvent(event);
+      onCodeChange(appendCharacter(code, event.key, 8));
+    }
   };
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
@@ -205,17 +247,20 @@ export const TelegramAuthWizard = ({
                   value={phoneDigits}
                   onFocus={focusField('phone')}
                   onChange={(event) => onPhoneChange(event.target.value)}
+                  onKeyDown={handleFieldKeyDown('phone')}
+                  type="tel"
                   inputMode="numeric"
                   autoFocus
                   autoComplete="tel-national"
                   maxLength={10}
                   disabled={busy || isStarting}
                   placeholder="501234567"
+                  dir="ltr"
                   className="hc-input flex-1 text-left text-2xl"
                 />
               </div>
               <div className="mt-4 text-sm text-white/55">
-                המספר שיישלח: <span className="text-white">{phoneE164 || `${TELEGRAM_DEFAULT_COUNTRY_CODE}...`}</span>
+                המספר שיישלח: <span dir="ltr" className="inline-block text-white">{phoneE164 || `${TELEGRAM_DEFAULT_COUNTRY_CODE}...`}</span>
               </div>
               <button
                 ref={bindFieldRef('submit')}
@@ -238,9 +283,12 @@ export const TelegramAuthWizard = ({
                 value={code}
                 onFocus={focusField('code')}
                 onChange={(event) => onCodeChange(event.target.value)}
+                onKeyDown={handleFieldKeyDown('code')}
+                type="tel"
                 inputMode="numeric"
                 autoFocus
                 placeholder="12345"
+                dir="ltr"
                 className="hc-input mt-3 text-center text-3xl tracking-[0.28em]"
               />
               <button
@@ -273,6 +321,7 @@ export const TelegramAuthWizard = ({
                 value={password}
                 onFocus={focusField('password')}
                 onChange={(event) => onPasswordChange(event.target.value)}
+                onKeyDown={handleFieldKeyDown('password')}
                 type="password"
                 autoFocus
                 placeholder="הזן את סיסמת האבטחה שלך"
