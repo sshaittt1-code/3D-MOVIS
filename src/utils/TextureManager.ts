@@ -49,6 +49,9 @@ class TextureManager {
 
       if (!oldestKey) break;
       const entry = this.cache.get(oldestKey);
+      if (entry) {
+        entry.texture.dispose();
+      }
       this.cache.delete(oldestKey);
       this.logDebug('evict-cache-entry', {
         url: oldestKey,
@@ -61,6 +64,9 @@ class TextureManager {
   private rememberTexture(url: string, texture: THREE.Texture) {
     const existingEntry = this.cache.get(url);
     if (existingEntry) {
+      if (existingEntry.texture !== texture) {
+        existingEntry.texture.dispose();
+      }
       this.cache.delete(url);
     }
     this.cache.set(url, {

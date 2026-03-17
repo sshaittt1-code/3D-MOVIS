@@ -2,7 +2,7 @@ import { safeGetString, safeRemove, safeSetString } from './safeStorage';
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
-export const DEFAULT_API_BASE = 'https://threed-movis.onrender.com';
+export const DEFAULT_API_BASE = 'http://10.0.2.2:3000';
 
 export const API_BASE_STORAGE_KEYS = [
   'api_base',

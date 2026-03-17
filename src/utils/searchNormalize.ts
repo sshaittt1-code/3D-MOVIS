@@ -38,6 +38,7 @@ const flattenAltTitles = (value: unknown): string[] => {
           record.name,
           record.localizedTitle,
           record.originalTitle,
+
         ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
       }
       return [];

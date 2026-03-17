@@ -679,6 +679,14 @@ export default function App() {
     return params.get('hc_debug') === '1' || safeGetString(localStorage, PERSISTED_STORAGE_KEYS.corridorDebug) === '1';
   });
 
+  const renderCount = useRef(0);
+  useEffect(() => {
+    renderCount.current += 1;
+    if (showCorridorDebug) {
+      console.log(`[AppRender] Pass #${renderCount.current} at ${performance.now().toFixed(0)}ms`);
+    }
+  });
+
   useEffect(() => { mediaStateMapRef.current = mediaStateMap; safeSetJson(localStorage, MEDIA_STATE_STORAGE_KEY, mediaStateMap); }, [mediaStateMap]);
   useEffect(() => { playbackCacheMapRef.current = playbackCacheMap; writePlaybackCacheMap(localStorage, playbackCacheMap); }, [playbackCacheMap]);
   useEffect(() => { activeMediaRef.current = activeMedia; }, [activeMedia]);

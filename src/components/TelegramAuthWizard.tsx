@@ -142,22 +142,17 @@ export const TelegramAuthWizard = ({
 
   const handleFieldKeyDown = (field: 'phone' | 'code' | 'password') => (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Backspace' || event.key === 'Delete') {
-      stopTvEvent(event);
-      if (field === 'phone') onPhoneChange(trimLastCharacter(phoneDigits));
-      else if (field === 'code') onCodeChange(trimLastCharacter(code));
-      else onPasswordChange(trimLastCharacter(password));
+      event.stopPropagation();
       return;
     }
 
     if (field === 'phone' && isDigitKey(event.key)) {
-      stopTvEvent(event);
-      onPhoneChange(appendCharacter(phoneDigits, event.key, 10));
+      event.stopPropagation();
       return;
     }
 
     if (field === 'code' && isDigitKey(event.key)) {
-      stopTvEvent(event);
-      onCodeChange(appendCharacter(code, event.key, 8));
+      event.stopPropagation();
       return;
     }
 
