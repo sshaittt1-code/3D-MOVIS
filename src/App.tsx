@@ -2565,7 +2565,9 @@ export default function App() {
       setShowSettings(false);
       setShowCinemaScreen(false);
       setPosterContextMovie(null);
-      searchReturnToSidebarRef.current = true;
+      // Search is a top-level surface. Back from it should return to the
+      // root corridor, not reopen the sidebar behind it.
+      searchReturnToSidebarRef.current = false;
       settingsReturnToSidebarRef.current = false;
       setShowSearch(true);
       setIsLocked(true);
