@@ -126,6 +126,7 @@ import {
   PERSISTED_STORAGE_KEYS
 } from './utils/persistedState';
 import { persistResolvedApiBase, resolveApiBase } from './utils/apiBase';
+import { BACK_EVENT_DEBOUNCE_MS, shouldIgnoreBackEvent } from './utils/backNavigation';
 import {
   buildPosterSlotWindow,
   getCorridorTierConfig,
@@ -730,6 +731,20 @@ export default function App() {
   const activeShellLayer = useMemo(() => resolveAppShellLayer(shellSnapshot), [shellSnapshot]);
   const isAnyShellOverlayOpen = activeShellLayer !== 'corridor' && activeShellLayer !== 'sidebar' && activeShellLayer !== 'navContext';
   const showSlimMenu = activeShellLayer === 'corridor' || activeShellLayer === 'sidebar';
+  const shellSnapshotRef = useRef(shellSnapshot);
+  const activeShellLayerRef = useRef(activeShellLayer);
+  const lastBackHandledAtRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    shellSnapshotRef.current = shellSnapshot;
+  }, [shellSnapshot]);
+
+  useEffect(() => {
+    activeShellLayerRef.current = activeShellLayer;
+    if (import.meta.env.DEV) {
+      console.log('NAV_STATE', activeShellLayer);
+    }
+  }, [activeShellLayer]);
 
   useEffect(() => {
     document.documentElement.dataset.hcPlatform = 'android-tv';
@@ -2862,8 +2877,28 @@ export default function App() {
   }, [corridorScopeKey]);
 
   // --- Remote Control logic ---
-  const performBackAction = useCallback(() => {
-    switch (resolveAppBackAction(shellSnapshot)) {
+  const performBackAction = useCallback((source: 'capacitor' | 'keyboard' = 'keyboard') => {
+    const timestamp = Date.now();
+    if (shouldIgnoreBackEvent(lastBackHandledAtRef.current, timestamp, BACK_EVENT_DEBOUNCE_MS)) {
+      if (import.meta.env.DEV) {
+        console.log('BACK_EVENT', { timestamp, source, ignored: true, layer: activeShellLayerRef.current });
+      }
+      return;
+    }
+
+    lastBackHandledAtRef.current = timestamp;
+    const snapshot = shellSnapshotRef.current;
+    const backAction = resolveAppBackAction(snapshot);
+    if (import.meta.env.DEV) {
+      console.log('BACK_EVENT', {
+        timestamp,
+        source,
+        action: backAction,
+        layer: activeShellLayerRef.current
+      });
+    }
+
+    switch (backAction) {
       case 'closePlayer':
         void closePlayer();
         return;
@@ -2897,10 +2932,10 @@ export default function App() {
       default:
         return;
     }
-  }, [closePlayer, closeSearchSurface, closeSettingsSurface, closeTelegramAuthSurface, shellSnapshot]);
+  }, [closePlayer, closeSearchSurface, closeSettingsSurface, closeTelegramAuthSurface]);
 
   useEffect(() => {
-    const sub = CapApp.addListener('backButton', performBackAction);
+    const sub = CapApp.addListener('backButton', () => performBackAction('capacitor'));
     return () => { sub.then((listener) => listener.remove()); };
   }, [performBackAction]);
 
@@ -2909,18 +2944,18 @@ export default function App() {
       if (!shouldHandleGlobalTvBack(event, {
         isEditableTarget: isEditableTextTarget(event.target),
         hasLocalBackHandler: hasLocalBackHandlerTarget(event.target),
-        allowGlobalWhenLocalHandler: activeShellLayer === 'corridor'
+        allowGlobalWhenLocalHandler: activeShellLayerRef.current === 'corridor'
       })) {
         return;
       }
 
       stopTvEvent(event);
-      performBackAction();
+      performBackAction('keyboard');
     };
 
     window.addEventListener('keydown', handleGlobalBackKey, true);
     return () => window.removeEventListener('keydown', handleGlobalBackKey, true);
-  }, [activeShellLayer, performBackAction]);
+  }, [performBackAction]);
 
   const telegramStatusLabel = !tgConfigured
     ? 'Telegram API לא מוגדר בשרת'
