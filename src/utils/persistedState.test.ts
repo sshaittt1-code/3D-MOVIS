@@ -5,11 +5,11 @@ import {
   ensurePersistedStorageContract,
   getPersistedUserStateKeys,
   PERSISTED_STORAGE_KEYS,
-  resolvePreferredApiBase,
   sanitizePersistedApiBase,
   STORAGE_SCHEMA_VERSION,
   STORAGE_SCHEMA_VERSION_KEY
 } from './persistedState';
+import { DEFAULT_API_BASE, resolveApiBase } from './apiBase';
 
 const createStorage = (initial: Record<string, string> = {}) => {
   const state = new Map<string, string>(Object.entries(initial));
@@ -46,35 +46,42 @@ test('ensurePersistedStorageContract migrates legacy keys and stamps schema vers
   assert.equal(storage.getItem('api_base_url'), null);
 });
 
-test('ensurePersistedStorageContract upgrades stale api base urls to the current cloud run backend', () => {
+test('ensurePersistedStorageContract upgrades stale api base urls to the current render backend', () => {
   const storage = createStorage({
-    [PERSISTED_STORAGE_KEYS.apiBase]: 'https://threed-movis.onrender.com'
+    [PERSISTED_STORAGE_KEYS.apiBase]: 'https://holocinema-api-545560686289.europe-west1.run.app'
   });
 
-  const result = ensurePersistedStorageContract(storage, {
-    origin: null,
-    protocol: null
-  });
+  const result = ensurePersistedStorageContract(storage);
 
   assert.equal(result.schemaVersion, STORAGE_SCHEMA_VERSION);
   assert.equal(storage.getItem(PERSISTED_STORAGE_KEYS.apiBase), DEFAULT_API_BASE_URL);
 });
 
-test('resolvePreferredApiBase prefers same-origin http runtimes for browser flows', () => {
-  assert.equal(resolvePreferredApiBase({
-    origin: 'http://127.0.0.1:3000',
-    protocol: 'http:'
-  }), 'http://127.0.0.1:3000');
+test('resolveApiBase never falls back to window origin and prefers configured render default', () => {
+  assert.equal(resolveApiBase(), DEFAULT_API_BASE);
 });
 
-test('sanitizePersistedApiBase replaces managed remote bases with same-origin browser hosts', () => {
-  assert.equal(
-    sanitizePersistedApiBase('https://holocinema-api-545560686289.europe-west1.run.app', {
-      origin: 'http://127.0.0.1:3000',
-      protocol: 'http:'
-    }),
-    'http://127.0.0.1:3000'
-  );
+test('sanitizePersistedApiBase rejects invalid non-http api bases', () => {
+  assert.equal(sanitizePersistedApiBase('capacitor://localhost'), DEFAULT_API_BASE);
+});
+
+test('resolveApiBase accepts legacy storage keys but normalizes them to the managed backend', () => {
+  const storage = createStorage({
+    backendUrl: 'https://holocinema-api-ficosyc5ua-ew.a.run.app'
+  });
+
+  assert.equal(resolveApiBase(storage), DEFAULT_API_BASE);
+});
+
+test('ensurePersistedStorageContract canonicalizes legacy api base keys into api_base', () => {
+  const storage = createStorage({
+    backendUrl: 'https://holocinema-api-545560686289.europe-west1.run.app'
+  });
+
+  ensurePersistedStorageContract(storage);
+
+  assert.equal(storage.getItem(PERSISTED_STORAGE_KEYS.apiBase), DEFAULT_API_BASE);
+  assert.equal(storage.getItem('backendUrl'), null);
 });
 
 test('getPersistedUserStateKeys exposes the user data that must survive updates', () => {

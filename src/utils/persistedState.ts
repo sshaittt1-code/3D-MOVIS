@@ -2,18 +2,15 @@ import { CATEGORY_CACHE_STORAGE_KEY } from './categoryCache';
 import { AUTOPLAY_STORAGE_KEY, MEDIA_STATE_STORAGE_KEY } from './mediaState';
 import { PLAYBACK_CACHE_STORAGE_KEY } from './playbackCache';
 import { POSTER_BATCH_SIZE_STORAGE_KEY } from './posterBatchSettings';
+import { API_BASE_STORAGE_KEYS, DEFAULT_API_BASE, persistResolvedApiBase, readStoredApiBase, sanitizeApiBase } from './apiBase';
 import { safeGetString, safeRemove, safeSetString } from './safeStorage';
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
-type ApiBaseRuntime = {
-  origin?: string | null;
-  protocol?: string | null;
-};
 
 export const STORAGE_SCHEMA_VERSION_KEY = 'hc_storage_schema_version';
 export const STORAGE_SCHEMA_VERSION = '4';
 export const LAST_GOOD_FEED_STORAGE_KEY = 'last_good_feed_v1';
-export const DEFAULT_API_BASE_URL = 'https://holocinema-api-545560686289.europe-west1.run.app';
+export const DEFAULT_API_BASE_URL = DEFAULT_API_BASE;
 
 export const PERSISTED_STORAGE_KEYS = {
   schemaVersion: STORAGE_SCHEMA_VERSION_KEY,
@@ -33,58 +30,7 @@ const LEGACY_KEY_MIGRATIONS: Array<{ from: string; to: string }> = [
   { from: 'api_base_url', to: PERSISTED_STORAGE_KEYS.apiBase }
 ];
 
-const STALE_API_BASES = new Set([
-  'https://threed-movis.onrender.com',
-  'https://holocinema-api-ficosyc5ua-ew.a.run.app'
-]);
-
-const MANAGED_REMOTE_API_BASES = new Set([
-  DEFAULT_API_BASE_URL,
-  ...STALE_API_BASES
-]);
-
-const normalizeApiBase = (value: string | null | undefined) => String(value || '').trim().replace(/\/$/, '');
-
-const detectApiBaseRuntime = (): ApiBaseRuntime => {
-  if (typeof window === 'undefined') {
-    return { origin: null, protocol: null };
-  }
-
-  return {
-    origin: window.location.origin,
-    protocol: window.location.protocol
-  };
-};
-
-export const resolvePreferredApiBase = (runtime: ApiBaseRuntime = detectApiBaseRuntime()) => {
-  const origin = normalizeApiBase(runtime.origin);
-  const protocol = String(runtime.protocol || '').toLowerCase();
-
-  if ((protocol === 'http:' || protocol === 'https:') && origin) {
-    return origin;
-  }
-
-  return DEFAULT_API_BASE_URL;
-};
-
-export const sanitizePersistedApiBase = (
-  value: string | null | undefined,
-  runtime: ApiBaseRuntime = detectApiBaseRuntime()
-) => {
-  const normalizedValue = normalizeApiBase(value);
-  const preferredBase = resolvePreferredApiBase(runtime);
-
-  if (!normalizedValue || STALE_API_BASES.has(normalizedValue)) {
-    return preferredBase;
-  }
-
-  const prefersSameOrigin = preferredBase !== DEFAULT_API_BASE_URL;
-  if (prefersSameOrigin && MANAGED_REMOTE_API_BASES.has(normalizedValue) && normalizedValue !== preferredBase) {
-    return preferredBase;
-  }
-
-  return normalizedValue;
-};
+export const sanitizePersistedApiBase = (value: string | null | undefined) => sanitizeApiBase(value);
 
 export type StorageContractResult = {
   schemaVersion: string;
@@ -103,8 +49,7 @@ export const getPersistedUserStateKeys = () => [
 ];
 
 export const ensurePersistedStorageContract = (
-  storage: StorageLike,
-  runtime: ApiBaseRuntime = detectApiBaseRuntime()
+  storage: StorageLike
 ): StorageContractResult => {
   const migratedKeys: string[] = [];
 
@@ -120,10 +65,15 @@ export const ensurePersistedStorageContract = (
     }
   }
 
-  const currentApiBase = normalizeApiBase(safeGetString(storage, PERSISTED_STORAGE_KEYS.apiBase, ''));
-  const nextApiBase = sanitizePersistedApiBase(currentApiBase, runtime);
-  if (currentApiBase !== nextApiBase) {
-    safeSetString(storage, PERSISTED_STORAGE_KEYS.apiBase, nextApiBase);
+  const currentApiBase = readStoredApiBase(storage).trim();
+  const nextApiBase = sanitizePersistedApiBase(currentApiBase);
+  const canonicalApiBase = safeGetString(storage, PERSISTED_STORAGE_KEYS.apiBase, '').trim();
+  const hasLegacyApiBaseKeys = API_BASE_STORAGE_KEYS
+    .filter((key) => key !== PERSISTED_STORAGE_KEYS.apiBase)
+    .some((key) => Boolean(safeGetString(storage, key, '').trim()));
+
+  if (currentApiBase !== nextApiBase || canonicalApiBase !== nextApiBase || hasLegacyApiBaseKeys) {
+    persistResolvedApiBase(storage, nextApiBase);
     migratedKeys.push(`${PERSISTED_STORAGE_KEYS.apiBase}->${nextApiBase}`);
   }
 

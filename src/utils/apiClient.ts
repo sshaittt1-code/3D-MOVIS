@@ -23,6 +23,10 @@ export class ApiClientError extends Error {
 export const buildApiUrl = (base: string, path: string) =>
   `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
 
+const isDevRuntime = () =>
+  typeof import.meta !== 'undefined'
+  && Boolean((import.meta as ImportMeta & { env?: Record<string, unknown> }).env?.DEV);
+
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const isDomExceptionLike = (value: unknown, name: string) =>
@@ -97,6 +101,11 @@ export const fetchApiJson = async <T = any>(
     try {
       const response = await fetch(resolvedInput, { ...init, headers, signal });
       const bodyText = await response.text();
+      const contentType = response.headers.get('content-type') || '';
+      if (isDevRuntime()) {
+        console.log('response.url =', response.url);
+        console.log('content-type =', contentType);
+      }
       const trimmedBody = bodyText.trim();
       const parsedBody = trimmedBody && !trimmedBody.startsWith('<')
         ? safeParseJson<Record<string, unknown>>(bodyText, {})
@@ -113,8 +122,18 @@ export const fetchApiJson = async <T = any>(
         return {} as T;
       }
 
+      if (!contentType.toLowerCase().includes('application/json')) {
+        throw new ApiClientError(
+          `Expected JSON but got ${contentType || 'unknown content-type'} from ${resolvedInput}. Body preview: ${trimmedBody.slice(0, 200)}`,
+          {
+            status: response.status,
+            transient: false
+          }
+        );
+      }
+
       if (trimmedBody.startsWith('<')) {
-        throw new ApiClientError('API returned HTML instead of JSON.', {
+        throw new ApiClientError(`Expected JSON but got HTML from ${resolvedInput}. Body preview: ${trimmedBody.slice(0, 200)}`, {
           status: response.status,
           transient: false
         });

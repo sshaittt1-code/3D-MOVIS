@@ -18,7 +18,7 @@ test('fetchApiJson rejects HTML responses with a typed API error', async () => {
 
     await assert.rejects(
       () => fetchApiJson('https://updates.example.com/api/update-manifest', {}, { retryCount: 0, timeoutMs: 200 }),
-      (error: unknown) => error instanceof ApiClientError && error.message.includes('HTML')
+      (error: unknown) => error instanceof ApiClientError && error.message.includes('Expected JSON') && error.message.includes('https://updates.example.com/api/update-manifest')
     );
   } finally {
     globalThis.fetch = originalFetch;

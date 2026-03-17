@@ -123,9 +123,9 @@ import {
   DEFAULT_API_BASE_URL,
   ensurePersistedStorageContract,
   LAST_GOOD_FEED_STORAGE_KEY,
-  PERSISTED_STORAGE_KEYS,
-  sanitizePersistedApiBase
+  PERSISTED_STORAGE_KEYS
 } from './utils/persistedState';
+import { persistResolvedApiBase, resolveApiBase } from './utils/apiBase';
 import {
   buildPosterSlotWindow,
   getCorridorTierConfig,
@@ -163,7 +163,7 @@ import {
 } from './utils/tvRemote';
 
 // --- API Helpers ---
-const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL;
+const API_BASE = resolveApiBase(typeof localStorage !== 'undefined' ? localStorage : undefined);
 
 if (typeof localStorage !== 'undefined') {
   ensurePersistedStorageContract(localStorage);
@@ -598,9 +598,7 @@ export default function App() {
   const [autoPlayNextEpisode, setAutoPlayNextEpisode] = useState<boolean>(() => readAutoPlayNextEpisode(localStorage, true));
   const [posterBatchSize, setPosterBatchSize] = useState<number>(() => readPosterBatchSize(localStorage, DEFAULT_POSTER_BATCH_SIZE));
 
-  const [apiBase] = useState(() => sanitizePersistedApiBase(
-    safeGetString(localStorage, PERSISTED_STORAGE_KEYS.apiBase, API_BASE)
-  ));
+  const [apiBase] = useState(() => resolveApiBase(typeof localStorage !== 'undefined' ? localStorage : undefined));
   const normalizedApiBase = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase]);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState('1.0.0');
@@ -678,7 +676,15 @@ export default function App() {
   useEffect(() => { playbackCacheMapRef.current = playbackCacheMap; writePlaybackCacheMap(localStorage, playbackCacheMap); }, [playbackCacheMap]);
   useEffect(() => { activeMediaRef.current = activeMedia; }, [activeMedia]);
   useEffect(() => { preparedNextPlaybackRef.current = preparedNextPlayback; }, [preparedNextPlayback]);
-  useEffect(() => { safeSetString(localStorage, PERSISTED_STORAGE_KEYS.apiBase, apiBase); }, [apiBase]);
+  useEffect(() => {
+    if (typeof localStorage === 'undefined') return;
+    persistResolvedApiBase(localStorage, apiBase);
+  }, [apiBase]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    console.log('API_BASE =', normalizedApiBase);
+  }, [normalizedApiBase]);
   useEffect(() => {
     compactCategoryCacheStorage(localStorage);
   }, []);
@@ -1372,6 +1378,10 @@ export default function App() {
       setTgError('הזן מספר טלפון ישראלי תקין כדי לקבל קוד אימות.');
       return;
     }
+    const loginUrl = buildApiUrl(normalizedApiBase, '/api/tg/startLogin');
+    if (import.meta.env.DEV) {
+      console.log('LOGIN URL =', loginUrl);
+    }
 
     stopTelegramLoginPolling();
     setTgBusy(true);
@@ -1379,7 +1389,7 @@ export default function App() {
     setTgAuthPendingStage('starting');
     try {
       const data = await fetchApiJson<{ loginId?: string; success?: boolean; stage?: TelegramLoginServerStage; phone?: string; sessionString?: string }>(
-        buildApiUrl(normalizedApiBase, '/api/tg/startLogin'),
+        loginUrl,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
