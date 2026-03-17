@@ -58,6 +58,7 @@ import {
 } from './utils/corridorEngine';
 import {
   FALLBACK_LIBRARY,
+  configureContentModelRuntime,
   getCatalogFallbackMediaType,
   mergeCorridorItems,
   normalizeCatalogPage,
@@ -601,6 +602,9 @@ export default function App() {
 
   const [apiBase] = useState(() => resolveApiBase(typeof localStorage !== 'undefined' ? localStorage : undefined));
   const normalizedApiBase = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase]);
+  useEffect(() => {
+    configureContentModelRuntime({ apiBase: normalizedApiBase });
+  }, [normalizedApiBase]);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState('1.0.0');
   const [appBuild, setAppBuild] = useState('1');
@@ -667,6 +671,8 @@ export default function App() {
     [runtimePerformanceProfile.tier]
   );
   const [corridorTextureStates, setCorridorTextureStates] = useState<Record<string, PosterTextureState>>({});
+  const lastInitialPosterPrefetchKeyRef = useRef<string | null>(null);
+  const lastVisiblePosterPrefetchKeyRef = useRef<string | null>(null);
   const [showCorridorDebug] = useState(() => {
     if (typeof window === 'undefined') return false;
     const params = new URLSearchParams(window.location.search);
@@ -2853,6 +2859,35 @@ export default function App() {
     return counts;
   }, [corridorTextureStates]);
 
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    console.log('APP_RUNTIME_STATE', {
+      layer: activeShellLayer,
+      sidebarOpen: !isLocked,
+      showSearch,
+      navContext: navContext?.type ?? null,
+      librarySection,
+      movieCategory,
+      seriesCategory,
+      israeliCategory,
+      focusedId,
+      posters: displayMovies.length,
+      textureStats: corridorTextureStats
+    });
+  }, [
+    activeShellLayer,
+    corridorTextureStats,
+    displayMovies.length,
+    focusedId,
+    isLocked,
+    israeliCategory,
+    librarySection,
+    movieCategory,
+    navContext,
+    seriesCategory,
+    showSearch
+  ]);
+
   const handlePosterTextureStateChange = useCallback((slotId: string, state: PosterTextureState) => {
     setCorridorTextureStates((current) => {
       if (current[slotId] === state) return current;
@@ -2864,18 +2899,29 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    prefetchPostersForItems(displayMovies.slice(0, corridorTierConfig.maxThumbPrefetch), corridorTierConfig.maxThumbPrefetch);
+    const initialItems = displayMovies.slice(0, corridorTierConfig.maxThumbPrefetch);
+    const prefetchKey = initialItems.map((item) => item.uniqueId || `${item.mediaType}:${item.id}`).join('|');
+    if (!prefetchKey || lastInitialPosterPrefetchKeyRef.current === prefetchKey) return;
+    lastInitialPosterPrefetchKeyRef.current = prefetchKey;
+    prefetchPostersForItems(initialItems, corridorTierConfig.maxThumbPrefetch);
   }, [corridorTierConfig.maxThumbPrefetch, displayMovies, prefetchPostersForItems]);
 
   useEffect(() => {
     const visibleItems = posterSlots
       .map((slot) => slot.item)
       .filter((item): item is CorridorItem => Boolean(item));
+    const prefetchKey = visibleItems
+      .map((item) => item.uniqueId || `${item.mediaType}:${item.id}`)
+      .join('|');
+    if (!prefetchKey || lastVisiblePosterPrefetchKeyRef.current === prefetchKey) return;
+    lastVisiblePosterPrefetchKeyRef.current = prefetchKey;
     prefetchPostersForItems(visibleItems, corridorTierConfig.maxThumbPrefetch);
   }, [corridorTierConfig.maxThumbPrefetch, posterSlots, prefetchPostersForItems]);
 
   useEffect(() => {
     setCorridorTextureStates({});
+    lastInitialPosterPrefetchKeyRef.current = null;
+    lastVisiblePosterPrefetchKeyRef.current = null;
   }, [corridorScopeKey]);
 
   // --- Remote Control logic ---

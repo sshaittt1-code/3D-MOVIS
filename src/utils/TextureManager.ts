@@ -1,36 +1,76 @@
 import * as THREE from 'three';
 
+type CachedTextureEntry = {
+  texture: THREE.Texture;
+  retainCount: number;
+  lastUsedAt: number;
+};
+
 class TextureManager {
   private loader: THREE.TextureLoader;
-  private cache: Map<string, THREE.Texture>;
+  private cache: Map<string, CachedTextureEntry>;
   private pending: Map<string, Promise<THREE.Texture>>;
+  private failed: Map<string, number>;
   private idlePrefetchQueue: Set<string>;
   private idlePrefetchTimer: ReturnType<typeof setTimeout> | null;
   private readonly maxCacheSize: number;
+  private readonly failureTtlMs: number;
 
   constructor() {
     this.loader = new THREE.TextureLoader();
     this.loader.setCrossOrigin('anonymous');
     this.cache = new Map();
     this.pending = new Map();
+    this.failed = new Map();
     this.idlePrefetchQueue = new Set();
     this.idlePrefetchTimer = null;
     this.maxCacheSize = 200;
+    this.failureTtlMs = 30_000;
+  }
+
+  private logDebug(event: string, details: Record<string, unknown>) {
+    if (typeof import.meta !== 'undefined' && (import.meta as ImportMeta & { env?: Record<string, unknown> }).env?.DEV) {
+      console.log('TEXTURE_EVENT', { event, ...details });
+    }
+  }
+
+  private evictIfNeeded() {
+    while (this.cache.size > this.maxCacheSize) {
+      let oldestKey: string | null = null;
+      let oldestUsedAt = Number.POSITIVE_INFINITY;
+
+      this.cache.forEach((entry, key) => {
+        if (entry.retainCount > 0) return;
+        if (entry.lastUsedAt < oldestUsedAt) {
+          oldestUsedAt = entry.lastUsedAt;
+          oldestKey = key;
+        }
+      });
+
+      if (!oldestKey) break;
+      const entry = this.cache.get(oldestKey);
+      this.cache.delete(oldestKey);
+      this.logDebug('evict-cache-entry', {
+        url: oldestKey,
+        retainCount: entry?.retainCount ?? 0,
+        cacheSize: this.cache.size
+      });
+    }
   }
 
   private rememberTexture(url: string, texture: THREE.Texture) {
-    if (this.cache.has(url)) {
+    const existingEntry = this.cache.get(url);
+    if (existingEntry) {
       this.cache.delete(url);
     }
-    this.cache.set(url, texture);
-
-    while (this.cache.size > this.maxCacheSize) {
-      const oldestKey = this.cache.keys().next().value;
-      if (!oldestKey) break;
-      const oldestTexture = this.cache.get(oldestKey);
-      oldestTexture?.dispose();
-      this.cache.delete(oldestKey);
-    }
+    this.cache.set(url, {
+      texture,
+      retainCount: existingEntry?.retainCount ?? 0,
+      lastUsedAt: Date.now()
+    });
+    this.failed.delete(url);
+    this.evictIfNeeded();
+    this.logDebug('remember-texture', { url, cacheSize: this.cache.size });
   }
 
   hasTexture(url: string) {
@@ -40,27 +80,56 @@ class TextureManager {
   getTexture(url: string) {
     if (!this.cache.has(url)) return null;
     this.touchTexture(url);
-    return this.cache.get(url)!;
+    return this.cache.get(url)!.texture;
   }
 
   private touchTexture(url: string) {
     if (!this.cache.has(url)) return;
-    const texture = this.cache.get(url)!;
+    const entry = this.cache.get(url)!;
     this.cache.delete(url);
-    this.cache.set(url, texture);
+    this.cache.set(url, {
+      ...entry,
+      lastUsedAt: Date.now()
+    });
+  }
+
+  retainTexture(url: string) {
+    const entry = this.cache.get(url);
+    if (!entry) return;
+    entry.retainCount += 1;
+    entry.lastUsedAt = Date.now();
+    this.logDebug('retain-texture', { url, retainCount: entry.retainCount });
+  }
+
+  releaseTexture(url: string) {
+    const entry = this.cache.get(url);
+    if (!entry) return;
+    entry.retainCount = Math.max(0, entry.retainCount - 1);
+    entry.lastUsedAt = Date.now();
+    this.logDebug('release-texture', { url, retainCount: entry.retainCount });
+    this.evictIfNeeded();
   }
 
   loadTexture(url: string): Promise<THREE.Texture> {
     if (this.cache.has(url)) {
       this.touchTexture(url);
-      return Promise.resolve(this.cache.get(url)!);
+      this.logDebug('cache-hit', { url });
+      return Promise.resolve(this.cache.get(url)!.texture);
     }
-    
+
+    const failedAt = this.failed.get(url);
+    if (failedAt && Date.now() - failedAt < this.failureTtlMs) {
+      this.logDebug('failed-cache-hit', { url });
+      return Promise.reject(new Error('Texture failed recently'));
+    }
+
     if (this.pending.has(url)) {
+      this.logDebug('pending-hit', { url });
       return this.pending.get(url)!;
     }
 
     const promise = new Promise<THREE.Texture>((resolve, reject) => {
+      this.logDebug('load-start', { url });
       this.loader.load(
         url,
         (texture) => {
@@ -74,18 +143,21 @@ class TextureManager {
               texture.needsUpdate = true;
               this.rememberTexture(url, texture);
               this.pending.delete(url);
+              this.logDebug('load-success', { url, decoded: true });
               resolve(texture);
             }).catch((err) => {
               console.warn("TextureManager: async decode failed, fallback to sync", err);
               texture.needsUpdate = true;
               this.rememberTexture(url, texture);
               this.pending.delete(url);
+              this.logDebug('load-success', { url, decoded: false });
               resolve(texture);
             });
           } else {
             texture.needsUpdate = true;
             this.rememberTexture(url, texture);
             this.pending.delete(url);
+            this.logDebug('load-success', { url, decoded: false });
             resolve(texture);
           }
         },
@@ -93,6 +165,8 @@ class TextureManager {
         (err) => {
           console.error("TextureManager: Failed to load Texture", err);
           this.pending.delete(url);
+          this.failed.set(url, Date.now());
+          this.logDebug('load-failure', { url, message: err instanceof Error ? err.message : String(err) });
           reject(err);
         }
       );
@@ -150,6 +224,7 @@ class TextureManager {
     return {
       cached: this.cache.size,
       pending: this.pending.size,
+      failed: this.failed.size,
       idleQueued: this.idlePrefetchQueue.size,
       maxCacheSize: this.maxCacheSize
     };
@@ -162,9 +237,10 @@ class TextureManager {
         this.idlePrefetchTimer = null;
       }
       this.idlePrefetchQueue.clear();
-      this.cache.forEach(texture => texture.dispose());
+      this.cache.forEach(({ texture }) => texture.dispose());
       this.cache.clear();
       this.pending.clear();
+      this.failed.clear();
   }
 }
 

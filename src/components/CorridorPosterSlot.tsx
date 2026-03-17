@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
 import { textureManager } from '../utils/TextureManager';
@@ -39,6 +39,7 @@ export const CorridorPosterSlot = ({
 }: CorridorPosterSlotProps) => {
   const groupRef = useRef<THREE.Group>(null);
   const requestTokenRef = useRef(0);
+  const activeTextureUrlRef = useRef<string | null>(null);
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const [textureState, setTextureState] = useState<PosterTextureState>('empty');
   const item = slot.item;
@@ -50,47 +51,68 @@ export const CorridorPosterSlot = ({
     onTextureStateChange?.(slot.slotId, textureState);
   }, [onTextureStateChange, slot.slotId, textureState]);
 
+  const releaseActiveTexture = useCallback(() => {
+    if (!activeTextureUrlRef.current) return;
+    textureManager.releaseTexture(activeTextureUrlRef.current);
+    activeTextureUrlRef.current = null;
+  }, []);
+
+  const applyTexture = useCallback((nextUrl: string, nextTexture: THREE.Texture, nextState: PosterTextureState) => {
+    if (!nextUrl) return;
+    if (activeTextureUrlRef.current !== nextUrl) {
+      releaseActiveTexture();
+      textureManager.retainTexture(nextUrl);
+      activeTextureUrlRef.current = nextUrl;
+    }
+    setTexture(nextTexture);
+    setTextureState(nextState);
+  }, [releaseActiveTexture]);
+
+  const resetTextureState = useCallback((nextState: PosterTextureState) => {
+    releaseActiveTexture();
+    setTexture(null);
+    setTextureState(nextState);
+  }, [releaseActiveTexture]);
+
+  useEffect(() => () => releaseActiveTexture(), [releaseActiveTexture]);
+
   useEffect(() => {
     requestTokenRef.current += 1;
 
     if (!item) {
-      setTexture(null);
-      setTextureState('empty');
+      resetTextureState('empty');
       return;
     }
 
     const cachedFull = fullUrl ? textureManager.getTexture(fullUrl) : null;
     const cachedThumb = thumbUrl ? textureManager.getTexture(thumbUrl) : null;
     if (cachedFull) {
-      setTexture(cachedFull);
-      setTextureState('full');
+      applyTexture(fullUrl, cachedFull, 'full');
       return;
     }
     if (cachedThumb) {
-      setTexture(cachedThumb);
-      setTextureState('thumb');
+      applyTexture(thumbUrl || fullUrl, cachedThumb, thumbUrl === fullUrl ? 'full' : 'thumb');
       return;
     }
 
-    setTexture(null);
-    setTextureState('empty');
-  }, [fullUrl, item, slot.slotId, thumbUrl]);
+    resetTextureState('empty');
+  }, [applyTexture, fullUrl, item, resetTextureState, slot.slotId, thumbUrl]);
 
   useEffect(() => {
     if (!item) return;
     const requestToken = ++requestTokenRef.current;
     let cancelled = false;
 
-    const applyTexture = (nextTexture: THREE.Texture, nextState: PosterTextureState) => {
+    const applyLoadedTexture = (nextUrl: string, nextTexture: THREE.Texture, nextState: PosterTextureState) => {
       if (cancelled || requestToken !== requestTokenRef.current) return;
-      setTexture(nextTexture);
-      setTextureState(nextState);
+      applyTexture(nextUrl, nextTexture, nextState);
     };
 
     const markFailed = () => {
       if (cancelled || requestToken !== requestTokenRef.current) return;
-      setTexture((current) => current);
-      setTextureState((current) => (current === 'thumb' || current === 'full' ? current : 'failed'));
+      if (!activeTextureUrlRef.current) {
+        setTextureState('failed');
+      }
     };
 
     const loadThumbThenFull = async () => {
@@ -100,11 +122,11 @@ export const CorridorPosterSlot = ({
       try {
         if (desiredThumbUrl && !textureManager.getTexture(desiredThumbUrl)) {
           const thumbTexture = await textureManager.loadTexture(desiredThumbUrl);
-          applyTexture(thumbTexture, desiredThumbUrl === desiredFullUrl ? 'full' : 'thumb');
+          applyLoadedTexture(desiredThumbUrl, thumbTexture, desiredThumbUrl === desiredFullUrl ? 'full' : 'thumb');
         } else if (desiredThumbUrl) {
           const cachedTexture = textureManager.getTexture(desiredThumbUrl);
           if (cachedTexture) {
-            applyTexture(cachedTexture, desiredThumbUrl === desiredFullUrl ? 'full' : 'thumb');
+            applyLoadedTexture(desiredThumbUrl, cachedTexture, desiredThumbUrl === desiredFullUrl ? 'full' : 'thumb');
           }
         }
       } catch {
@@ -120,9 +142,9 @@ export const CorridorPosterSlot = ({
 
       try {
         const fullTexture = textureManager.getTexture(desiredFullUrl) || await textureManager.loadTexture(desiredFullUrl);
-        applyTexture(fullTexture, 'full');
+        applyLoadedTexture(desiredFullUrl, fullTexture, 'full');
       } catch {
-        if (!texture) {
+        if (!activeTextureUrlRef.current) {
           markFailed();
         }
       }
@@ -133,7 +155,7 @@ export const CorridorPosterSlot = ({
     return () => {
       cancelled = true;
     };
-  }, [fullUrl, item, textureIntent, texture, thumbUrl]);
+  }, [applyTexture, fullUrl, item, textureIntent, thumbUrl]);
 
   useFrame((state) => {
     if (!groupRef.current) return;

@@ -141,18 +141,6 @@ export const TelegramAuthWizard = ({
   };
 
   const handleFieldKeyDown = (field: 'phone' | 'code' | 'password') => (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (isTvBackKey(event) || getTvDirection(event) || isTvSelectKey(event)) {
-      return;
-    }
-
-    if (event.key === 'Enter') {
-      stopTvEvent(event);
-      if (field === 'phone') onStartLogin();
-      else if (field === 'code') onSubmitCode();
-      else onSubmitPassword();
-      return;
-    }
-
     if (event.key === 'Backspace' || event.key === 'Delete') {
       stopTvEvent(event);
       if (field === 'phone') onPhoneChange(trimLastCharacter(phoneDigits));
@@ -170,6 +158,31 @@ export const TelegramAuthWizard = ({
     if (field === 'code' && isDigitKey(event.key)) {
       stopTvEvent(event);
       onCodeChange(appendCharacter(code, event.key, 8));
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      stopTvEvent(event);
+      if (field === 'phone') onStartLogin();
+      else if (field === 'code') onSubmitCode();
+      else onSubmitPassword();
+      return;
+    }
+
+    if (getTvDirection(event) || isTvSelectKey(event)) {
+      return;
+    }
+
+    if (isTvBackKey(event)) {
+      if (import.meta.env.DEV) {
+        console.log('TELEGRAM_INPUT_EVENT', {
+          field,
+          key: event.key,
+          code: event.code,
+          keyCode: event.keyCode
+        });
+      }
+      return;
     }
   };
 

@@ -59,6 +59,34 @@ export type EpisodesNavContext = {
 
 export type NavContext = SeasonsNavContext | EpisodesNavContext | null;
 
+let configuredPosterApiBase = '';
+
+const normalizePosterApiBase = (value: unknown) => {
+  const raw = String(value ?? '').trim().replace(/\/+$/, '');
+  if (!raw) return '';
+  return /^https?:\/\//i.test(raw) ? raw : '';
+};
+
+const isRemoteHttpUrl = (value: string) => /^https?:\/\//i.test(value);
+
+const buildPosterAssetUrl = (value: unknown) => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('data:') || raw.startsWith('blob:')) return raw;
+  if (!configuredPosterApiBase || !isRemoteHttpUrl(raw)) return raw;
+
+  const proxiedPrefix = `${configuredPosterApiBase}/api/poster?url=`;
+  if (raw.startsWith(proxiedPrefix)) {
+    return raw;
+  }
+
+  return `${proxiedPrefix}${encodeURIComponent(raw)}`;
+};
+
+export const configureContentModelRuntime = (options: { apiBase?: string | null }) => {
+  configuredPosterApiBase = normalizePosterApiBase(options.apiBase);
+};
+
 const parseYear = (value: unknown): number | null => {
   const match = String(value ?? '').match(/\d{4}/);
   return match ? Number.parseInt(match[0], 10) : null;
@@ -103,7 +131,9 @@ export const normalizeContentItem = (
     return null;
   }
 
-  const poster = String(item.poster || item.posterThumb || item.image?.original || item.image?.medium || '').trim();
+  const rawPoster = String(item.poster || item.posterThumb || item.image?.original || item.image?.medium || '').trim();
+  const rawPosterThumb = String(item.posterThumb || item.poster || item.image?.medium || item.image?.original || '').trim();
+  const poster = buildPosterAssetUrl(rawPoster || rawPosterThumb);
   if (!poster) return null;
 
   const mediaType = coerceContentMediaType(item.mediaType, fallbackMediaType);
@@ -131,7 +161,7 @@ export const normalizeContentItem = (
     rating: asNumber(item.rating ?? item.vote_average),
     popularity: asNumber(item.popularity ?? item.weight),
     poster,
-    posterThumb: String(item.posterThumb || poster),
+    posterThumb: buildPosterAssetUrl(rawPosterThumb || rawPoster || poster),
     desc: String(item.desc || item.overview || ''),
     mediaType,
     year,

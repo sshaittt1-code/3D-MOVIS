@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  configureContentModelRuntime,
   FALLBACK_LIBRARY,
   getCatalogFallbackMediaType,
   mergeCorridorItems,
@@ -37,6 +38,29 @@ test('normalizeCorridorItem preserves telegram dialog media types', () => {
   assert.ok(item);
   assert.equal(item?.mediaType, 'telegram_channel');
   assert.equal(item?.peerId, '1');
+});
+
+test('normalizeCorridorItem proxies remote poster URLs through the configured API base', () => {
+  configureContentModelRuntime({ apiBase: 'https://threed-movis.onrender.com/' });
+  const item = normalizeCorridorItem({
+    id: 13,
+    title: 'Matrix',
+    poster: 'https://image.tmdb.org/t/p/w500/test.jpg',
+    posterThumb: 'https://image.tmdb.org/t/p/w342/test.jpg',
+    mediaType: 'movie'
+  }, 'movie');
+
+  assert.ok(item);
+  assert.equal(
+    item?.poster,
+    'https://threed-movis.onrender.com/api/poster?url=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ftest.jpg'
+  );
+  assert.equal(
+    item?.posterThumb,
+    'https://threed-movis.onrender.com/api/poster?url=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw342%2Ftest.jpg'
+  );
+
+  configureContentModelRuntime({ apiBase: null });
 });
 
 test('normalizeCatalogResponse extracts the correct envelope by target', () => {

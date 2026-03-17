@@ -188,6 +188,21 @@ const buildUpdateManifestPayload = (req: express.Request) => {
   };
 };
 
+const sanitizePosterTargetUrl = (value: unknown) => {
+  const raw = readStringValue(value);
+  if (!raw) return null;
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+};
+
 app.get('/api/update-manifest', (req, res) => {
   res.json(buildUpdateManifestPayload(req));
 });
@@ -210,6 +225,44 @@ app.get('/apk/latest.apk', (_req, res) => {
   }
 
   return res.sendFile(LOCAL_APK_FILE_PATH);
+});
+
+app.get('/api/poster', async (req, res) => {
+  const targetUrl = sanitizePosterTargetUrl(req.query.url);
+  if (!targetUrl) {
+    return res.status(400).json({ error: 'Invalid poster URL.' });
+  }
+
+  try {
+    const upstream = await fetch(targetUrl, {
+      headers: {
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+      }
+    });
+
+    if (!upstream.ok) {
+      return res.status(502).json({ error: 'Poster origin request failed.' });
+    }
+
+    const contentType = readStringValue(upstream.headers.get('content-type')).toLowerCase();
+    if (!contentType.startsWith('image/')) {
+      return res.status(502).json({ error: 'Poster origin returned non-image content.' });
+    }
+
+    const cacheControl = readStringValue(upstream.headers.get('cache-control')) || 'public, max-age=86400, s-maxage=86400';
+    const etag = readStringValue(upstream.headers.get('etag'));
+    const lastModified = readStringValue(upstream.headers.get('last-modified'));
+    const arrayBuffer = await upstream.arrayBuffer();
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', cacheControl);
+    if (etag) res.setHeader('ETag', etag);
+    if (lastModified) res.setHeader('Last-Modified', lastModified);
+    res.type(contentType);
+    return res.send(Buffer.from(arrayBuffer));
+  } catch (error) {
+    return res.status(502).json({ error: getErrorMessage(error) || 'Failed to proxy poster image.' });
+  }
 });
 
 const readTelegramDialogCategory = (value: unknown): TelegramDialogCategory => {
